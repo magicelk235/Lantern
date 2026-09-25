@@ -3,12 +3,10 @@ import IDEProtocol
 
 extension TranscriptReducer {
     /// Replaces the whole state with the transcript in a `session.snapshot`: omp's durable entries (active branch),
-    /// its `get_state`, and the dialogs the daemon still holds. Journal records after `snapshot.lastSeq` apply on top;
-    /// a message that was mid-stream (never persisted) continues from the partial its next `message_update` carries.
-    ///
-    /// - Parameter now: receipt time assumed for held dialogs with a `timeout`. The daemon does not keep when a request
-    ///   arrived, and `now` can only make such a dialog expire late (omp then ignores the answer), never early.
-    public mutating func rebuild(from snapshot: SessionSnapshot.Result, now: Date = Date()) {
+    /// its `get_state`, and the dialogs the daemon still holds (timed ones expire from when the daemon received them).
+    /// Journal records after `snapshot.lastSeq` apply on top; a message that was mid-stream (never persisted) continues
+    /// from the partial its next `message_update` carries.
+    public mutating func rebuild(from snapshot: SessionSnapshot.Result) {
         self = TranscriptReducer()
         for (position, entry) in Self.activeBranch(of: snapshot.entries).enumerated() {
             applyEntry(entry, id: "entry:\(entry["id"]?.stringValue ?? "#\(position)")")
@@ -20,7 +18,7 @@ extension TranscriptReducer {
             unfinishedTools = []
         }
         for request in snapshot.entry.pending.uiRequests {
-            guard let dialog = Dialog(request: request, receivedAt: now) else { continue }
+            guard let dialog = Dialog(request: request.frame, receivedAt: request.receivedAt) else { continue }
             appendDialog(dialog, id: "dialog:\(dialog.requestId)", seq: nil)
         }
         if isStreaming {

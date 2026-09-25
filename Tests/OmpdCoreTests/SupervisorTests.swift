@@ -167,7 +167,7 @@ import Testing
         ])
         try await fixture.supervisor.start(.fresh)
         _ = try await fixture.supervisor.command(["type": "prompt", "message": "ask me"])
-        try await eventually("dialog pending") { try await fixture.entry.pending.uiRequests.map(\.frameId) == ["dlg-1"] }
+        try await eventually("dialog pending") { try await fixture.entry.pending.uiRequests.map(\.id) == ["dlg-1"] }
 
         await #expect(throws: DaemonError.self) {
             try await fixture.supervisor.respond(requestId: "nope", response: ["confirmed": true])
@@ -175,7 +175,7 @@ import Testing
         try await fixture.supervisor.respond(requestId: "dlg-1", response: ["confirmed": true])
         let answer = try #require(fixture.omp.received.first { $0["type"] == "extension_ui_response" })
         #expect(answer == ["type": "extension_ui_response", "id": "dlg-1", "confirmed": true])
-        #expect(try await fixture.daemonEvents().contains(.uiAnswered(requestId: "dlg-1")))
+        #expect(try await fixture.daemonEvents().contains(.uiAnswered(requestId: "dlg-1", response: ["confirmed": true])))
         #expect(try await fixture.entry.pending == PendingRequests())
         try await eventually("settled after the answer") { try await fixture.entry.status == .settled }
         await fixture.supervisor.stop(.user)
@@ -225,6 +225,7 @@ import Testing
         let sent = try #require(fixture.omp.received.first { $0["type"] == "host_tool_result" })
         #expect(sent == ["type": "host_tool_result", "id": "host-7", "result": ["content": [["type": "text", "text": "done"]]]])
         #expect(try await fixture.entry.pending.hostToolCalls.isEmpty)
+        #expect(try await fixture.daemonEvents().contains(.uiAnswered(requestId: "host-7", response: result)))
         await fixture.supervisor.stop(.user)
     }
 
@@ -279,7 +280,9 @@ import Testing
         try await fixture.manifest.updateEntry(fixture.key) { entry in
             entry.sessionFile = file
             entry.status = .busy
-            entry.pending = PendingRequests(uiRequests: [["type": "extension_ui_request", "id": "old-dlg", "method": "confirm"]])
+            entry.pending = PendingRequests(uiRequests: [
+                HeldRequest(frame: ["type": "extension_ui_request", "id": "old-dlg", "method": "confirm"], receivedAt: Date()),
+            ])
         }
         await fixture.supervisor.restoreAfterDaemonStart()
 
@@ -337,6 +340,19 @@ import Testing
         #expect(try await fixture.records().count == journaled)
         await fixture.supervisor.stop(.user)
         #expect(try await fixture.entry.status == .closed)
+    }
+
+    @Test func noticesTheJournalCannotTakeGoOutOfBand() async throws {
+        let fixture = try await SupervisorFixture()
+        try await fixture.supervisor.start(.fresh)
+        #expect(fixture.notices.value.isEmpty, "journaled while the journal works")
+        let journaled = try await fixture.records().count
+        #expect(fixture.readOnly.trip())
+        _ = try? await fixture.supervisor.command(["type": "crash"])
+        try await eventually("interrupted") { try await fixture.entry.status == .interrupted }
+        let notice = try #require(fixture.notices.value.first { $0.message.contains("omp exited unexpectedly") })
+        #expect(notice.level == "error" && notice.sessionKey == fixture.key)
+        #expect(try await fixture.records().count == journaled)
     }
 
     @Test func sessionExitKindComesFromThisRunOnly() throws {

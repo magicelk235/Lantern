@@ -59,12 +59,15 @@ public struct SupervisorContext: Sendable {
     public var readOnly: ReadOnlyMode
     /// A journal append failed for a reason other than the journal being closed (disk full, I/O error).
     public var journalFailed: @Sendable (SessionKey, any Error) -> Void
+    /// Delivers a notice the journal cannot take to every connected client (`ServerFrame.notice`).
+    public var notify: @Sendable (DaemonNotice) -> Void
 
     public init(
         manifest: ManifestPublisher, journalDirectory: URL, bridge: any SessionBridgeLink, locks: any SessionLockProvider,
         bridgeExtension: String?, baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         timings: SupervisorTimings = SupervisorTimings(), readOnly: ReadOnlyMode,
-        journalFailed: @escaping @Sendable (SessionKey, any Error) -> Void
+        journalFailed: @escaping @Sendable (SessionKey, any Error) -> Void,
+        notify: @escaping @Sendable (DaemonNotice) -> Void
     ) {
         self.manifest = manifest
         self.journalDirectory = journalDirectory
@@ -75,6 +78,7 @@ public struct SupervisorContext: Sendable {
         self.timings = timings
         self.readOnly = readOnly
         self.journalFailed = journalFailed
+        self.notify = notify
     }
 }
 

@@ -173,7 +173,7 @@ struct ConnectionFooter: View {
     }
 }
 
-/// Connection and daemon-registration problems, above the detail pane.
+/// Connection, daemon-notice and daemon-registration problems, above the detail pane.
 struct StatusBanners: View {
     let connection: DaemonConnection
     let agent: DaemonAgent
@@ -184,6 +184,12 @@ struct StatusBanners: View {
                 Banner(
                     systemImage: "bolt.horizontal.circle", tint: .orange, title: "ompd is not reachable",
                     message: "\(reason) Retrying automatically; running agents are not affected by this window.")
+            }
+            if let notice = connection.latestNotice {
+                Banner(
+                    systemImage: notice.level == "info" ? "info.circle" : "exclamationmark.triangle",
+                    tint: notice.level == "error" ? .red : notice.level == "warning" ? .orange : .blue,
+                    title: "Message from ompd", message: notice.message, actionTitle: "Dismiss", action: connection.dismissNotices)
             }
             switch agent.state {
             case .requiresApproval:

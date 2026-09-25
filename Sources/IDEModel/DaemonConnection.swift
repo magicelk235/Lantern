@@ -41,9 +41,15 @@ public final class DaemonConnection: SessionBackend {
     public private(set) var sessions: [SessionManifestEntry] = []
     /// Sessions the user opened; each stays subscribed while connected.
     public private(set) var openSessions: [SessionKey: SessionViewModel] = [:]
+    /// Out-of-band notices from the running ompd (`ServerFrame.notice`, e.g. read-only mode), oldest first. At most
+    /// `noticeLimit`; cleared when the app connects to a different ompd process or by `dismissNotices()`.
+    public private(set) var notices: [DaemonNotice] = []
+    public nonisolated static let noticeLimit = 50
 
     @ObservationIgnored private var client: IDEClient?
     @ObservationIgnored private var runTask: Task<Void, Never>?
+    /// `Welcome.daemonStartedAt` of the ompd the notices came from.
+    @ObservationIgnored private var noticesDaemonStartedAt: Date?
 
     public init(paths: AppSupportPaths = .standard, clientVersion: String, backoff: Backoff = Backoff()) {
         self.paths = paths
@@ -58,6 +64,13 @@ public final class DaemonConnection: SessionBackend {
 
     /// Sessions grouped by workspace folder.
     public var workspaces: [WorkspaceGroup] { WorkspaceGroup.group(sessions) }
+
+    /// The newest notice, for the connection banner.
+    public var latestNotice: DaemonNotice? { notices.last }
+
+    public func dismissNotices() {
+        notices = []
+    }
 
     /// Starts connecting (idempotent). Keeps reconnecting until `stop()`.
     public func start() {
@@ -148,6 +161,11 @@ public final class DaemonConnection: SessionBackend {
     private func serve(_ client: IDEClient, welcome: Welcome) async {
         self.client = client
         status = .connected(welcome)
+        if welcome.daemonStartedAt != noticesDaemonStartedAt {
+            // A restarted ompd starts over (e.g. no longer read-only).
+            if !notices.isEmpty { notices = [] }
+            noticesDaemonStartedAt = welcome.daemonStartedAt
+        }
         apply(sessions: welcome.sessions)
         for model in openSessions.values { model.connectionOpened() }
         for await frame in client.pushes {
@@ -163,6 +181,9 @@ public final class DaemonConnection: SessionBackend {
         case .event(let record): openSessions[record.sessionKey]?.receive(record)
         case .resync(let resync): openSessions[resync.sessionKey]?.receive(resync)
         case .sessions(let list): apply(sessions: list.sessions)
+        case .notice(let notice):
+            notices.append(notice)
+            if notices.count > Self.noticeLimit { notices.removeFirst(notices.count - Self.noticeLimit) }
         case .ptyOutput, .welcome, .response: break // terminals attach elsewhere; the client consumes the rest
         }
     }

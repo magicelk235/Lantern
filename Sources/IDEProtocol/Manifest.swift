@@ -150,12 +150,42 @@ public struct NamedService: Sendable, Equatable, Codable {
 
 /// UI requests omp is blocked on. Re-presented on reconnect (Regime A) or reported as lost (Regime B).
 public struct PendingRequests: Sendable, Equatable, Codable {
-    /// Verbatim `extension_ui_request` frames still awaiting `extension_ui_response`.
-    public var uiRequests: [JSONValue]
-    /// Verbatim `host_tool_call` frames still awaiting `host_tool_result`.
-    public var hostToolCalls: [JSONValue]
-    public init(uiRequests: [JSONValue] = [], hostToolCalls: [JSONValue] = []) {
+    /// `extension_ui_request` frames still awaiting `extension_ui_response`.
+    public var uiRequests: [HeldRequest]
+    /// `host_tool_call` frames still awaiting `host_tool_result`.
+    public var hostToolCalls: [HeldRequest]
+    public init(uiRequests: [HeldRequest] = [], hostToolCalls: [HeldRequest] = []) {
         self.uiRequests = uiRequests
         self.hostToolCalls = hostToolCalls
+    }
+}
+
+/// One request omp is blocked on: its verbatim frame and when ompd read it from omp's stdout. A dialog's `timeout`
+/// runs from `receivedAt`, so a restored timed dialog expires when omp resolved it, not later.
+public struct HeldRequest: Sendable, Equatable, Codable {
+    public var frame: JSONValue
+    public var receivedAt: Date
+
+    public init(frame: JSONValue, receivedAt: Date) {
+        self.frame = frame
+        self.receivedAt = receivedAt
+    }
+
+    /// omp request id (`frame.id`).
+    public var id: String? { frame["id"]?.stringValue }
+
+    private enum CodingKeys: String, CodingKey { case frame, receivedAt }
+
+    /// Also reads the bare frames of protocol-1 manifests; their arrival time was never recorded, so it becomes the
+    /// decode time (a restored timed dialog then expires late, never early).
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard container.contains(.frame), container.contains(.receivedAt) else {
+            frame = try JSONValue(from: decoder)
+            receivedAt = Date()
+            return
+        }
+        frame = try container.decode(JSONValue.self, forKey: .frame)
+        receivedAt = try container.decode(Date.self, forKey: .receivedAt)
     }
 }

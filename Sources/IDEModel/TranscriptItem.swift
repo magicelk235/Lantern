@@ -141,8 +141,9 @@ public struct Dialog: Equatable, Sendable {
 
     public enum State: Equatable, Sendable {
         case pending
-        /// A client answered it (daemon `uiAnswered`).
-        case answered
+        /// A client answered it (daemon `uiAnswered`). nil when the answer cannot be shown: journals from before
+        /// protocol 2 recorded no answer.
+        case answered(DialogResponse?)
         /// omp withdrew it (`cancel` with this `targetId`), e.g. after `abort` during an `ask`.
         case withdrawn
         /// Its `timeout` elapsed: omp resolved it to the default and ignores late answers.

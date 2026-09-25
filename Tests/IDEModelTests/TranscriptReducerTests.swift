@@ -76,10 +76,15 @@ import Testing
         #expect(dialog.expiresAt == nil)
         #expect(pending.pendingDialogs == [dialog])
 
+        // The fixture predates protocol 2: its `uiAnswered` carries no response.
         let answered = reduce(records[...(requestIndex + 1)])
         #expect(records[requestIndex + 1].kind == .daemon)
-        #expect(answered.items.compactMap(\.dialog).map(\.state) == [.answered])
+        #expect(answered.items.compactMap(\.dialog).map(\.state) == [.answered(nil)])
         #expect(answered.pendingDialogCount == 0)
+
+        var approved = pending
+        approved.apply(try record(records[requestIndex].seq + 1, .uiAnswered(requestId: dialog.requestId, response: ["value": "Approve"])))
+        #expect(approved.items.compactMap(\.dialog).map(\.state) == [.answered(.value("Approve"))])
 
         let done = reduce(records)
         #expect(done.items.map(Self.shape) == [
@@ -114,7 +119,7 @@ import Testing
         let reducer = reduce(try Fixture.records("ext-methods"))
         let dialogs = reducer.items.compactMap(\.dialog)
         #expect(dialogs.map(\.kind) == [.select, .confirm, .input, .editor, .select, .confirm, .input, .editor, .confirm, .select, .input])
-        #expect(dialogs.map(\.state) == Array(repeating: .answered, count: 8) + Array(repeating: .expired, count: 3))
+        #expect(dialogs.map(\.state) == Array(repeating: .answered(nil), count: 8) + Array(repeating: .expired, count: 3))
         #expect(dialogs[0].options == [.init(label: "Alpha", description: "first option"), .init(label: "Beta")])
         #expect(dialogs[1].message == "Proceed?")
         #expect(dialogs[2].placeholder == "placeholder text")
@@ -137,7 +142,7 @@ import Testing
         reducer.expireDialogs(asOf: deadline)
         #expect(reducer.items.compactMap(\.dialog).map(\.state) == [.expired])
         #expect(reducer.nextDialogDeadline == nil)
-        reducer.apply(try record(2, .uiAnswered(requestId: "d1")))
+        reducer.apply(try record(2, .uiAnswered(requestId: "d1", response: ["confirmed": true])))
         #expect(reducer.items.compactMap(\.dialog).map(\.state) == [.expired], "a late answer does not revive it")
     }
 
@@ -205,18 +210,20 @@ import Testing
         #expect(reducer.items.map(Self.shape) == ["user", "tool:interrupted"])
     }
 
-    @Test func rebuildRepresentsHeldDialogs() throws {
+    @Test func rebuildRepresentsHeldDialogsWithTheirArrivalTime() throws {
         var snapshot = try Fixture.snapshot("snapshot-eof-tool")
-        snapshot.entry.pending.uiRequests = [
+        let arrived = testDate.addingTimeInterval(-45)
+        let frames: [JSONValue] = [
             ["type": "extension_ui_request", "id": "a1", "method": "select", "title": "Allow tool: edit\nFile: a.txt", "options": ["Approve", "Deny"]],
             ["type": "extension_ui_request", "id": "a2", "method": "input", "title": "Name?", "timeout": 60_000],
             ["type": "extension_ui_request", "id": "a3", "method": "setWidget", "widgetKey": "autoresearch"],
         ]
+        snapshot.entry.pending.uiRequests = frames.map { HeldRequest(frame: $0, receivedAt: arrived) }
         var reducer = TranscriptReducer()
-        reducer.rebuild(from: snapshot, now: testDate)
+        reducer.rebuild(from: snapshot)
         #expect(reducer.pendingDialogs.map(\.requestId) == ["a1", "a2"])
         #expect(reducer.pendingDialogs.first?.approval == Dialog.Approval(toolName: "edit", details: ["File: a.txt"]))
-        #expect(reducer.nextDialogDeadline == testDate.addingTimeInterval(60))
+        #expect(reducer.nextDialogDeadline == arrived.addingTimeInterval(60), "the timeout runs from when the daemon got it")
     }
 
     @Test func aMessageJoinedMidStreamIsSeededFromItsPartialOnce() throws {
@@ -293,7 +300,8 @@ import Testing
         case .user: "user"
         case .assistant: "assistant"
         case .tool(let tool): "tool:\(tool.status)"
-        case .dialog(let dialog): "dialog:\(dialog.state)"
+        case .dialog(let dialog):
+            if case .answered = dialog.state { "dialog:answered" } else { "dialog:\(dialog.state)" }
         case .notice(let notice):
             switch notice.kind {
             case .lost: "notice:lost"

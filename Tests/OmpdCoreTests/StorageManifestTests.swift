@@ -15,7 +15,9 @@ private func manifestEntry(_ key: SessionKey) -> SessionManifestEntry {
         createdAt: Date(timeIntervalSince1970: 1_790_000_000),
         services: [NamedService(id: "web", mode: "session", command: "bun dev")],
         pending: PendingRequests(uiRequests: [
-            ["type": "extension_ui_request", "id": "7", "method": "select", "options": ["Approve", "Deny"]],
+            HeldRequest(
+                frame: ["type": "extension_ui_request", "id": "7", "method": "select", "options": ["Approve", "Deny"]],
+                receivedAt: Date(timeIntervalSince1970: 1_790_000_050.5)),
         ])
     )
 }

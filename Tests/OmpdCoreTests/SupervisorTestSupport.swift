@@ -242,6 +242,8 @@ struct SupervisorFixture {
     let bridge: ScriptedBridge
     let locks: FakeLocks
     let readOnly = ReadOnlyMode()
+    /// Notices the supervisor sent out of band (`SupervisorContext.notify`).
+    let notices = Box<[DaemonNotice]>([])
     let workspace: String
     let key: SessionKey = "session-1"
     let supervisor: SessionSupervisor
@@ -263,10 +265,11 @@ struct SupervisorFixture {
         configure(&entry)
         let seeded = entry
         try await manifest.update { $0.sessions = [seeded] }
+        let notices = notices
         let context = SupervisorContext(
             manifest: manifest, journalDirectory: temp.url.appending(path: "journal"), bridge: bridge, locks: locks,
             bridgeExtension: "/fake/ide-bridge.ts", baseEnvironment: omp.environment, timings: timings,
-            readOnly: readOnly, journalFailed: { _, _ in })
+            readOnly: readOnly, journalFailed: { _, _ in }, notify: { notice in notices.mutate { $0.append(notice) } })
         supervisor = try SessionSupervisor(entry: seeded, context: context)
     }
 

@@ -152,8 +152,22 @@ struct SessionViewModelTests {
         await model.respond(to: "r2", with: .confirmed(false))
         await model.respond(to: "r3", with: .cancelled)
         #expect(backend.responses.map(\.response) == [["value": "Approve"], ["confirmed": false], ["cancelled": true]])
-        #expect(model.sentAnswers["r1"] == .value("Approve"))
+        #expect(model.answering.isEmpty, "none of them is a pending dialog")
+    }
+
+    @Test func anAnsweredDialogStaysLockedUntilItsAnswerIsJournaled() async throws {
+        let backend = RecordingBackend()
+        let model = try await liveModel(backend)
+        model.receive(record(1, ["type": "extension_ui_request", "id": "a1", "method": "select", "title": "Allow tool: bash", "options": ["Approve", "Deny"]]))
+
+        await model.respond(to: "a1", with: .value("Deny"))
+        #expect(model.answering == ["a1"])
+        await model.respond(to: "a1", with: .value("Approve"))
+        #expect(backend.responses.count == 1, "a second click before the journal caught up sends nothing")
+
+        model.receive(try record(2, .uiAnswered(requestId: "a1", response: ["value": "Deny"])))
         #expect(model.answering.isEmpty)
+        #expect(model.items.first?.dialog?.state == .answered(.value("Deny")))
     }
 
     @Test func abortAlsoCancelsPendingApprovals() async throws {

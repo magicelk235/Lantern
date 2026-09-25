@@ -7,7 +7,7 @@ import Testing
 /// Journal fixtures. Each `.jsonl` is a capture of real omp runs (an approved bash call, an aborted pending ask,
 /// extension methods, a SIGKILL mid-stream and its `--resume` run) turned into the records ompd journals:
 /// every omp stdout frame verbatim as `.omp` — minus `assistantMessageEvent.partial` (a copy of `message`), command
-/// catalogs and non-prompt responses — client answers as `.daemon uiAnswered`, and process lifecycle as
+/// catalogs and non-prompt responses — client answers as `.daemon uiAnswered` (protocol 1 form, without `response`), and process lifecycle as
 /// `.daemon spawned/exited/lost`. `snapshot-*.json` are `session.snapshot` results built from the `get_entries` /
 /// `get_state` responses of the resumed process after EOF and SIGKILL mid-tool.
 enum Fixture {
@@ -204,10 +204,10 @@ struct TempHome {
         try Data(Self.token.utf8).write(to: paths.token)
     }
 
-    func startServer(_ daemon: FakeDaemon) async throws -> IDEServer {
+    func startServer(_ daemon: FakeDaemon, startedAt: Date = testDate) async throws -> IDEServer {
         let server = IDEServer(
             socketPath: paths.socket.path(percentEncoded: false), token: Self.token, daemonVersion: "fake-ompd",
-            startedAt: testDate, handler: daemon)
+            startedAt: startedAt, handler: daemon)
         try await server.start()
         return server
     }
