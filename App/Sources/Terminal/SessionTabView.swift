@@ -107,7 +107,7 @@ struct SessionNotice {
         case .needsAttention:
             self.init(
                 "omp Could Not Be Resumed", daemonMessage ?? "It stopped again right after every restart.",
-                "exclamationmark.octagon", .red, actions: [.closeSession])
+                "exclamationmark.octagon", .red, actions: entry.canResume ? [.resume, .closeSession] : [.closeSession])
         case .resuming:
             self.init("Resuming…", "ompd is starting omp again with this conversation.", "arrow.clockwise", .secondary, inProgress: true)
         case .starting:
@@ -218,7 +218,7 @@ extension SessionStatus {
         case .interrupted: "omp stopped unexpectedly; ompd is resuming it"
         case .resuming: "omp is resuming the session"
         case .closed: "Closed: omp is not running for this session"
-        case .needsAttention: "omp could not be resumed; close the session, then resume it"
+        case .needsAttention: "omp kept stopping; ompd gave up resuming it"
         }
     }
 

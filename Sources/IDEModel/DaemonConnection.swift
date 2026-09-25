@@ -272,6 +272,7 @@ extension SessionManifestEntry {
         return "Session \(sessionKey.prefix(8))"
     }
 
-    /// omp does not run for the session and it can be started again from its session file (`session.open`).
-    public var canResume: Bool { status == .closed && sessionFile != nil }
+    /// omp does not run for the session (closed, or given up on after crashing again and again) and ompd can start it
+    /// again from its session file (`session.open`).
+    public var canResume: Bool { (status == .closed || status == .needsAttention) && sessionFile != nil }
 }
