@@ -325,19 +325,22 @@ public actor SessionSupervisor {
         let process = try await liveProcess()
         let pending = tracker.pending
         let type: String
-        if pending.hostToolCalls.contains(where: { $0.frameId == requestId }) {
+        if pending.hostToolCalls.contains(where: { $0.id == requestId }) {
             type = OmpHostReplyType.hostToolResult.rawValue
-        } else if pending.uiRequests.contains(where: { $0.frameId == requestId }) {
+        } else if pending.uiRequests.contains(where: { $0.id == requestId }) {
             type = OmpHostReplyType.extensionUIResponse.rawValue
         } else {
             throw DaemonError(.badParams, "no pending UI request \(requestId) (already answered, withdrawn or expired)")
         }
+        fields["type"] = nil
+        fields["id"] = nil
+        let answer = JSONValue.object(fields)
         fields["type"] = .string(type)
         fields["id"] = .string(requestId)
         let frame = JSONValue.object(fields)
         try await Self.mapOmpErrors { try await process.sendNoReply(frame) }
         if tracker.observe(sentToOmp: frame) {
-            await journalDaemon(.uiAnswered(requestId: requestId), durable: true)
+            await journalDaemon(.uiAnswered(requestId: requestId, response: answer), durable: true)
             await pendingChanged()
         }
     }
@@ -644,7 +647,7 @@ public actor SessionSupervisor {
         let abandoned = tracker.clear()
         guard !abandoned.uiRequests.isEmpty || !abandoned.hostToolCalls.isEmpty else { return }
         for request in abandoned.uiRequests + abandoned.hostToolCalls {
-            if let id = request.frameId { await journalDaemon(.uiAbandoned(requestId: id), durable: true) }
+            if let id = request.id { await journalDaemon(.uiAbandoned(requestId: id), durable: true) }
         }
         await updateEntry { $0.pending = PendingRequests() }
     }
@@ -703,8 +706,13 @@ public actor SessionSupervisor {
         }
     }
 
+    /// Journals a notice; while the journal cannot take it (read-only mode) it goes to connected clients out of band.
     private func journalNotice(_ level: String, _ message: String) async {
-        await journalDaemon(.notice(level: level, message: message), durable: false)
+        guard context.readOnly.isOn else {
+            await journalDaemon(.notice(level: level, message: message), durable: false)
+            return
+        }
+        context.notify(DaemonNotice(level: level, message: message, sessionKey: sessionKey, at: Date()))
     }
 
     // MARK: - Helpers

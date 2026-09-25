@@ -21,12 +21,12 @@ public struct PendingRequestTracker: Sendable {
 
     private static let dialogMethods: Set<String> = ["select", "confirm", "input", "editor"]
 
-    /// Restored timed dialogs are assumed to have been received at `restoredAt`: their true receipt time is not
-    /// persisted, so they expire no earlier than omp resolved them.
-    public init(restoring: PendingRequests = .init(), restoredAt: Date = Date()) {
+    /// Restored timed dialogs keep the deadline their `receivedAt` gives them, so one that lapsed while nobody watched
+    /// expires at the next `expire(now:)`.
+    public init(restoring: PendingRequests = .init()) {
         pending = restoring
         for request in restoring.uiRequests {
-            if let id = request["id"]?.stringValue, let deadline = Self.deadline(of: request, receivedAt: restoredAt) {
+            if let id = request.id, let deadline = Self.deadline(of: request) {
                 deadlines[id] = deadline
             }
         }
@@ -46,14 +46,15 @@ public struct PendingRequestTracker: Sendable {
             guard Self.dialogMethods.contains(method), Self.index(of: id, in: pending.uiRequests) == nil else {
                 return false
             }
-            pending.uiRequests.append(frame)
-            deadlines[id] = Self.deadline(of: frame, receivedAt: receivedAt)
+            let request = HeldRequest(frame: frame, receivedAt: receivedAt)
+            pending.uiRequests.append(request)
+            deadlines[id] = Self.deadline(of: request)
             return true
         case "host_tool_call":
             guard let id = frame["id"]?.stringValue, Self.index(of: id, in: pending.hostToolCalls) == nil else {
                 return false
             }
-            pending.hostToolCalls.append(frame)
+            pending.hostToolCalls.append(HeldRequest(frame: frame, receivedAt: receivedAt))
             return true
         case "host_tool_cancel":
             guard let target = frame["targetId"]?.stringValue,
@@ -93,7 +94,7 @@ public struct PendingRequestTracker: Sendable {
     @discardableResult
     public mutating func expire(now: Date) -> [JSONValue] {
         let lapsed = deadlines.filter { $0.value <= now }.sorted { $0.value < $1.value }
-        return lapsed.compactMap { removeUIRequest(id: $0.key) }
+        return lapsed.compactMap { removeUIRequest(id: $0.key)?.frame }
     }
 
     /// omp died: every pending request is abandoned. Returns them and starts over empty.
@@ -104,18 +105,18 @@ public struct PendingRequestTracker: Sendable {
         return abandoned
     }
 
-    private mutating func removeUIRequest(id: String) -> JSONValue? {
+    private mutating func removeUIRequest(id: String) -> HeldRequest? {
         deadlines[id] = nil
         guard let index = Self.index(of: id, in: pending.uiRequests) else { return nil }
         return pending.uiRequests.remove(at: index)
     }
 
-    private static func index(of id: String, in frames: [JSONValue]) -> Int? {
-        frames.firstIndex { $0["id"]?.stringValue == id }
+    private static func index(of id: String, in requests: [HeldRequest]) -> Int? {
+        requests.firstIndex { $0.id == id }
     }
 
-    private static func deadline(of request: JSONValue, receivedAt: Date) -> Date? {
-        guard let milliseconds = request["timeout"]?.doubleValue, milliseconds > 0 else { return nil }
-        return receivedAt.addingTimeInterval(milliseconds / 1000)
+    private static func deadline(of request: HeldRequest) -> Date? {
+        guard let milliseconds = request.frame["timeout"]?.doubleValue, milliseconds > 0 else { return nil }
+        return request.receivedAt.addingTimeInterval(milliseconds / 1000)
     }
 }

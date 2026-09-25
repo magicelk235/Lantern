@@ -180,7 +180,8 @@ public actor Daemon {
             manifest: manifest, journalDirectory: configuration.paths.journalDir, bridge: bridge, locks: locks,
             bridgeExtension: configuration.bridgeExtension, baseEnvironment: configuration.baseEnvironment,
             timings: configuration.timings, readOnly: readOnly,
-            journalFailed: { key, error in Self.enterReadOnly(readOnly, broadcaster, journalOf: key, failedWith: error) })
+            journalFailed: { key, error in Self.enterReadOnly(readOnly, broadcaster, journalOf: key, failedWith: error) },
+            notify: { broadcaster.send(.notice($0)) })
     }
 
     /// A journal append failed (disk full, I/O error): read-only for the rest of this daemon's life.
@@ -193,14 +194,11 @@ public actor Daemon {
     ) {
         guard readOnly.trip() else { return }
         daemonLog.fault("journal of \(key, privacy: .public) failed (\(String(describing: error), privacy: .public)); read-only mode")
-        // Out of band (seq 0): the journal cannot take it. Clients apply only seqs above what they hold, so this is a
-        // banner hint for every connected client, never a journal record.
-        let notice = DaemonEvent.notice(
+        // Out of band: the journal cannot take it. Daemon-wide, so it names no session.
+        broadcaster.send(.notice(DaemonNotice(
             level: "error",
-            message: "The journal could not be written (\(error)). ompd is read-only: omp keeps running but its output is no longer recorded and new work is refused. Free disk space and restart ompd.")
-        if let payload = try? JSONValue(encoding: notice) {
-            broadcaster.send(.event(JournalRecord(sessionKey: key, seq: 0, ts: Date(), kind: .daemon, payload: payload)))
-        }
+            message: "The journal could not be written (\(error)). ompd is read-only: omp keeps running but its output is no longer recorded and new work is refused. Free disk space and restart ompd.",
+            at: Date())))
     }
 
     private func supervisor(_ key: SessionKey) throws -> SessionSupervisor {

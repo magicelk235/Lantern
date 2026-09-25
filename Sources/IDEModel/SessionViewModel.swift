@@ -43,10 +43,8 @@ public final class SessionViewModel: Identifiable {
     /// The last failed command, shown by the composer until a command succeeds.
     public private(set) var lastError: String?
     public private(set) var isSending = false
-    /// Dialogs whose answer is on its way to the daemon.
+    /// Dialogs answered from this client whose resolution (`uiAnswered`) has not arrived yet.
     public private(set) var answering: Set<String> = []
-    /// Answers this client sent, by request id (the journal records only that a dialog was answered).
-    public private(set) var sentAnswers: [String: DialogResponse] = [:]
     /// Composer text, kept per session while the app runs.
     public var draft = ""
 
@@ -113,6 +111,7 @@ public final class SessionViewModel: Identifiable {
         }
         transcript.apply(record)
         scheduleDialogExpiry()
+        settleAnswering()
     }
 
     func receive(_ resync: Resync) {
@@ -153,6 +152,7 @@ public final class SessionViewModel: Identifiable {
                 update(entry: snapshot.entry)
                 needsSnapshot = false
                 scheduleDialogExpiry()
+                settleAnswering()
                 resubscribe()
             } catch {
                 guard attempt == generation else { return }
@@ -182,7 +182,15 @@ public final class SessionViewModel: Identifiable {
             expiryDeadline = nil
             transcript.expireDialogs(asOf: Date())
             scheduleDialogExpiry()
+            settleAnswering()
         }
+    }
+
+    /// Forgets answers to dialogs the transcript no longer shows as pending.
+    private func settleAnswering() {
+        guard !answering.isEmpty else { return }
+        let pending = Set(transcript.pendingDialogs.map(\.requestId))
+        answering.formIntersection(pending)
     }
 
     // MARK: - Commands
@@ -224,12 +232,13 @@ public final class SessionViewModel: Identifiable {
     public func respond(to requestId: String, with response: DialogResponse) async {
         guard let backend, !answering.contains(requestId) else { return }
         answering.insert(requestId)
-        defer { answering.remove(requestId) }
         do {
             try await backend.respond(to: requestId, in: sessionKey, with: response.json)
-            sentAnswers[requestId] = response
             lastError = nil
+            // The dialog stays locked until its `uiAnswered` record resolves it, unless that already happened.
+            settleAnswering()
         } catch {
+            answering.remove(requestId)
             lastError = error.userMessage
         }
     }

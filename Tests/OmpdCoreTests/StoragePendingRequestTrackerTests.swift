@@ -21,10 +21,11 @@ private func hostToolCall(_ id: String) -> JSONValue {
             "type": "extension_ui_request", "id": "7", "method": "select",
             "title": "Allow tool: bash\nls", "options": ["Approve", "Deny"],
         ]
-        let tracked = tracker.observe(ompFrame: approval)
-        #expect(tracked && tracker.pending.uiRequests == [approval])
+        let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+        let tracked = tracker.observe(ompFrame: approval, receivedAt: t0)
+        #expect(tracked && tracker.pending.uiRequests == [HeldRequest(frame: approval, receivedAt: t0)])
         let strayAnswer = tracker.observe(sentToOmp: ["type": "extension_ui_response", "id": "8", "value": "Approve"])
-        #expect(!strayAnswer && tracker.pending.uiRequests == [approval])
+        #expect(!strayAnswer && tracker.pending.uiRequests.map(\.frame) == [approval])
         let answered = tracker.observe(sentToOmp: ["type": "extension_ui_response", "id": "7", "value": "Approve"])
         #expect(answered && tracker.pending == PendingRequests())
     }
@@ -46,7 +47,7 @@ private func hostToolCall(_ id: String) -> JSONValue {
         let withdrawn = tracker.observe(ompFrame: cancel)
         let withdrawnAgain = tracker.observe(ompFrame: cancel)
         #expect(withdrawn && !withdrawnAgain)
-        #expect(tracker.pending.uiRequests == [uiRequest("2", "confirm")])
+        #expect(tracker.pending.uiRequests.map(\.frame) == [uiRequest("2", "confirm")])
     }
 
     @Test func hostToolCallClearsOnCancelOrOnAResultOmpAccepts() {
@@ -54,12 +55,12 @@ private func hostToolCall(_ id: String) -> JSONValue {
         _ = tracker.observe(ompFrame: hostToolCall("h1"))
         _ = tracker.observe(ompFrame: hostToolCall("h2"))
         let cancelled = tracker.observe(ompFrame: ["type": "host_tool_cancel", "id": "c1", "targetId": "h1"])
-        #expect(cancelled && tracker.pending.hostToolCalls == [hostToolCall("h2")])
+        #expect(cancelled && tracker.pending.hostToolCalls.map(\.frame) == [hostToolCall("h2")])
 
         // omp keeps waiting through progress updates and results without a `content` array.
         let progress = tracker.observe(sentToOmp: ["type": "host_tool_update", "id": "h2", "partialResult": ["content": []]])
         let malformed = tracker.observe(sentToOmp: ["type": "host_tool_result", "id": "h2", "result": "done"])
-        #expect(!progress && !malformed && tracker.pending.hostToolCalls == [hostToolCall("h2")])
+        #expect(!progress && !malformed && tracker.pending.hostToolCalls.map(\.frame) == [hostToolCall("h2")])
         let completed = tracker.observe(sentToOmp: [
             "type": "host_tool_result", "id": "h2", "result": ["content": [["type": "text", "text": "done"]]],
         ])
@@ -76,29 +77,34 @@ private func hostToolCall(_ id: String) -> JSONValue {
         #expect(early.isEmpty)
         let lapsed = tracker.expire(now: t0.addingTimeInterval(30))
         #expect(lapsed == [uiRequest("1", "confirm", timeout: 30_000)])
-        #expect(tracker.pending.uiRequests == [uiRequest("2", "select")])
+        #expect(tracker.pending.uiRequests.map(\.frame) == [uiRequest("2", "select")])
         #expect(tracker.nextDeadline == nil)
     }
 
-    @Test func restoredTimedDialogCountsFromRestoreTime() {
-        let restoredAt = Date(timeIntervalSince1970: 1_790_000_000)
-        let dialog = uiRequest("1", "input", timeout: 1_000)
-        var tracker = PendingRequestTracker(restoring: PendingRequests(uiRequests: [dialog]), restoredAt: restoredAt)
-        #expect(tracker.pending.uiRequests == [dialog])
-        #expect(tracker.nextDeadline == restoredAt.addingTimeInterval(1))
+    @Test func restoredTimedDialogCountsFromItsArrival() {
+        let arrived = Date(timeIntervalSince1970: 1_790_000_000)
+        let answeredLater = HeldRequest(frame: uiRequest("1", "input", timeout: 10_000), receivedAt: arrived)
+        let lapsedMeanwhile = HeldRequest(frame: uiRequest("2", "confirm", timeout: 1_000), receivedAt: arrived)
+        var tracker = PendingRequestTracker(restoring: PendingRequests(uiRequests: [answeredLater, lapsedMeanwhile]))
+        #expect(tracker.pending.uiRequests == [answeredLater, lapsedMeanwhile])
+        #expect(tracker.nextDeadline == arrived.addingTimeInterval(1))
+        let lapsed = tracker.expire(now: arrived.addingTimeInterval(5))
+        #expect(lapsed == [lapsedMeanwhile.frame], "omp resolved it 4 s before the restore")
+        #expect(tracker.nextDeadline == arrived.addingTimeInterval(10))
         let answered = tracker.observe(sentToOmp: ["type": "extension_ui_response", "id": "1", "cancelled": true])
         #expect(answered && tracker.nextDeadline == nil)
-        let lapsed = tracker.expire(now: restoredAt.addingTimeInterval(5))
-        #expect(lapsed.isEmpty)
     }
 
     @Test func clearReturnsEverythingAbandoned() {
         var tracker = PendingRequestTracker()
+        let t0 = Date(timeIntervalSince1970: 1_790_000_000)
         let dialog = uiRequest("1", "input", timeout: 5_000)
-        _ = tracker.observe(ompFrame: dialog)
-        _ = tracker.observe(ompFrame: hostToolCall("h1"))
+        _ = tracker.observe(ompFrame: dialog, receivedAt: t0)
+        _ = tracker.observe(ompFrame: hostToolCall("h1"), receivedAt: t0)
         let abandoned = tracker.clear()
-        #expect(abandoned == PendingRequests(uiRequests: [dialog], hostToolCalls: [hostToolCall("h1")]))
+        #expect(abandoned == PendingRequests(
+            uiRequests: [HeldRequest(frame: dialog, receivedAt: t0)],
+            hostToolCalls: [HeldRequest(frame: hostToolCall("h1"), receivedAt: t0)]))
         #expect(tracker.pending == PendingRequests())
         #expect(tracker.nextDeadline == nil)
     }

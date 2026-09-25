@@ -17,10 +17,7 @@ struct DialogCard: View {
             if let message = dialog.message, !message.isEmpty {
                 Text(message).textSelection(.enabled)
             }
-            if dialog.isPending, let sent = model.sentAnswers[dialog.requestId] {
-                Label("\(answeredText(sent)) Waiting for omp…", systemImage: "paperplane")
-                    .font(.callout).foregroundStyle(.secondary)
-            } else if dialog.isPending {
+            if dialog.isPending {
                 controls
                     .disabled(isSending || model.isClosed || !model.isAttached)
                 if let expiresAt = dialog.expiresAt, expiresAt > .now {
@@ -134,12 +131,11 @@ struct DialogCard: View {
     }
 
     @ViewBuilder private var resolution: some View {
-        let sent = model.sentAnswers[dialog.requestId]
         switch dialog.state {
         case .pending:
             EmptyView()
-        case .answered:
-            Label(answeredText(sent), systemImage: "checkmark.circle")
+        case .answered(let answer):
+            Label(answeredText(answer), systemImage: "checkmark.circle")
                 .font(.callout).foregroundStyle(.secondary)
         case .withdrawn:
             Label("Withdrawn by omp.", systemImage: "arrow.uturn.backward.circle")

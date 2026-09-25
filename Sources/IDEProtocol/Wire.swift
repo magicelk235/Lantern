@@ -2,7 +2,7 @@ import Foundation
 @_exported import OmpRPC
 
 /// Daemon <-> UI protocol version. Bump on any incompatible change to this module.
-public let ideProtocolVersion = 1
+public let ideProtocolVersion = 2
 
 /// Wire framing: each frame is a 4-byte big-endian length followed by that many bytes of
 /// UTF-8 JSON encoding exactly one `ClientFrame` or `ServerFrame`. Max frame 64 MiB.
@@ -80,9 +80,12 @@ public enum ServerFrame: Sendable, Equatable, Codable {
     case ptyOutput(PTYOutput)
     /// Manifest changed (session created/closed/status change). Full list, cheap.
     case sessions(SessionList)
+    /// Out-of-band daemon notice that is not (or cannot be) journaled, e.g. entering read-only mode. Broadcast to
+    /// every connected client; not replayed to clients that connect later.
+    case notice(DaemonNotice)
 
     private enum CodingKeys: String, CodingKey { case type }
-    private enum Kind: String, Codable { case welcome, response, event, resync, ptyOutput = "pty_output", sessions }
+    private enum Kind: String, Codable { case welcome, response, event, resync, ptyOutput = "pty_output", sessions, notice }
 
     public init(from decoder: any Decoder) throws {
         let kind = try decoder.container(keyedBy: CodingKeys.self).decode(Kind.self, forKey: .type)
@@ -93,6 +96,7 @@ public enum ServerFrame: Sendable, Equatable, Codable {
         case .resync: self = .resync(try Resync(from: decoder))
         case .ptyOutput: self = .ptyOutput(try PTYOutput(from: decoder))
         case .sessions: self = .sessions(try SessionList(from: decoder))
+        case .notice: self = .notice(try DaemonNotice(from: decoder))
         }
     }
 
@@ -105,6 +109,7 @@ public enum ServerFrame: Sendable, Equatable, Codable {
         case .resync(let v): try c.encode(Kind.resync, forKey: .type); try v.encode(to: encoder)
         case .ptyOutput(let v): try c.encode(Kind.ptyOutput, forKey: .type); try v.encode(to: encoder)
         case .sessions(let v): try c.encode(Kind.sessions, forKey: .type); try v.encode(to: encoder)
+        case .notice(let v): try c.encode(Kind.notice, forKey: .type); try v.encode(to: encoder)
         }
     }
 }
@@ -161,6 +166,22 @@ public struct PTYOutput: Sendable, Equatable, Codable {
 public struct SessionList: Sendable, Equatable, Codable {
     public var sessions: [SessionManifestEntry]
     public init(sessions: [SessionManifestEntry]) { self.sessions = sessions }
+}
+
+/// A daemon-wide or per-session notice outside the journal (`ServerFrame.notice`).
+public struct DaemonNotice: Sendable, Equatable, Codable {
+    /// `info` | `warning` | `error`.
+    public var level: String
+    public var message: String
+    /// The session it concerns; nil for daemon-wide notices.
+    public var sessionKey: SessionKey?
+    public var at: Date
+    public init(level: String, message: String, sessionKey: SessionKey? = nil, at: Date) {
+        self.level = level
+        self.message = message
+        self.sessionKey = sessionKey
+        self.at = at
+    }
 }
 
 /// Shared coders: ISO-8601 dates with fractional seconds, sorted keys (deterministic journal bytes).

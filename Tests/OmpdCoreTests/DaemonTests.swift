@@ -256,10 +256,10 @@ import Testing
         _ = try await connected.client.call(Subscribe.self, .init(sessionKey: key, since: 0))
         _ = try await connected.client.call(OmpCommand.self, .init(sessionKey: key, command: ["type": "prompt", "message": "run it"]))
         try await eventually("pending in the manifest") {
-            try await connected.client.call(ListSessions.self, Empty()).sessions.first?.pending.uiRequests.first?.frameId == "dlg-1"
+            try await connected.client.call(ListSessions.self, Empty()).sessions.first?.pending.uiRequests.first?.id == "dlg-1"
         }
         _ = try await connected.client.call(UIRespond.self, .init(sessionKey: key, requestId: "dlg-1", response: ["value": "Approve"]))
-        try await connected.waitForEvent(key, "answered") { $0.daemonEvent == .uiAnswered(requestId: "dlg-1") }
+        try await connected.waitForEvent(key, "answered") { $0.daemonEvent == .uiAnswered(requestId: "dlg-1", response: ["value": "Approve"]) }
         try await connected.waitForEvent(key, "settled") { $0.ompType == "session_settled" }
         #expect(fixture.omp.received.contains { $0 == ["type": "extension_ui_response", "id": "dlg-1", "value": "Approve"] })
         #expect(try await connected.client.call(ListSessions.self, Empty()).sessions.first?.pending == PendingRequests())
@@ -277,10 +277,11 @@ import Testing
         #expect(try await client.call(DaemonStatus.self, Empty()).readOnly)
         try await eventually("read-only notice pushed to every client") {
             connected.pushes.contains {
-                guard case .event(let record) = $0, record.seq == 0, case .notice("error", let message)? = record.daemonEvent else { return false }
-                return record.sessionKey == key && message.contains("read-only")
+                guard case .notice(let notice) = $0 else { return false }
+                return notice.level == "error" && notice.sessionKey == nil && notice.message.contains("read-only")
             }
         }
+        #expect(connected.events(key).allSatisfy { $0.seq > 0 }, "nothing out of band poses as a journal record")
         let refusedPrompt = await #expect(throws: DaemonError.self) {
             try await client.call(OmpCommand.self, .init(sessionKey: key, command: ["type": "prompt", "message": "x"]))
         }

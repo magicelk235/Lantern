@@ -107,6 +107,36 @@ struct DaemonConnectionTests {
         }
     }
 
+    @Test func daemonNoticesCollectUntilDismissedOrTheDaemonRestarts() async throws {
+        let home = try TempHome()
+        defer { home.remove() }
+        var server = try await home.startServer(FakeDaemon(sessions: []))
+        let connection = DaemonConnection(paths: home.paths, clientVersion: "test", backoff: backoff)
+        connection.start()
+        try await eventually("connected") { connection.isConnected }
+
+        let readOnly = DaemonNotice(level: "error", message: "ompd is read-only", at: testDate)
+        let slow = DaemonNotice(level: "warning", message: "omp is slow", sessionKey: "s1", at: testDate)
+        server.broadcast(.notice(readOnly))
+        server.broadcast(.notice(slow))
+        try await eventually("notices") { connection.notices == [readOnly, slow] }
+        #expect(connection.latestNotice == slow)
+        connection.dismissNotices()
+        #expect(connection.latestNotice == nil)
+
+        server.broadcast(.notice(readOnly))
+        try await eventually("notice") { connection.latestNotice == readOnly }
+        await server.stop()
+        try await eventually("daemon unavailable") { isUnavailable(connection) }
+        #expect(connection.latestNotice == readOnly, "an outage alone does not clear what the daemon said")
+        server = try await home.startServer(FakeDaemon(sessions: []), startedAt: testDate.addingTimeInterval(60))
+        try await eventually("reconnected to a new ompd") { connection.isConnected }
+        #expect(connection.notices.isEmpty, "a restarted ompd starts over")
+
+        await connection.stop()
+        await server.stop()
+    }
+
     @Test func backoffDoublesUpToItsCap() {
         let backoff = DaemonConnection.Backoff(initial: .milliseconds(250), maximum: .seconds(5))
         #expect((1 ... 7).map(backoff.delay(afterFailures:)) == [

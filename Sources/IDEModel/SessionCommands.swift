@@ -18,6 +18,19 @@ public enum DialogResponse: Equatable, Sendable {
     /// Dismiss. Denies an approval; cancelling an `ask` aborts the whole run.
     case cancelled
 
+    /// Reads an `extension_ui_response` payload (as journaled by `DaemonEvent.uiAnswered`); nil for anything else.
+    public init?(json: JSONValue) {
+        if json["cancelled"]?.boolValue == true {
+            self = .cancelled
+        } else if let value = json["value"]?.stringValue {
+            self = .value(value)
+        } else if let confirmed = json["confirmed"]?.boolValue {
+            self = .confirmed(confirmed)
+        } else {
+            return nil
+        }
+    }
+
     var json: JSONValue {
         switch self {
         case .value(let value): ["value": .string(value)]

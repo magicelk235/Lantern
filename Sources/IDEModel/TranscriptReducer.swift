@@ -18,7 +18,7 @@ public struct TranscriptReducer: Equatable, Sendable {
     }
 
     public internal(set) var items: [TranscriptItem] = []
-    /// Seq of the last record applied, or the snapshot's seq after `rebuild(from:now:)`.
+    /// Seq of the last record applied, or the snapshot's seq after `rebuild(from:)`.
     public internal(set) var lastSeq: Seq = 0
     public internal(set) var activity: Activity = .idle
 
@@ -435,8 +435,8 @@ public struct TranscriptReducer: Equatable, Sendable {
             }
             let text = "omp never saved the output above (\(reason)). It stays visible here but is not part of the model's context."
             append(.notice(Notice(kind: .lost(fromSeq: fromSeq, toSeq: toSeq), level: .warning, text: text)), id: "notice:\(seq)", seq: seq)
-        case .uiAnswered(let requestId):
-            resolveDialog(requestId, as: .answered)
+        case .uiAnswered(let requestId, let response):
+            resolveDialog(requestId, as: .answered(DialogResponse(json: response)))
         case .uiAbandoned(let requestId):
             resolveDialog(requestId, as: .abandoned)
         case .notice(let level, let message):

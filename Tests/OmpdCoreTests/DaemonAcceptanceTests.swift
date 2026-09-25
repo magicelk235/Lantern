@@ -206,7 +206,7 @@ private func describe(_ event: DaemonEvent) -> String {
     case .exited(let code, let signal, let kind): "exited(code \(code.map(String.init) ?? "-"), signal \(signal.map(String.init) ?? "-"), session_exit \(kind ?? "-"))"
     case .statusChanged(let status): "status \(status.rawValue)"
     case .notice(let level, let message): "notice[\(level)] \(message)"
-    case .uiAnswered(let id): "uiAnswered \(id)"
+    case .uiAnswered(let id, let response): "uiAnswered \(id) \(response)"
     case .uiAbandoned(let id): "uiAbandoned \(id)"
     case .lost(let from, let to, let reason): "lost \(from)...\(to) \(reason)"
     }
