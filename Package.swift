@@ -9,6 +9,7 @@ let package = Package(
         .library(name: "IDEProtocol", targets: ["IDEProtocol"]),
         .library(name: "IDETransport", targets: ["IDETransport"]),
         .library(name: "OmpdCore", targets: ["OmpdCore"]),
+        .library(name: "IDEModel", targets: ["IDEModel"]),
         .executable(name: "ompd", targets: ["ompd"]),
     ],
     dependencies: [
@@ -27,11 +28,14 @@ let package = Package(
             dependencies: ["OmpRPC", "IDEProtocol", "IDETransport", .product(name: "SwiftTerm", package: "SwiftTerm")]
         ),
         .executableTarget(name: "ompd", dependencies: ["OmpdCore"]),
+        // App-side state (no AppKit/SwiftUI): daemon connection, per-session sync, transcript reducer.
+        .target(name: "IDEModel", dependencies: ["IDETransport"]),
 
         .testTarget(name: "OmpRPCTests", dependencies: ["OmpRPC"]),
         .testTarget(name: "IDEProtocolTests", dependencies: ["IDEProtocol"]),
         .testTarget(name: "IDETransportTests", dependencies: ["IDETransport"]),
         .testTarget(name: "OmpdCoreTests", dependencies: ["OmpdCore"]),
+        .testTarget(name: "IDEModelTests", dependencies: ["IDEModel"], resources: [.copy("Fixtures")]),
     ],
     swiftLanguageModes: [.v6]
 )

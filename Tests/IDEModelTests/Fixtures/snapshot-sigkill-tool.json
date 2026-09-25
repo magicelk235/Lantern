@@ -1,0 +1,151 @@
+{
+ "entries": {
+  "entries": [
+   {
+    "id": "aadda6b8",
+    "model": "anthropic/claude-haiku-4-5",
+    "parentId": null,
+    "resolvedModelIsFallback": false,
+    "timestamp": "2026-09-25T10:44:27.694Z",
+    "type": "model_change"
+   },
+   {
+    "configured": null,
+    "id": "0a5d0368",
+    "parentId": "aadda6b8",
+    "thinkingLevel": "off",
+    "timestamp": "2026-09-25T10:44:27.694Z",
+    "type": "thinking_level_change"
+   },
+   {
+    "id": "86b32c82",
+    "message": {
+     "attribution": "user",
+     "content": [
+      {
+       "text": "Use the bash tool exactly once, in the foreground (do not use async or background mode), to run this exact command:\n/bin/sleep 30; echo SLEPT-OK\nAfter it finishes, reply with its output and nothing else.",
+       "type": "text"
+      }
+     ],
+     "role": "user",
+     "timestamp": 1790333067731
+    },
+    "parentId": "0a5d0368",
+    "timestamp": "2026-09-25T10:44:27.758Z",
+    "type": "message"
+   },
+   {
+    "id": "1e4023f0",
+    "message": {
+     "api": "anthropic-messages",
+     "completedAt": 1790333070688,
+     "content": [
+      {
+       "arguments": {
+        "command": "/bin/sleep 30; echo SLEPT-OK",
+        "i": "Running sleep and echo command",
+        "timeout": 60
+       },
+       "id": "toolu_01SuAC3iG46QwtLQ1feoBbpZ",
+       "intent": "Running sleep and echo command",
+       "name": "bash",
+       "type": "toolCall"
+      }
+     ],
+     "contextSnapshot": {
+      "compactionEpoch": 0,
+      "nonMessageTokens": 7467,
+      "promptTokens": 8988
+     },
+     "credentialId": 6,
+     "duration": 2916.135416,
+     "model": "claude-haiku-4-5",
+     "provider": "anthropic",
+     "responseId": "msg_011CfQ2B32tQeNG5J3Mn2Zoj",
+     "role": "assistant",
+     "stopReason": "toolUse",
+     "timestamp": 1790333067759,
+     "ttft": 2258.146166,
+     "usage": {
+      "cacheRead": 5306,
+      "cacheWrite": 3679,
+      "cost": {
+       "cacheRead": 0.0005306,
+       "cacheWrite": 0.007358,
+       "input": 3e-06,
+       "output": 0.000515,
+       "total": 0.0084066
+      },
+      "cttl": {
+       "ephemeral1h": 3679
+      },
+      "input": 3,
+      "output": 103,
+      "totalTokens": 9091
+     }
+    },
+    "parentId": "86b32c82",
+    "timestamp": "2026-09-25T10:44:30.688Z",
+    "type": "message"
+   },
+   {
+    "hash": "2553f66f9e82643b7649cedc5e04fca2cac0d40253b65a264b66895679aea223",
+    "id": "21345a1c",
+    "parentId": "1e4023f0",
+    "provider": "anthropic",
+    "timestamp": "2026-09-25T10:44:30.692Z",
+    "type": "credential_pin"
+   },
+   {
+    "customType": "tool_execution_start",
+    "data": {
+     "args": {
+      "command": "/bin/sleep 30; echo SLEPT-OK"
+     },
+     "intent": "Running sleep and echo command",
+     "startedAt": "2026-09-25T10:44:30.692Z",
+     "toolCallId": "toolu_01SuAC3iG46QwtLQ1feoBbpZ",
+     "toolName": "bash"
+    },
+    "id": "17a466fc",
+    "parentId": "21345a1c",
+    "timestamp": "2026-09-25T10:44:30.692Z",
+    "type": "custom"
+   }
+  ],
+  "leafId": "17a466fc"
+ },
+ "entry": {
+  "closedByUser": false,
+  "createdAt": "2026-09-25T10:00:00.000Z",
+  "lastSeq": 57,
+  "launch": {
+   "env": {},
+   "extraArgs": [],
+   "mode": "rpc-ui",
+   "ompPath": "/opt/homebrew/bin/omp",
+   "ompVersion": "18.3.1"
+  },
+  "pending": {
+   "hostToolCalls": [],
+   "uiRequests": []
+  },
+  "services": [],
+  "sessionFile": "/tmp/omp-sessions/sigkill-tool/2026-09-25T10-44-27-552Z_01a0d82a-a120-74ae-8ec1-63ae54e3c3a2.jsonl",
+  "sessionId": "01a0d82a-a120-74ae-8ec1-63ae54e3c3a2",
+  "sessionKey": "s1",
+  "status": "settled",
+  "workspace": "/tmp/workspace"
+ },
+ "lastSeq": 57,
+ "state": {
+  "hasPendingAsyncWork": false,
+  "isCompacting": false,
+  "isSettled": true,
+  "isStreaming": false,
+  "messageCount": 1,
+  "queuedMessageCount": 0,
+  "sessionFile": "/tmp/omp-sessions/sigkill-tool/2026-09-25T10-44-27-552Z_01a0d82a-a120-74ae-8ec1-63ae54e3c3a2.jsonl",
+  "sessionId": "01a0d82a-a120-74ae-8ec1-63ae54e3c3a2"
+ }
+}

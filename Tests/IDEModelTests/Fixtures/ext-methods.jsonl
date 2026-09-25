@@ -1,0 +1,45 @@
+{"kind":"daemon","payload":{"spawned":{"ompVersion":"18.3.1","pid":4242,"resumed":false}},"seq":1,"sessionKey":"s1","ts":"2026-09-25T10:00:00.000Z"}
+{"kind":"omp","payload":{"maxFrameBytes":1048576,"maxReassembledFrameBytes":67108864,"protocolVersion":1,"supportedProtocolVersions":[1,2],"type":"ready"},"seq":2,"sessionKey":"s1","ts":"2026-09-25T10:00:00.297Z"}
+{"kind":"omp","payload":{"id":"158d57c23680966b","method":"setWidget","type":"extension_ui_request","widgetKey":"autoresearch"},"seq":3,"sessionKey":"s1","ts":"2026-09-25T10:00:00.297Z"}
+{"kind":"omp","payload":{"type":"advisor_cost_changed"},"seq":4,"sessionKey":"s1","ts":"2026-09-25T10:00:00.315Z"}
+{"kind":"omp","payload":{"commands":[],"type":"available_commands_update"},"seq":5,"sessionKey":"s1","ts":"2026-09-25T10:00:00.318Z"}
+{"kind":"omp","payload":{"id":"158d57c23c00966c","message":"spike notify info","method":"notify","notifyType":"info","type":"extension_ui_request"},"seq":6,"sessionKey":"s1","ts":"2026-09-25T10:00:00.319Z"}
+{"kind":"omp","payload":{"id":"158d57c23c00966d","message":"spike notify warning","method":"notify","notifyType":"warning","type":"extension_ui_request"},"seq":7,"sessionKey":"s1","ts":"2026-09-25T10:00:00.319Z"}
+{"kind":"omp","payload":{"id":"158d57c23c00966e","message":"spike notify error","method":"notify","notifyType":"error","type":"extension_ui_request"},"seq":8,"sessionKey":"s1","ts":"2026-09-25T10:00:00.319Z"}
+{"kind":"omp","payload":{"id":"158d57c23c00966f","method":"setStatus","statusKey":"spike-status","statusText":"status text","type":"extension_ui_request"},"seq":9,"sessionKey":"s1","ts":"2026-09-25T10:00:00.319Z"}
+{"kind":"omp","payload":{"id":"158d57c23c009670","method":"setStatus","statusKey":"spike-status","type":"extension_ui_request"},"seq":10,"sessionKey":"s1","ts":"2026-09-25T10:00:00.319Z"}
+{"kind":"omp","payload":{"id":"158d57c23c009671","method":"setWidget","type":"extension_ui_request","widgetKey":"spike-widget","widgetLines":["line 1","line 2"]},"seq":11,"sessionKey":"s1","ts":"2026-09-25T10:00:00.319Z"}
+{"kind":"omp","payload":{"id":"158d57c23c009672","method":"setWidget","type":"extension_ui_request","widgetKey":"spike-widget","widgetLines":["below"],"widgetPlacement":"belowEditor"},"seq":12,"sessionKey":"s1","ts":"2026-09-25T10:00:00.319Z"}
+{"kind":"omp","payload":{"id":"158d57c23c009673","method":"setWidget","type":"extension_ui_request","widgetKey":"spike-widget"},"seq":13,"sessionKey":"s1","ts":"2026-09-25T10:00:00.319Z"}
+{"kind":"omp","payload":{"id":"158d57c23c009674","method":"set_editor_text","text":"spike editor text","type":"extension_ui_request"},"seq":14,"sessionKey":"s1","ts":"2026-09-25T10:00:00.319Z"}
+{"kind":"omp","payload":{"id":"158d57c23c009675","method":"set_editor_text","text":"spike pasted text","type":"extension_ui_request"},"seq":15,"sessionKey":"s1","ts":"2026-09-25T10:00:00.319Z"}
+{"kind":"omp","payload":{"id":"158d57c23c009676","method":"setTitle","title":"spike title","type":"extension_ui_request"},"seq":16,"sessionKey":"s1","ts":"2026-09-25T10:00:00.319Z"}
+{"kind":"omp","payload":{"command":"prompt","id":"p1","success":true,"type":"response"},"seq":17,"sessionKey":"s1","ts":"2026-09-25T10:00:00.319Z"}
+{"kind":"omp","payload":{"agentInvoked":false,"id":"p1","sessionSettled":true,"status":"completed","type":"prompt_result"},"seq":18,"sessionKey":"s1","ts":"2026-09-25T10:00:00.321Z"}
+{"kind":"omp","payload":{"id":"158d57c432409677","method":"select","optionDetails":[{"description":"first option"},{}],"options":["Alpha","Beta"],"title":"spike select","type":"extension_ui_request"},"seq":19,"sessionKey":"s1","ts":"2026-09-25T10:00:02.328Z"}
+{"kind":"daemon","payload":{"uiAnswered":{"requestId":"158d57c432409677"}},"seq":20,"sessionKey":"s1","ts":"2026-09-25T10:00:02.329Z"}
+{"kind":"omp","payload":{"command":"prompt","id":"p2","success":true,"type":"response"},"seq":21,"sessionKey":"s1","ts":"2026-09-25T10:00:02.329Z"}
+{"kind":"omp","payload":{"id":"158d57c432809678","message":"Proceed?","method":"confirm","title":"spike confirm","type":"extension_ui_request"},"seq":22,"sessionKey":"s1","ts":"2026-09-25T10:00:02.329Z"}
+{"kind":"daemon","payload":{"uiAnswered":{"requestId":"158d57c432809678"}},"seq":23,"sessionKey":"s1","ts":"2026-09-25T10:00:02.329Z"}
+{"kind":"omp","payload":{"id":"158d57c432809679","method":"input","placeholder":"placeholder text","title":"spike input","type":"extension_ui_request"},"seq":24,"sessionKey":"s1","ts":"2026-09-25T10:00:02.329Z"}
+{"kind":"daemon","payload":{"uiAnswered":{"requestId":"158d57c432809679"}},"seq":25,"sessionKey":"s1","ts":"2026-09-25T10:00:02.329Z"}
+{"kind":"omp","payload":{"id":"158d57c43280967a","method":"editor","prefill":"prefill text","title":"spike editor","type":"extension_ui_request"},"seq":26,"sessionKey":"s1","ts":"2026-09-25T10:00:02.330Z"}
+{"kind":"daemon","payload":{"uiAnswered":{"requestId":"158d57c43280967a"}},"seq":27,"sessionKey":"s1","ts":"2026-09-25T10:00:02.330Z"}
+{"kind":"omp","payload":{"agentInvoked":false,"id":"p2","sessionSettled":true,"status":"completed","type":"prompt_result"},"seq":28,"sessionKey":"s1","ts":"2026-09-25T10:00:02.330Z"}
+{"kind":"omp","payload":{"id":"158d57c62780967b","method":"select","optionDetails":[{"description":"first option"},{}],"options":["Alpha","Beta"],"title":"spike select","type":"extension_ui_request"},"seq":29,"sessionKey":"s1","ts":"2026-09-25T10:00:04.333Z"}
+{"kind":"omp","payload":{"command":"prompt","id":"p3","success":true,"type":"response"},"seq":30,"sessionKey":"s1","ts":"2026-09-25T10:00:04.333Z"}
+{"kind":"daemon","payload":{"uiAnswered":{"requestId":"158d57c62780967b"}},"seq":31,"sessionKey":"s1","ts":"2026-09-25T10:00:04.333Z"}
+{"kind":"omp","payload":{"id":"158d57c62980967c","message":"Proceed?","method":"confirm","title":"spike confirm","type":"extension_ui_request"},"seq":32,"sessionKey":"s1","ts":"2026-09-25T10:00:04.342Z"}
+{"kind":"daemon","payload":{"uiAnswered":{"requestId":"158d57c62980967c"}},"seq":33,"sessionKey":"s1","ts":"2026-09-25T10:00:04.342Z"}
+{"kind":"omp","payload":{"id":"158d57c629c0967d","method":"input","placeholder":"placeholder text","title":"spike input","type":"extension_ui_request"},"seq":34,"sessionKey":"s1","ts":"2026-09-25T10:00:04.342Z"}
+{"kind":"daemon","payload":{"uiAnswered":{"requestId":"158d57c629c0967d"}},"seq":35,"sessionKey":"s1","ts":"2026-09-25T10:00:04.342Z"}
+{"kind":"omp","payload":{"id":"158d57c629c0967e","method":"editor","prefill":"prefill text","title":"spike editor","type":"extension_ui_request"},"seq":36,"sessionKey":"s1","ts":"2026-09-25T10:00:04.343Z"}
+{"kind":"daemon","payload":{"uiAnswered":{"requestId":"158d57c629c0967e"}},"seq":37,"sessionKey":"s1","ts":"2026-09-25T10:00:04.343Z"}
+{"kind":"omp","payload":{"agentInvoked":false,"id":"p3","sessionSettled":true,"status":"completed","type":"prompt_result"},"seq":38,"sessionKey":"s1","ts":"2026-09-25T10:00:04.343Z"}
+{"kind":"omp","payload":{"id":"158d57c81d00967f","message":"Auto-resolve?","method":"confirm","timeout":1500,"title":"spike confirm timeout","type":"extension_ui_request"},"seq":39,"sessionKey":"s1","ts":"2026-09-25T10:00:06.339Z"}
+{"kind":"omp","payload":{"command":"prompt","id":"p4","success":true,"type":"response"},"seq":40,"sessionKey":"s1","ts":"2026-09-25T10:00:06.339Z"}
+{"kind":"omp","payload":{"id":"158d57c994c09680","method":"select","options":["One","Two"],"timeout":1500,"title":"spike select timeout","type":"extension_ui_request"},"seq":41,"sessionKey":"s1","ts":"2026-09-25T10:00:07.842Z"}
+{"kind":"omp","payload":{"id":"158d57cb0c409681","method":"input","placeholder":"ph","timeout":1500,"title":"spike input timeout","type":"extension_ui_request"},"seq":42,"sessionKey":"s1","ts":"2026-09-25T10:00:09.345Z"}
+{"kind":"omp","payload":{"agentInvoked":false,"id":"p4","sessionSettled":true,"status":"completed","type":"prompt_result"},"seq":43,"sessionKey":"s1","ts":"2026-09-25T10:00:10.847Z"}
+{"kind":"omp","payload":{"id":"158d57ce7bc09682","method":"setWidget","type":"extension_ui_request","widgetKey":"autoresearch"},"seq":44,"sessionKey":"s1","ts":"2026-09-25T10:00:12.862Z"}
+{"kind":"daemon","payload":{"exited":{"code":0}},"seq":45,"sessionKey":"s1","ts":"2026-09-25T10:00:12.890Z"}
