@@ -21,6 +21,10 @@ settings:
 packages:
   OmpIDE:
     path: ..
+  # Same package and requirement as the OmpIDE package's own dependency, so both resolve to one SwiftTerm.
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    from: 1.2.0
 targets:
   omp IDE:
     type: application
@@ -37,6 +41,9 @@ targets:
         product: IDEModel
       - package: OmpIDE
         product: IDEState
+      # Terminal tabs render with SwiftTerm's AppKit `TerminalView`.
+      - package: SwiftTerm
+        product: SwiftTerm
       # The daemon ships inside the app so SMAppService can register it.
       - target: ompd
         embed: true

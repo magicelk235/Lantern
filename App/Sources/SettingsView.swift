@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @AppStorage(AppSettings.defaultApprovalModeKey) private var approvalMode = ""
+    @AppStorage(TerminalSettings.fontSizeKey) private var terminalFontSize = TerminalSettings.defaultFontSize
 
     var body: some View {
         Form {
@@ -17,6 +18,12 @@ struct SettingsView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Divider()
+            LabeledContent("Terminal font size") {
+                Stepper(value: $terminalFontSize, in: TerminalSettings.fontSizes, step: 1) {
+                    Text("\(Int(terminalFontSize)) pt").monospacedDigit()
+                }
+            }
         }
         .padding(20)
         .frame(width: 480)

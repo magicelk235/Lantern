@@ -5,8 +5,8 @@ import Observation
 
 /// The app's link to ompd: connects over `run/ompd.sock` with the token in `run/token`, retrying
 /// with exponential backoff while the daemon is starting or restarting, keeps the session list current, routes pushed
-/// journal records to the open sessions, and re-subscribes every open session from its `lastSeq` after each
-/// (re)connect. Restoring sends no omp command.
+/// journal records to the open sessions and PTY output to the terminals, and re-subscribes every open session from its
+/// `lastSeq` (and re-attaches every shown terminal) after each (re)connect. Restoring sends no omp command.
 @MainActor @Observable
 public final class DaemonConnection: SessionBackend {
     public enum Status: Equatable, Sendable {
@@ -45,6 +45,8 @@ public final class DaemonConnection: SessionBackend {
     /// `noticeLimit`; cleared when the app connects to a different ompd process or by `dismissNotices()`.
     public private(set) var notices: [DaemonNotice] = []
     public nonisolated static let noticeLimit = 50
+    /// ompd's PTYs and the terminals the app shows.
+    public let terminals = TerminalRegistry()
 
     @ObservationIgnored private var client: IDEClient?
     @ObservationIgnored private var runTask: Task<Void, Never>?
@@ -55,6 +57,7 @@ public final class DaemonConnection: SessionBackend {
         self.paths = paths
         self.clientVersion = clientVersion
         self.backoff = backoff
+        terminals.backend = self
     }
 
     public var isConnected: Bool {
@@ -129,7 +132,7 @@ public final class DaemonConnection: SessionBackend {
 
     // MARK: - Connection loop
 
-    private func connectedClient() throws -> IDEClient {
+    func connectedClient() throws -> IDEClient {
         guard let client else { throw IDETransportError.notConnected }
         return client
     }
@@ -168,12 +171,14 @@ public final class DaemonConnection: SessionBackend {
         }
         apply(sessions: welcome.sessions)
         for model in openSessions.values { model.connectionOpened() }
+        terminals.connectionOpened()
         for await frame in client.pushes {
             route(frame)
         }
         self.client = nil
         await client.close()
         for model in openSessions.values { model.connectionClosed() }
+        terminals.connectionClosed()
     }
 
     private func route(_ frame: ServerFrame) {
@@ -184,7 +189,8 @@ public final class DaemonConnection: SessionBackend {
         case .notice(let notice):
             notices.append(notice)
             if notices.count > Self.noticeLimit { notices.removeFirst(notices.count - Self.noticeLimit) }
-        case .ptyOutput, .welcome, .response: break // terminals attach elsewhere; the client consumes the rest
+        case .ptyOutput(let output): terminals.receive(output)
+        case .welcome, .response: break // the client consumes these
         }
     }
 

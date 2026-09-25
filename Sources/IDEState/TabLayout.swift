@@ -9,10 +9,20 @@ import IDEProtocol
 public enum TabKind: Hashable, Sendable {
     /// An omp session's transcript and composer. Closing the tab leaves the session running.
     case session(SessionKey)
+    /// A terminal on one of ompd's PTYs. Closing the tab leaves the PTY running.
+    case terminal(PTYID)
 
     public var sessionKey: SessionKey? {
         switch self {
         case .session(let key): key
+        case .terminal: nil
+        }
+    }
+
+    public var ptyId: PTYID? {
+        switch self {
+        case .terminal(let id): id
+        case .session: nil
         }
     }
 }
@@ -25,6 +35,7 @@ extension TabKind: Codable {
         let kind = try container.decode(String.self, forKey: .kind)
         switch kind {
         case "session": self = .session(try container.decode(SessionKey.self, forKey: .id))
+        case "terminal": self = .terminal(try container.decode(PTYID.self, forKey: .id))
         default:
             throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "unknown tab kind \(kind)")
         }
@@ -36,6 +47,9 @@ extension TabKind: Codable {
         case .session(let key):
             try container.encode("session", forKey: .kind)
             try container.encode(key, forKey: .id)
+        case .terminal(let id):
+            try container.encode("terminal", forKey: .kind)
+            try container.encode(id, forKey: .id)
         }
     }
 }
@@ -120,6 +134,15 @@ public struct TabLayout: Equatable, Sendable {
             selection = remaining.isEmpty ? nil : remaining[min(tabIndex, remaining.count - 1)]
         }
         if remaining.isEmpty { strips.remove(at: stripIndex) }
+    }
+
+    /// Puts `new` where `old` is, selected if `old` was; nothing happens unless `old` is open and `new` is not.
+    public mutating func replace(_ old: TabKind, with new: TabKind) {
+        guard !contains(new), let stripIndex = strips.firstIndex(where: { $0.tabs.contains(old) }),
+              let tabIndex = strips[stripIndex].tabs.firstIndex(of: old)
+        else { return }
+        strips[stripIndex].tabs[tabIndex] = new
+        if selection == old { selection = new }
     }
 }
 

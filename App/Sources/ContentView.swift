@@ -23,6 +23,9 @@ struct ContentView: View {
                         onScrollAnchorChange: { app.scrollAnchorChanged($0, in: model) }, onClose: { app.close(key) }
                     )
                     .id(key)
+                } else if let ptyId = app.tabs.selection?.ptyId {
+                    TerminalDetailView(app: app, ptyId: ptyId)
+                        .id(ptyId)
                 } else {
                     ContentUnavailableView {
                         Label("No Session", systemImage: "bubble.left.and.text.bubble.right")
@@ -46,6 +49,15 @@ struct ContentView: View {
                 .help("Start omp in a workspace folder")
                 .disabled(!app.connection.isConnected)
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    app.newTerminal()
+                } label: {
+                    Label("New Terminal", systemImage: "terminal")
+                }
+                .help("Open a terminal in the workspace on screen (⌃`)")
+                .disabled(!app.connection.isConnected)
+            }
         }
         .alert(item: $app.alert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message))
@@ -57,27 +69,41 @@ struct SidebarView: View {
     @Bindable var app: AppState
 
     var body: some View {
-        List(selection: Binding(get: { app.selectedSession }, set: { key in if let key { app.showSession(key) } })) {
+        let terminals = app.terminals.byWorkspace(among: app.knownWorkspaces)
+        let sessionWorkspaces = Set(app.connection.workspaces.map(\.path))
+        List(selection: Binding(get: { app.tabs.selection }, set: { tab in if let tab { app.showTab(tab) } })) {
             ForEach(app.connection.workspaces) { workspace in
                 Section {
                     ForEach(workspace.sessions, id: \.sessionKey) { entry in
                         SessionRow(entry: entry)
-                            .tag(entry.sessionKey)
+                            .tag(TabKind.session(entry.sessionKey))
                             .badge(entry.pending.uiRequests.count)
                             .contextMenu {
                                 Button("Close Session") { app.close(entry.sessionKey) }
                                     .disabled(entry.closedByUser || entry.status == .closed)
                             }
                     }
+                    TerminalRows(app: app, terminals: terminals[workspace.path] ?? [])
                 } header: {
                     Label(workspace.name, systemImage: "folder")
                         .help(workspace.path)
+                        .contextMenu {
+                            Button("New Terminal Here") { app.newTerminal(in: workspace.path) }
+                                .disabled(!app.connection.isConnected)
+                        }
+                }
+            }
+            ForEach(terminals.keys.filter { !sessionWorkspaces.contains($0) }.sorted(), id: \.self) { path in
+                Section {
+                    TerminalRows(app: app, terminals: terminals[path] ?? [])
+                } header: {
+                    TerminalWorkspaceHeader(app: app, path: path)
                 }
             }
         }
         .listStyle(.sidebar)
         .overlay {
-            if app.connection.sessions.isEmpty, app.connection.isConnected {
+            if app.connection.sessions.isEmpty, app.connection.terminals.ptys.isEmpty, app.connection.isConnected {
                 ContentUnavailableView("No Sessions", systemImage: "tray", description: Text("⌘N starts one."))
             }
         }
