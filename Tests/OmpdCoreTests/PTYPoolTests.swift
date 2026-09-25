@@ -253,6 +253,118 @@ import Testing
             #expect(await pool.list().isEmpty)
         }
     }
+
+    // MARK: - Session PTYs
+
+    @Test func sessionPTYIsTaggedAndReportsHowItsProgramEnded() async throws {
+        try await withFixture { fixture in
+            let exits = Box<[PTYExit]>([])
+            let script = #"printf 'env:%s:%s:%s\n' "$FROM_BASE" "$FROM_OVERLAY" "$TERM"; read -r line; exit 7"#
+            let info = try await fixture.openSession("s1", ["/bin/sh", "-c", script], base: ["FROM_BASE": "b", "PATH": "/usr/bin:/bin"],
+                                                     overlay: ["FROM_OVERLAY": "o"]) { exit in exits.mutate { $0.append(exit) } }
+            #expect(info.sessionKey == "s1" && info.running && info.cols == 80 && info.rows == 24)
+            #expect(await fixture.pool.list().map(\.sessionKey) == ["s1"])
+            let client = try await Client.attach(fixture.pool, info.ptyId)
+            #expect(try await eventually { client.lines().contains("env:b:o:xterm-256color") })
+            try await fixture.pool.write(info.ptyId, Data("go\n".utf8))
+            #expect(try await eventually { exits.value == [PTYExit(code: 7, signal: nil)] })
+            #expect(await fixture.pool.info(info.ptyId)?.running == false)
+
+            let killed = try await fixture.openSession("s2", ["/bin/sh", "-c", "exec sleep 30"]) { exit in exits.mutate { $0.append(exit) } }
+            try await fixture.pool.signal(killed.ptyId, SIGKILL)
+            #expect(try await eventually { exits.value.last == PTYExit(code: nil, signal: SIGKILL) })
+            await #expect(throws: DaemonError.self) { try await fixture.pool.close(killed.ptyId, refusingSessions: true) }
+            try await fixture.pool.close(killed.ptyId)
+            #expect(await fixture.pool.list().map(\.sessionKey) == ["s1"])
+        }
+    }
+
+    @Test func respawnedSessionKeepsTheOldScreenAboveTheDividerDespiteTheNewProgramsClear() async throws {
+        try await withFixture { fixture in
+            let old = try await fixture.openSession("s1", ["/bin/sh", "-c", "echo old-output; sleep 30"])
+            let watcher = try await Client.attach(fixture.pool, old.ptyId)
+            #expect(try await eventually { watcher.lines().contains("old-output") })
+            try await fixture.pool.signal(old.ptyId, SIGKILL)
+            #expect(try await eventually { await fixture.pool.info(old.ptyId)?.running == false })
+
+            // omp's TUI starts with ESC[H ESC[2J ESC[3J (clear screen and scrollback); here split across two writes.
+            let script = #"printf '\033[H\033[2J\033['; sleep 0.2; printf '3Jfresh\n'; read -r x; printf '\033[3Jafter-second-erase\n'; sleep 30"#
+            let new = try await fixture.openSession("s1", ["/bin/sh", "-c", script], cols: 100, rows: 30, continuing: old.ptyId)
+            #expect(new.ptyId != old.ptyId && new.cols == 100 && new.rows == 30)
+            #expect(await fixture.pool.info(old.ptyId) != nil, "the caller closes the previous PTY")
+            let client = try await Client.attach(fixture.pool, new.ptyId)
+            #expect(try await eventually { client.lines().contains("fresh") })
+            let lines = client.lines()
+            let divider = try #require(lines.firstIndex(of: "— terminal restarted —"))
+            #expect(lines[..<divider].contains("old-output"))
+            #expect(lines[divider...].contains("fresh"))
+            #expect(Client.fromScreen(try await fixture.pool.attach(new.ptyId, subscriber: UUID()) { _ in }).lines() == lines)
+
+            // Only the first erase is dropped: a later one clears the scrollback as usual.
+            try await fixture.pool.write(new.ptyId, Data("go\n".utf8))
+            #expect(try await eventually { client.lines().contains("after-second-erase") })
+            #expect(!client.lines().contains("old-output"))
+        }
+    }
+
+    @Test func sessionScreensOutliveTheDaemonButNotTheirSessions() async throws {
+        try await withFixture { fixture in
+            let kept = try await fixture.openSession("kept", ["/bin/sh", "-c", "echo before-restart; sleep 30"])
+            let gone = try await fixture.openSession("gone", ["/bin/sh", "-c", "echo other; sleep 30"])
+            let client = try await Client.attach(fixture.pool, kept.ptyId)
+            #expect(try await eventually { client.lines().contains("before-restart") })
+            try await fixture.pool.shutdown()
+            #expect(FileManager.default.fileExists(atPath: fixture.snapshotPath(kept.ptyId)))
+
+            let pool = PTYPool(snapshotDirectory: fixture.snapshots, snapshotInterval: .seconds(3600))
+            #expect(try await pool.restoreFromSnapshots().isEmpty, "sessions are respawned by their supervisors")
+            await pool.discardSessionScreens(keeping: ["kept"])
+            #expect(!FileManager.default.fileExists(atPath: fixture.snapshotPath(gone.ptyId)))
+            let respawned = try await pool.openSession(
+                sessionKey: "kept", cwd: fixture.directory, command: ["/bin/sh", "-c", "echo after-restart; sleep 30"],
+                environment: ProcessInfo.processInfo.environment, overlay: [:], cols: nil, rows: nil, continuing: nil, onExit: { _ in })
+            #expect(respawned.cols == kept.cols && respawned.rows == kept.rows)
+            #expect(!FileManager.default.fileExists(atPath: fixture.snapshotPath(kept.ptyId)), "taken over by the new PTY")
+            let reattached = try await Client.attach(pool, respawned.ptyId)
+            #expect(try await eventually { reattached.lines().contains("after-restart") })
+            let lines = reattached.lines()
+            let divider = try #require(lines.firstIndex(of: "— terminal restarted —"))
+            #expect(lines[..<divider].contains("before-restart"))
+            try await pool.shutdown()
+        }
+    }
+
+    @Test func everyChangeOfThePTYListIsPublished() async throws {
+        try await withFixture { fixture in
+            let published = Box<[[PTYInfo]]>([])
+            await fixture.pool.setChangeHandler { list in published.mutate { $0.append(list) } }
+            let terminal = try await fixture.pool.open(PTYOpen.Params(cwd: fixture.directory, command: ["/bin/sh", "-c", "read -r x"], cols: 80, rows: 24))
+            #expect(published.value.last?.map(\.ptyId) == [terminal.ptyId])
+            try await fixture.pool.resize(terminal.ptyId, cols: 90, rows: 20)
+            #expect(published.value.last?.first?.cols == 90 && published.value.last?.first?.rows == 20)
+            let session = try await fixture.openSession("s1", ["/bin/sh", "-c", "exit 0"])
+            #expect(try await eventually { published.value.last?.last == PTYInfo(
+                ptyId: session.ptyId, cwd: fixture.directory, command: session.command, cols: 80, rows: 24, pid: nil, running: false,
+                sessionKey: "s1") })
+            try await fixture.pool.close(terminal.ptyId)
+            #expect(published.value.last?.map(\.ptyId) == [session.ptyId])
+        }
+    }
+
+    @Test func scrollbackEraseFilterDropsOnlyTheFirstSequenceAcrossChunkBoundaries() {
+        let stream = Array("a\u{1b}[3Jb\u{1b}[3Jc".utf8)
+        for split in 0...stream.count {
+            var filter = ScrollbackEraseFilter()
+            var out = stream[..<split].withUnsafeBufferPointer { filter.filter($0) }
+            out += stream[split...].withUnsafeBufferPointer { filter.filter($0) }
+            out += filter.remainder()
+            #expect(String(decoding: out, as: UTF8.self) == "ab\u{1b}[3Jc", "split at \(split)")
+        }
+        var filter = ScrollbackEraseFilter()
+        let partial = Array("x\u{1b}[".utf8)
+        #expect(partial.withUnsafeBufferPointer { filter.filter($0) } == Array("x".utf8))
+        #expect(filter.remainder() == Array("\u{1b}[".utf8), "an unfinished sequence is delivered at the end")
+    }
 }
 
 // MARK: - Fixtures
@@ -292,6 +404,17 @@ private struct Fixture {
     func openShell() async throws -> PTYInfo {
         try await pool.open(PTYOpen.Params(cwd: directory, command: ["/bin/sh"], env: ["PS1": "$ ", "ENV": "/dev/null"], cols: 80, rows: 24))
     }
+
+    func openSession(
+        _ key: SessionKey, _ command: [String], base: [String: String] = ProcessInfo.processInfo.environment,
+        overlay: [String: String] = [:], cols: Int? = nil, rows: Int? = nil, continuing: PTYID? = nil,
+        onExit: @escaping @Sendable (PTYExit) -> Void = { _ in }
+    ) async throws -> PTYInfo {
+        try await pool.openSession(
+            sessionKey: key, cwd: directory, command: command, environment: base, overlay: overlay,
+            cols: cols ?? (continuing == nil ? 80 : nil), rows: rows ?? (continuing == nil ? 24 : nil), continuing: continuing,
+            onExit: onExit)
+    }
 }
 
 private func withFixture(snapshotInterval: Duration = .seconds(3600), _ body: (Fixture) async throws -> Void) async throws {
@@ -327,6 +450,11 @@ private final class Client: Sendable {
         let live = OSAllocatedUnfairLock(initialState: Data())
         let result = try await pool.attach(ptyId, subscriber: id) { chunk in live.withLock { $0.append(chunk) } }
         return Client(id: id, screen: result.screen, cols: result.info.cols, rows: result.info.rows, live: live)
+    }
+
+    /// The attach screen alone: what a client attaching now starts from.
+    static func fromScreen(_ result: PTYAttach.Result) -> Client {
+        Client(id: UUID(), screen: result.screen, cols: result.info.cols, rows: result.info.rows, live: OSAllocatedUnfairLock(initialState: Data()))
     }
 
     /// A fresh terminal fed with the attach screen and the live output received so far.

@@ -301,8 +301,9 @@ public actor PTYPool {
             mirror = TerminalMirror(cols: prefill.cols, rows: prefill.rows)
             mirror.feed(prefill.screen)
             Self.resetForRestart(mirror)
-            if prefill.keepsHistory { Self.pushScreenIntoHistory(mirror) }
             if prefill.cols != cols || prefill.rows != rows { mirror.resize(cols: cols, rows: rows) }
+            // After the resize, which can pull scrollback back into a taller screen.
+            if prefill.keepsHistory { Self.pushScreenIntoHistory(mirror) }
         } else {
             mirror = TerminalMirror(cols: cols, rows: rows)
         }
@@ -574,6 +575,7 @@ struct ScrollbackEraseFilter {
 
     /// `chunk` as it should be delivered.
     mutating func filter(_ chunk: UnsafeBufferPointer<UInt8>) -> [UInt8] {
+        guard !isDone else { return Array(chunk) }
         var bytes = held + chunk
         held = []
         if let match = bytes.firstRange(of: Self.sequence) {
