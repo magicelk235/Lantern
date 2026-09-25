@@ -40,22 +40,34 @@ public enum SessionCreate: DaemonMethod {
         public var workspace: String
         public var approvalMode: String?
         public var model: String?
-        public init(workspace: String, approvalMode: String? = nil, model: String? = nil) {
+        /// Initial TUI size (the attaching view's size), so omp's first paint fits.
+        public var cols: Int
+        public var rows: Int
+        public init(workspace: String, approvalMode: String? = nil, model: String? = nil, cols: Int = 120, rows: Int = 40) {
             self.workspace = workspace
             self.approvalMode = approvalMode
             self.model = model
+            self.cols = cols
+            self.rows = rows
         }
     }
     public typealias Result = SessionManifestEntry
 }
 
-/// Adopt an existing omp session file (spawns `omp --resume <sessionFile>`).
+/// Adopt an existing omp session file (spawns the omp TUI with `--resume <sessionFile>` in a new PTY).
 public enum SessionOpen: DaemonMethod {
     public static let name = "session.open"
     public struct Params: Codable, Sendable, Equatable {
         public var sessionFile: String
         public var workspace: String
-        public init(sessionFile: String, workspace: String) { self.sessionFile = sessionFile; self.workspace = workspace }
+        public var cols: Int
+        public var rows: Int
+        public init(sessionFile: String, workspace: String, cols: Int = 120, rows: Int = 40) {
+            self.sessionFile = sessionFile
+            self.workspace = workspace
+            self.cols = cols
+            self.rows = rows
+        }
     }
     public typealias Result = SessionManifestEntry
 }
@@ -66,87 +78,13 @@ public enum ListSessions: DaemonMethod {
     public typealias Result = SessionList
 }
 
-/// User closed the tab: graceful omp shutdown (close stdin, drain), `closedByUser = true`.
+/// Close Session: graceful omp shutdown via the ide-bridge (normal dispose, `session_exit` normal), then the
+/// session PTY is closed; `closedByUser = true`.
 public enum SessionClose: DaemonMethod {
     public static let name = "session.close"
     public struct Params: Codable, Sendable, Equatable {
         public var sessionKey: SessionKey
         public init(sessionKey: SessionKey) { self.sessionKey = sessionKey }
-    }
-    public typealias Result = Empty
-}
-
-/// Start (or restart) streaming journal records for a session. Records with `seq > since` are replayed,
-/// then the subscription goes live without gaps or duplicates. Unknown `since` => `ServerFrame.resync`.
-public enum Subscribe: DaemonMethod {
-    public static let name = "subscribe"
-    public struct Params: Codable, Sendable, Equatable {
-        public var sessionKey: SessionKey
-        public var since: Seq
-        public init(sessionKey: SessionKey, since: Seq) { self.sessionKey = sessionKey; self.since = since }
-    }
-    public struct Result: Codable, Sendable, Equatable {
-        /// Seq of the last replayed record; live records follow with seq > this.
-        public var replayedThrough: Seq
-        public init(replayedThrough: Seq) { self.replayedThrough = replayedThrough }
-    }
-}
-
-public enum Unsubscribe: DaemonMethod {
-    public static let name = "unsubscribe"
-    public struct Params: Codable, Sendable, Equatable {
-        public var sessionKey: SessionKey
-        public init(sessionKey: SessionKey) { self.sessionKey = sessionKey }
-    }
-    public typealias Result = Empty
-}
-
-/// Full-state rebuild: omp `get_state` + `get_entries` (via the live process or read from disk if not running).
-public enum SessionSnapshot: DaemonMethod {
-    public static let name = "session.snapshot"
-    public struct Params: Codable, Sendable, Equatable {
-        public var sessionKey: SessionKey
-        public init(sessionKey: SessionKey) { self.sessionKey = sessionKey }
-    }
-    public struct Result: Codable, Sendable, Equatable {
-        public var entry: SessionManifestEntry
-        public var state: JSONValue?
-        public var entries: JSONValue?
-        public var lastSeq: Seq
-        public init(entry: SessionManifestEntry, state: JSONValue?, entries: JSONValue?, lastSeq: Seq) {
-            self.entry = entry
-            self.state = state
-            self.entries = entries
-            self.lastSeq = lastSeq
-        }
-    }
-}
-
-/// Pass-through of any omp RPC command. `command` is the omp command
-/// object without `id` (the daemon assigns ids). Result is omp's response `data` (or error).
-public enum OmpCommand: DaemonMethod {
-    public static let name = "omp"
-    public struct Params: Codable, Sendable, Equatable {
-        public var sessionKey: SessionKey
-        public var command: JSONValue
-        public init(sessionKey: SessionKey, command: JSONValue) { self.sessionKey = sessionKey; self.command = command }
-    }
-    public typealias Result = JSONValue
-}
-
-/// Answer a held `extension_ui_request` (payload = omp `extension_ui_response` minus `type`/`id`) or
-/// `host_tool_call` (payload = `host_tool_result` minus `type`/`id`).
-public enum UIRespond: DaemonMethod {
-    public static let name = "ui.respond"
-    public struct Params: Codable, Sendable, Equatable {
-        public var sessionKey: SessionKey
-        public var requestId: String
-        public var response: JSONValue
-        public init(sessionKey: SessionKey, requestId: String, response: JSONValue) {
-            self.sessionKey = sessionKey
-            self.requestId = requestId
-            self.response = response
-        }
     }
     public typealias Result = Empty
 }
@@ -161,7 +99,13 @@ public struct PTYInfo: Codable, Sendable, Equatable {
     public var rows: Int
     public var pid: Int32?
     public var running: Bool
-    public init(ptyId: PTYID, cwd: String, command: [String], cols: Int, rows: Int, pid: Int32?, running: Bool) {
+    /// Set when this PTY runs an omp session's TUI; nil for plain terminals. Clients list only nil ones as
+    /// terminals and reach session PTYs through `SessionManifestEntry.ptyId`.
+    public var sessionKey: SessionKey?
+    public init(
+        ptyId: PTYID, cwd: String, command: [String], cols: Int, rows: Int, pid: Int32?, running: Bool,
+        sessionKey: SessionKey? = nil
+    ) {
         self.ptyId = ptyId
         self.cwd = cwd
         self.command = command
@@ -169,6 +113,7 @@ public struct PTYInfo: Codable, Sendable, Equatable {
         self.rows = rows
         self.pid = pid
         self.running = running
+        self.sessionKey = sessionKey
     }
 }
 

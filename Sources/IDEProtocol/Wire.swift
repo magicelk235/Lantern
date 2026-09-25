@@ -1,8 +1,7 @@
 import Foundation
-@_exported import OmpRPC
 
 /// Daemon <-> UI protocol version. Bump on any incompatible change to this module.
-public let ideProtocolVersion = 2
+public let ideProtocolVersion = 3
 
 /// Wire framing: each frame is a 4-byte big-endian length followed by that many bytes of
 /// UTF-8 JSON encoding exactly one `ClientFrame` or `ServerFrame`. Max frame 64 MiB.
@@ -12,8 +11,6 @@ public let ideMaxFrameBytes = 64 * 1024 * 1024
 /// daemon restarts and reboots (persisted in `sessions.json`). Never an omp PID or sessionId.
 public typealias SessionKey = String
 
-/// Monotonic per-session journal sequence number, starting at 1. 0 means "nothing seen yet".
-public typealias Seq = UInt64
 
 // MARK: - Client -> daemon
 
@@ -71,32 +68,28 @@ public struct Request: Sendable, Equatable, Codable {
 public enum ServerFrame: Sendable, Equatable, Codable {
     case welcome(Welcome)
     case response(Response)
-    /// One journal record pushed to a subscriber (replayed or live; identical shape).
-    case event(JournalRecord)
-    /// The requested `since` is unknown (compacted/foreign); client must drop its view of the session and
-    /// rebuild from `session.snapshot` before applying further events.
-    case resync(Resync)
     /// Raw PTY output for an attached terminal.
     case ptyOutput(PTYOutput)
     /// Manifest changed (session created/closed/status change). Full list, cheap.
     case sessions(SessionList)
-    /// Out-of-band daemon notice that is not (or cannot be) journaled, e.g. entering read-only mode. Broadcast to
-    /// every connected client; not replayed to clients that connect later.
+    /// Daemon notice (e.g. read-only mode, a session that could not be resumed). Broadcast to every connected
+    /// client; not replayed to clients that connect later.
     case notice(DaemonNotice)
+    /// The PTY list changed (opened, exited, closed, resized). Full list, cheap; replaces client polling.
+    case ptys(PTYList.Result)
 
     private enum CodingKeys: String, CodingKey { case type }
-    private enum Kind: String, Codable { case welcome, response, event, resync, ptyOutput = "pty_output", sessions, notice }
+    private enum Kind: String, Codable { case welcome, response, ptyOutput = "pty_output", sessions, notice, ptys }
 
     public init(from decoder: any Decoder) throws {
         let kind = try decoder.container(keyedBy: CodingKeys.self).decode(Kind.self, forKey: .type)
         switch kind {
         case .welcome: self = .welcome(try Welcome(from: decoder))
         case .response: self = .response(try Response(from: decoder))
-        case .event: self = .event(try JournalRecord(from: decoder))
-        case .resync: self = .resync(try Resync(from: decoder))
         case .ptyOutput: self = .ptyOutput(try PTYOutput(from: decoder))
         case .sessions: self = .sessions(try SessionList(from: decoder))
         case .notice: self = .notice(try DaemonNotice(from: decoder))
+        case .ptys: self = .ptys(try PTYList.Result(from: decoder))
         }
     }
 
@@ -105,11 +98,10 @@ public enum ServerFrame: Sendable, Equatable, Codable {
         switch self {
         case .welcome(let v): try c.encode(Kind.welcome, forKey: .type); try v.encode(to: encoder)
         case .response(let v): try c.encode(Kind.response, forKey: .type); try v.encode(to: encoder)
-        case .event(let v): try c.encode(Kind.event, forKey: .type); try v.encode(to: encoder)
-        case .resync(let v): try c.encode(Kind.resync, forKey: .type); try v.encode(to: encoder)
         case .ptyOutput(let v): try c.encode(Kind.ptyOutput, forKey: .type); try v.encode(to: encoder)
         case .sessions(let v): try c.encode(Kind.sessions, forKey: .type); try v.encode(to: encoder)
         case .notice(let v): try c.encode(Kind.notice, forKey: .type); try v.encode(to: encoder)
+        case .ptys(let v): try c.encode(Kind.ptys, forKey: .type); try v.encode(to: encoder)
         }
     }
 }
@@ -141,18 +133,11 @@ public struct DaemonError: Error, Sendable, Equatable, Codable {
     public enum Code: String, Sendable, Codable {
         case unauthorized, versionMismatch = "version_mismatch", unknownMethod = "unknown_method", badParams = "bad_params"
         case noSuchSession = "no_such_session", noSuchPTY = "no_such_pty", sessionBusy = "session_busy"
-        case ompError = "omp_error", readOnly = "read_only", `internal`
+        case ompError = "omp_error", readOnly = "read_only", bridgeUnavailable = "bridge_unavailable", `internal`
     }
     public var code: Code
     public var message: String
     public init(_ code: Code, _ message: String) { self.code = code; self.message = message }
-}
-
-public struct Resync: Sendable, Equatable, Codable {
-    public var sessionKey: SessionKey
-    /// Seq the client should resume from after rebuilding via `session.snapshot`.
-    public var lastSeq: Seq
-    public init(sessionKey: SessionKey, lastSeq: Seq) { self.sessionKey = sessionKey; self.lastSeq = lastSeq }
 }
 
 public typealias PTYID = String
@@ -168,7 +153,7 @@ public struct SessionList: Sendable, Equatable, Codable {
     public init(sessions: [SessionManifestEntry]) { self.sessions = sessions }
 }
 
-/// A daemon-wide or per-session notice outside the journal (`ServerFrame.notice`).
+/// A daemon-wide or per-session notice (`ServerFrame.notice`).
 public struct DaemonNotice: Sendable, Equatable, Codable {
     /// `info` | `warning` | `error`.
     public var level: String
@@ -184,7 +169,7 @@ public struct DaemonNotice: Sendable, Equatable, Codable {
     }
 }
 
-/// Shared coders: ISO-8601 dates with fractional seconds, sorted keys (deterministic journal bytes).
+/// Shared coders: ISO-8601 dates with fractional seconds, sorted keys (deterministic bytes).
 public enum IDECoding {
     public static func encoder() -> JSONEncoder {
         let e = JSONEncoder()

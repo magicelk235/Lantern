@@ -5,34 +5,37 @@ import Foundation
 public struct SessionManifest: Sendable, Equatable, Codable {
     public var version: Int
     public var sessions: [SessionManifestEntry]
-    public init(version: Int = 1, sessions: [SessionManifestEntry] = []) {
+    public init(version: Int = 2, sessions: [SessionManifestEntry] = []) {
         self.version = version
         self.sessions = sessions
     }
 }
 
+/// One omp session owned by ompd. The session runs omp's own interactive TUI inside a daemon-owned PTY;
+/// clients render it by attaching to `ptyId` (`pty.attach`), exactly like any other terminal.
 public struct SessionManifestEntry: Sendable, Equatable, Codable, Identifiable {
     public var id: SessionKey { sessionKey }
     public var sessionKey: SessionKey
     public var workspace: String
-    /// omp session JSONL path; nil until omp reports it via `get_state.sessionFile`.
+    /// omp session JSONL path; nil until the ide-bridge `hello` reports it.
     public var sessionFile: String?
     public var sessionId: String?
     public var title: String?
     public var launch: LaunchSpec
     public var status: SessionStatus
-    public var lastSeq: Seq
-    public var lastSettledAt: Date?
+    /// PTY currently running this session's omp TUI. Runtime-only: cleared at daemon startup and replaced on
+    /// every respawn (never trusted across a reboot).
+    public var ptyId: PTYID?
     public var createdAt: Date
+    /// Last time omp reported activity (bridge agent/turn events); drives sidebar ordering.
+    public var lastActiveAt: Date?
     public var services: [NamedService]
-    public var pending: PendingRequests
     public var closedByUser: Bool
 
     public init(
         sessionKey: SessionKey, workspace: String, sessionFile: String? = nil, sessionId: String? = nil,
-        title: String? = nil, launch: LaunchSpec, status: SessionStatus = .starting, lastSeq: Seq = 0,
-        lastSettledAt: Date? = nil, createdAt: Date, services: [NamedService] = [],
-        pending: PendingRequests = .init(), closedByUser: Bool = false
+        title: String? = nil, launch: LaunchSpec, status: SessionStatus = .starting, ptyId: PTYID? = nil,
+        createdAt: Date, lastActiveAt: Date? = nil, services: [NamedService] = [], closedByUser: Bool = false
     ) {
         self.sessionKey = sessionKey
         self.workspace = workspace
@@ -41,38 +44,34 @@ public struct SessionManifestEntry: Sendable, Equatable, Codable, Identifiable {
         self.title = title
         self.launch = launch
         self.status = status
-        self.lastSeq = lastSeq
-        self.lastSettledAt = lastSettledAt
+        self.ptyId = ptyId
         self.createdAt = createdAt
+        self.lastActiveAt = lastActiveAt
         self.services = services
-        self.pending = pending
         self.closedByUser = closedByUser
     }
 }
 
-/// Everything needed to (re)spawn the same omp for a session. The binary is pinned by absolute path +
-/// version so a half-upgraded system never mixes protocol versions inside one session.
+/// Everything needed to (re)spawn the same omp TUI for a session. The binary is pinned by absolute path +
+/// version so a half-upgraded system never mixes versions inside one session.
 public struct LaunchSpec: Sendable, Equatable, Codable {
     public var ompPath: String
     public var ompVersion: String
-    /// `rpc-ui` in production.
-    public var mode: String
     public var approvalMode: String?
     public var model: String?
-    /// Extra CLI args appended verbatim (e.g. `-e <ide-bridge.ts>`).
+    /// Extra CLI args appended verbatim.
     public var extraArgs: [String]
-    /// Pinned env (`PI_CODING_AGENT_DIR`, `OMP_PROFILE`, `PI_RPC_EMIT_TITLE`, ...). Merged over the daemon env.
+    /// Pinned env (`PI_CODING_AGENT_DIR`, `OMP_PROFILE`, ...). Merged over the daemon env.
     public var env: [String: String]
     /// `--session-dir`; nil = omp default for the cwd.
     public var sessionDir: String?
 
     public init(
-        ompPath: String, ompVersion: String, mode: String = "rpc-ui", approvalMode: String? = nil,
-        model: String? = nil, extraArgs: [String] = [], env: [String: String] = [:], sessionDir: String? = nil
+        ompPath: String, ompVersion: String, approvalMode: String? = nil, model: String? = nil,
+        extraArgs: [String] = [], env: [String: String] = [:], sessionDir: String? = nil
     ) {
         self.ompPath = ompPath
         self.ompVersion = ompVersion
-        self.mode = mode
         self.approvalMode = approvalMode
         self.model = model
         self.extraArgs = extraArgs
@@ -82,17 +81,17 @@ public struct LaunchSpec: Sendable, Equatable, Codable {
 }
 
 public enum SessionStatus: String, Sendable, Codable {
-    /// omp spawned, not yet `ready`.
+    /// omp TUI spawned; ide-bridge `hello` not yet received.
     case starting
-    /// Running a turn or has pending async work.
+    /// The agent is running a turn (bridge activity events).
     case busy
-    /// `session_settled`: nothing can wake it.
-    case settled
-    /// omp died unexpectedly; awaiting resume/continuation policy.
+    /// TUI alive and waiting for input.
+    case idle
+    /// omp died unexpectedly; awaiting resume.
     case interrupted
     /// Respawning with `--resume`.
     case resuming
-    /// Closed by the user; omp not running. Skipped by Regime B2 restore.
+    /// Closed by the user (tab closed via Close Session, or omp exited normally from its TUI). Skipped by restore.
     case closed
     /// Cannot be resumed without user action (e.g. workspace folder missing).
     case needsAttention = "needs_attention"
@@ -145,47 +144,5 @@ public struct NamedService: Sendable, Equatable, Codable {
         pty = try c.decodeIfPresent(Bool.self, forKey: .pty) ?? true
         ready = try c.decodeIfPresent(JSONValue.self, forKey: .ready)
         desiredRunning = try c.decodeIfPresent(Bool.self, forKey: .desiredRunning) ?? true
-    }
-}
-
-/// UI requests omp is blocked on. Re-presented on reconnect (Regime A) or reported as lost (Regime B).
-public struct PendingRequests: Sendable, Equatable, Codable {
-    /// `extension_ui_request` frames still awaiting `extension_ui_response`.
-    public var uiRequests: [HeldRequest]
-    /// `host_tool_call` frames still awaiting `host_tool_result`.
-    public var hostToolCalls: [HeldRequest]
-    public init(uiRequests: [HeldRequest] = [], hostToolCalls: [HeldRequest] = []) {
-        self.uiRequests = uiRequests
-        self.hostToolCalls = hostToolCalls
-    }
-}
-
-/// One request omp is blocked on: its verbatim frame and when ompd read it from omp's stdout. A dialog's `timeout`
-/// runs from `receivedAt`, so a restored timed dialog expires when omp resolved it, not later.
-public struct HeldRequest: Sendable, Equatable, Codable {
-    public var frame: JSONValue
-    public var receivedAt: Date
-
-    public init(frame: JSONValue, receivedAt: Date) {
-        self.frame = frame
-        self.receivedAt = receivedAt
-    }
-
-    /// omp request id (`frame.id`).
-    public var id: String? { frame["id"]?.stringValue }
-
-    private enum CodingKeys: String, CodingKey { case frame, receivedAt }
-
-    /// Also reads the bare frames of protocol-1 manifests; their arrival time was never recorded, so it becomes the
-    /// decode time (a restored timed dialog then expires late, never early).
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        guard container.contains(.frame), container.contains(.receivedAt) else {
-            frame = try JSONValue(from: decoder)
-            receivedAt = Date()
-            return
-        }
-        frame = try container.decode(JSONValue.self, forKey: .frame)
-        receivedAt = try container.decode(Date.self, forKey: .receivedAt)
     }
 }

@@ -15,8 +15,6 @@ public struct AppSupportPaths: Sendable, Equatable {
     public let token: URL
     /// `run/owned-sessions`: session-ownership locks consulted by ide-bridge.
     public let ownedSessions: URL
-    /// `journal/`: one `<sessionKey>.jsonl` per session.
-    public let journalDir: URL
     /// `sessions.json`: the session manifest.
     public let manifest: URL
     /// `pty/`: serialized terminal screens.
@@ -33,7 +31,6 @@ public struct AppSupportPaths: Sendable, Equatable {
         bridgeSocket = run.appending(path: "bridge.sock", directoryHint: .notDirectory)
         token = run.appending(path: "token", directoryHint: .notDirectory)
         ownedSessions = run.appending(path: "owned-sessions")
-        journalDir = root.appending(path: "journal", directoryHint: .isDirectory)
         manifest = root.appending(path: "sessions.json", directoryHint: .notDirectory)
         ptySnapshots = root.appending(path: "pty", directoryHint: .isDirectory)
         hotExit = root.appending(path: "hot-exit", directoryHint: .isDirectory)

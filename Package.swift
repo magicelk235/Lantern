@@ -22,7 +22,7 @@ let package = Package(
         // omp `--mode rpc|rpc-ui` client: JSONL framing, v2 rpc_chunk reassembly, typed commands/events, process transport.
         .target(name: "OmpRPC"),
         // Daemon <-> UI wire contract (pure Codable types, shared by ompd and the app).
-        .target(name: "IDEProtocol", dependencies: ["OmpRPC"]),
+        .target(name: "IDEProtocol"),
         // Length-prefixed frames over a unix domain socket (NWListener/NWConnection), used by ompd and the app.
         .target(name: "IDETransport", dependencies: ["IDEProtocol"]),
         // Daemon internals: journal, manifest, supervisor, PTY pool, power observers.
