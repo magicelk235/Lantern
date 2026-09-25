@@ -1,7 +1,7 @@
 import Foundation
 
-/// Lossless JSON tree. omp frames are forwarded and journaled verbatim, so every layer keeps the
-/// original object instead of a lossy typed projection.
+/// Lossless JSON tree for open-ended protocol payloads (request params, response results, named-service readiness
+/// specs): every layer keeps the original object instead of a lossy typed projection.
 public enum JSONValue: Sendable, Hashable, Codable {
     case null
     case bool(Bool)
