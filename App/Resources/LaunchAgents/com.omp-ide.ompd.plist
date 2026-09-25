@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.omp-ide.ompd</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/ompd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>ompd</string>
+		<string>run</string>
+	</array>
+	<key>KeepAlive</key>
+	<true/>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>com.omp-ide.app</string>
+	</array>
+</dict>
+</plist>

@@ -1,0 +1,192 @@
+{
+ "entries": {
+  "entries": [
+   {
+    "id": "26dbf9e0",
+    "model": "anthropic/claude-haiku-4-5",
+    "parentId": null,
+    "resolvedModelIsFallback": false,
+    "timestamp": "2026-09-25T10:47:03.736Z",
+    "type": "model_change"
+   },
+   {
+    "configured": null,
+    "id": "891e74a7",
+    "parentId": "26dbf9e0",
+    "thinkingLevel": "off",
+    "timestamp": "2026-09-25T10:47:03.736Z",
+    "type": "thinking_level_change"
+   },
+   {
+    "id": "af18899f",
+    "message": {
+     "attribution": "user",
+     "content": [
+      {
+       "text": "Use the bash tool exactly once, in the foreground (do not use async or background mode), to run this exact command:\n/bin/sleep 30; echo SLEPT-OK\nAfter it finishes, reply with its output and nothing else.",
+       "type": "text"
+      }
+     ],
+     "role": "user",
+     "timestamp": 1790333223776
+    },
+    "parentId": "891e74a7",
+    "timestamp": "2026-09-25T10:47:03.804Z",
+    "type": "message"
+   },
+   {
+    "id": "c10cf19c",
+    "message": {
+     "api": "anthropic-messages",
+     "completedAt": 1790333225403,
+     "content": [
+      {
+       "arguments": {
+        "command": "/bin/sleep 30; echo SLEPT-OK",
+        "i": "Running sleep command"
+       },
+       "id": "toolu_018fGTSYH1G7kSTrUHBhouGG",
+       "intent": "Running sleep command",
+       "name": "bash",
+       "type": "toolCall"
+      }
+     ],
+     "contextSnapshot": {
+      "compactionEpoch": 0,
+      "nonMessageTokens": 7467,
+      "promptTokens": 8988
+     },
+     "credentialId": 6,
+     "duration": 1575.7952920000002,
+     "model": "claude-haiku-4-5",
+     "provider": "anthropic",
+     "responseId": "msg_011CfQ2NYFc5mhmfxLcWQzQX",
+     "role": "assistant",
+     "stopReason": "toolUse",
+     "timestamp": 1790333223805,
+     "ttft": 1054.5695,
+     "usage": {
+      "cacheRead": 8985,
+      "cacheWrite": 0,
+      "cost": {
+       "cacheRead": 0.0008985000000000001,
+       "cacheWrite": 0,
+       "input": 3e-06,
+       "output": 0.00042,
+       "total": 0.0013215000000000002
+      },
+      "input": 3,
+      "output": 84,
+      "totalTokens": 9072
+     }
+    },
+    "parentId": "af18899f",
+    "timestamp": "2026-09-25T10:47:05.403Z",
+    "type": "message"
+   },
+   {
+    "hash": "2553f66f9e82643b7649cedc5e04fca2cac0d40253b65a264b66895679aea223",
+    "id": "cc52b100",
+    "parentId": "c10cf19c",
+    "provider": "anthropic",
+    "timestamp": "2026-09-25T10:47:05.407Z",
+    "type": "credential_pin"
+   },
+   {
+    "customType": "tool_execution_start",
+    "data": {
+     "args": {
+      "command": "/bin/sleep 30; echo SLEPT-OK"
+     },
+     "intent": "Running sleep command",
+     "startedAt": "2026-09-25T10:47:05.409Z",
+     "toolCallId": "toolu_018fGTSYH1G7kSTrUHBhouGG",
+     "toolName": "bash"
+    },
+    "id": "07f264bb",
+    "parentId": "cc52b100",
+    "timestamp": "2026-09-25T10:47:05.409Z",
+    "type": "custom"
+   },
+   {
+    "customType": "session_exit",
+    "data": {
+     "kind": "normal",
+     "pendingToolCalls": [
+      {
+       "args": {
+        "command": "/bin/sleep 30; echo SLEPT-OK",
+        "i": "Running sleep command"
+       },
+       "assistantTimestamp": 1790333223805,
+       "intent": "Running sleep command",
+       "startedAt": "2026-09-25T10:47:05.409Z",
+       "toolCallId": "toolu_018fGTSYH1G7kSTrUHBhouGG",
+       "toolName": "bash"
+      }
+     ],
+     "reason": "dispose",
+     "recordedAt": "2026-09-25T10:47:07.448Z"
+    },
+    "id": "aa395837",
+    "parentId": "07f264bb",
+    "timestamp": "2026-09-25T10:47:07.448Z",
+    "type": "custom"
+   },
+   {
+    "id": "214d2265",
+    "message": {
+     "content": [
+      {
+       "text": "Command aborted",
+       "type": "text"
+      }
+     ],
+     "details": {},
+     "isError": true,
+     "role": "toolResult",
+     "timestamp": 1790333227450,
+     "toolCallId": "toolu_018fGTSYH1G7kSTrUHBhouGG",
+     "toolName": "bash"
+    },
+    "parentId": "aa395837",
+    "timestamp": "2026-09-25T10:47:07.450Z",
+    "type": "message"
+   }
+  ],
+  "leafId": "214d2265"
+ },
+ "entry": {
+  "closedByUser": false,
+  "createdAt": "2026-09-25T10:00:00.000Z",
+  "lastSeq": 57,
+  "launch": {
+   "env": {},
+   "extraArgs": [],
+   "mode": "rpc-ui",
+   "ompPath": "/opt/homebrew/bin/omp",
+   "ompVersion": "18.3.1"
+  },
+  "pending": {
+   "hostToolCalls": [],
+   "uiRequests": []
+  },
+  "services": [],
+  "sessionFile": "/tmp/omp-sessions/eof-tool/2026-09-25T10-47-03-594Z_01a0d82d-02aa-753c-9902-e9203fd5f60a.jsonl",
+  "sessionId": "01a0d82d-02aa-753c-9902-e9203fd5f60a",
+  "sessionKey": "s1",
+  "status": "settled",
+  "workspace": "/tmp/workspace"
+ },
+ "lastSeq": 57,
+ "state": {
+  "hasPendingAsyncWork": false,
+  "isCompacting": false,
+  "isSettled": true,
+  "isStreaming": false,
+  "messageCount": 3,
+  "queuedMessageCount": 0,
+  "sessionFile": "/tmp/omp-sessions/eof-tool/2026-09-25T10-47-03-594Z_01a0d82d-02aa-753c-9902-e9203fd5f60a.jsonl",
+  "sessionId": "01a0d82d-02aa-753c-9902-e9203fd5f60a"
+ }
+}
