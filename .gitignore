@@ -6,4 +6,5 @@
 *.xcworkspace/xcuserdata/
 DerivedData/
 /App/*.xcodeproj
+__pycache__/
 node_modules/

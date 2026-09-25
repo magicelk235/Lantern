@@ -98,15 +98,53 @@ public enum SessionStatus: String, Sendable, Codable {
     case needsAttention = "needs_attention"
 }
 
+/// Durable, relaunchable copy of an omp named service. omp's broker prunes its
+/// own records ~5 min after a scope goes idle and cannot tell idle-out from an explicit stop, so ompd owns
+/// the spec and the desired state.
 public struct NamedService: Sendable, Equatable, Codable {
+    /// Service name (omp: 1–48 `[A-Za-z0-9._-]`, unique per broker scope = omp cwd realpath).
     public var id: String
     /// `persist` | `session` | `detached` (omp `proc://<id>/mode`).
     public var mode: String
+    /// Tool-level command as given to the bash tool.
     public var command: String?
-    public init(id: String, mode: String, command: String? = nil) {
+    /// Absolute service cwd; nil = session workspace.
+    public var cwd: String?
+    /// Tool-level env overrides only (never the expanded shell env).
+    public var env: [String: String]
+    /// omp default true; `detached` forces false.
+    public var pty: Bool
+    /// Readiness spec as given to the tool (`{log?, port?, host?, timeout?}`).
+    public var ready: JSONValue?
+    /// ompd intent. Relaunch targets only services that should be running.
+    public var desiredRunning: Bool
+
+    public init(
+        id: String, mode: String, command: String? = nil, cwd: String? = nil, env: [String: String] = [:],
+        pty: Bool = true, ready: JSONValue? = nil, desiredRunning: Bool = true
+    ) {
         self.id = id
         self.mode = mode
         self.command = command
+        self.cwd = cwd
+        self.env = env
+        self.pty = pty
+        self.ready = ready
+        self.desiredRunning = desiredRunning
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, mode, command, cwd, env, pty, ready, desiredRunning }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        mode = try c.decode(String.self, forKey: .mode)
+        command = try c.decodeIfPresent(String.self, forKey: .command)
+        cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
+        env = try c.decodeIfPresent([String: String].self, forKey: .env) ?? [:]
+        pty = try c.decodeIfPresent(Bool.self, forKey: .pty) ?? true
+        ready = try c.decodeIfPresent(JSONValue.self, forKey: .ready)
+        desiredRunning = try c.decodeIfPresent(Bool.self, forKey: .desiredRunning) ?? true
     }
 }
 
