@@ -111,15 +111,14 @@ struct FakeOmp: Sendable {
     }
 }
 
-// MARK: - Fake bridge and locks
+// MARK: - Scripted bridge and locks
 
-enum FakeBridgeError: Error { case noHello }
-
-/// Scripted `SessionBridgeLink`: `hello` succeeds only when `connects`; calls are recorded (and may run a hook).
-actor FakeBridge: SessionBridgeLink {
+/// Scripted `SessionBridgeLink`: the `hello` arrives only when `connects` (else the wait fails like a timeout, at
+/// once); calls are recorded and may run a hook; events are pushed by the test.
+actor ScriptedBridge: SessionBridgeLink {
     private let connects: Bool
     private var pids: [SessionKey: Int32] = [:]
-    private var streams: [SessionKey: AsyncStream<JSONValue>.Continuation] = [:]
+    private var streams: [SessionKey: (stream: AsyncStream<JSONValue>, sink: AsyncStream<JSONValue>.Continuation)] = [:]
     private(set) var calls: [String] = []
     private var onCall: (@Sendable (String) -> Void)?
     let sessionFile: String
@@ -131,15 +130,21 @@ actor FakeBridge: SessionBridgeLink {
 
     func setOnCall(_ hook: @escaping @Sendable (String) -> Void) { onCall = hook }
 
-    func prepareSpawn(of sessionKey: SessionKey) -> [String: String] { ["FAKE_BRIDGE_SESSION_KEY": sessionKey] }
+    func expect(sessionKey: SessionKey) -> BridgeCredentials {
+        streams.removeValue(forKey: sessionKey)?.sink.finish()
+        let (stream, sink) = AsyncStream.makeStream(of: JSONValue.self)
+        streams[sessionKey] = (stream, sink)
+        return BridgeCredentials(socketPath: "/fake/bridge.sock", sessionKey: sessionKey, token: String(repeating: "0", count: 64), daemonPID: getpid())
+    }
 
-    func spawned(_ sessionKey: SessionKey, pid: Int32) { pids[sessionKey] = pid }
+    func setExpectedPID(_ pid: Int32, for sessionKey: SessionKey) { pids[sessionKey] = pid }
 
-    func hello(_ sessionKey: SessionKey, timeout: Duration) throws -> BridgeSessionInfo {
-        guard connects else { throw FakeBridgeError.noHello }
-        return BridgeSessionInfo(
-            pid: pids[sessionKey] ?? 0, ompVersion: "18.3.1", capabilities: ["ensureOnDisk": true],
-            sessionId: "fake-session", sessionFile: sessionFile, onDisk: false, raw: ["t": "hello"])
+    func waitForHello(_ sessionKey: SessionKey, timeout: Duration) throws -> BridgeHello {
+        guard connects else { throw BridgeError.helloTimeout }
+        return BridgeHello(
+            sessionKey: sessionKey, pid: pids[sessionKey] ?? 0, ompVersion: "18.3.1",
+            capabilities: ["session.ensureOnDisk": true], sessionId: "fake-session", sessionFile: sessionFile,
+            onDisk: false, cwd: "/", artifactsDir: nil, raw: ["t": "hello"])
     }
 
     func call(_ sessionKey: SessionKey, method: String, params: JSONValue, timeout: Duration) -> JSONValue {
@@ -149,17 +154,15 @@ actor FakeBridge: SessionBridgeLink {
     }
 
     func events(_ sessionKey: SessionKey) -> AsyncStream<JSONValue> {
-        let (stream, continuation) = AsyncStream.makeStream(of: JSONValue.self)
-        streams[sessionKey] = continuation
-        return stream
+        streams[sessionKey]?.stream ?? AsyncStream { $0.finish() }
     }
 
     func push(_ event: JSONValue, to sessionKey: SessionKey) {
-        streams[sessionKey]?.yield(event)
+        streams[sessionKey]?.sink.yield(event)
     }
 
     func forget(_ sessionKey: SessionKey) {
-        streams.removeValue(forKey: sessionKey)?.finish()
+        streams.removeValue(forKey: sessionKey)?.sink.finish()
         pids[sessionKey] = nil
     }
 }
@@ -236,7 +239,7 @@ struct SupervisorFixture {
     let temp: ShortTempDir
     let omp: FakeOmp
     let manifest: ManifestPublisher
-    let bridge: FakeBridge
+    let bridge: ScriptedBridge
     let locks: FakeLocks
     let readOnly = ReadOnlyMode()
     let workspace: String
@@ -250,7 +253,7 @@ struct SupervisorFixture {
         temp = try ShortTempDir()
         omp = try FakeOmp(in: temp.url)
         workspace = try temp.directory("workspace")
-        bridge = FakeBridge(connects: bridgeConnects, sessionFile: omp.sessionFile)
+        bridge = ScriptedBridge(connects: bridgeConnects, sessionFile: omp.sessionFile)
         self.locks = locks
         manifest = ManifestPublisher(store: ManifestStore(url: temp.url.appending(path: "sessions.json")))
         var entry = SessionManifestEntry(

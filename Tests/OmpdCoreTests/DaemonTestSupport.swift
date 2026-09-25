@@ -10,7 +10,7 @@ struct DaemonFixture {
     let temp: ShortTempDir
     let paths: AppSupportPaths
     let omp: FakeOmp
-    let bridge: FakeBridge
+    let bridge: ScriptedBridge
     let locks: FakeLocks
     let token: String
     let workspace: String
@@ -28,7 +28,7 @@ struct DaemonFixture {
         try paths.prepare()
         token = try paths.loadOrCreateToken()
         workspace = try temp.directory("workspace")
-        bridge = FakeBridge(connects: bridgeConnects, sessionFile: omp.sessionFile)
+        bridge = ScriptedBridge(connects: bridgeConnects, sessionFile: omp.sessionFile)
         locks = FakeLocks()
         let configuration = Daemon.Configuration(
             paths: paths, ompExecutable: omp.executable, ompArguments: ["--thinking", "off"],

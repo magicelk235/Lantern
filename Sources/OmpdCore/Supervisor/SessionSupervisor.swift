@@ -35,7 +35,9 @@ public actor SessionSupervisor {
     private var bridgeEventsTask: Task<Void, Never>?
     private var startTask: Task<Void, any Error>?
     private var stopping: StopIntent?
-    private var bridgeInfo: BridgeSessionInfo?
+    /// `stop` was called: no omp is started for this session any more (a restore racing a shutdown or close).
+    private var stopRequested = false
+    private var bridgeHello: BridgeHello?
 
     // Session state mirrored into the manifest
     private var status: SessionStatus
@@ -102,6 +104,7 @@ public actor SessionSupervisor {
     public func start(_ mode: StartMode, notice: String? = nil) async throws {
         if let startTask { return try await startTask.value }
         guard process == nil else { return }
+        guard !stopRequested else { throw DaemonError(.internal, "session \(sessionKey) is being stopped") }
         let task = Task { try await self.launch(mode, notice: notice) }
         startTask = task
         defer { startTask = nil }
@@ -126,6 +129,9 @@ public actor SessionSupervisor {
         await abandonPending()
         do {
             if let file = entry.sessionFile, FileManager.default.fileExists(atPath: file) {
+                // An omp of the dead daemon may still be finishing its EOF teardown into the file; resuming before it
+                // is done would fork the session.
+                await SessionFileTail.waitForQuiescence(path: file)
                 try await start(.resume, notice: "ompd restarted; resuming the omp session from \(file).")
             } else if let file = entry.sessionFile, entry.lastSettledAt != nil {
                 await journalNotice("error", "The omp session file \(file) is missing; the session cannot be resumed.")
@@ -172,7 +178,7 @@ public actor SessionSupervisor {
         var environment = context.baseEnvironment
         environment.merge(entry.launch.env) { $1 }
         environment["PI_RPC_EMIT_TITLE"] = "1"
-        environment.merge(await context.bridge.prepareSpawn(of: sessionKey)) { $1 }
+        environment.merge(await context.bridge.expect(sessionKey: sessionKey).environment) { $1 }
         let process = OmpProcess(launch: OmpLaunch(
             executable: entry.launch.ompPath,
             arguments: Self.arguments(for: entry.launch, bridgeExtension: context.bridgeExtension, resume: resumeFile),
@@ -193,7 +199,7 @@ public actor SessionSupervisor {
         stopping = nil
         openPrompts = []
         await journalDaemon(.spawned(pid: pid, ompVersion: entry.launch.ompVersion, resumed: resumeFile != nil), durable: true)
-        await context.bridge.spawned(sessionKey, pid: pid)
+        await context.bridge.setExpectedPID(pid, for: sessionKey)
         draining = true
         drainTask = Task { await self.drain(process) }
 
@@ -211,9 +217,9 @@ public actor SessionSupervisor {
             await journalNotice("warning", "get_state failed after start: \(error)")
         }
         do {
-            let info = try await context.bridge.hello(sessionKey, timeout: context.timings.hello)
+            let hello = try await context.bridge.waitForHello(sessionKey, timeout: context.timings.hello)
             if generation == self.generation, self.process != nil {
-                bridgeInfo = info
+                bridgeHello = hello
                 let events = await context.bridge.events(sessionKey)
                 bridgeEventsTask = Task { await self.journalBridgeEvents(events, generation: generation) }
             }
@@ -259,6 +265,7 @@ public actor SessionSupervisor {
     /// `session_exit {kind:"normal"}` and kills its tool children); SIGKILL only if it is still alive after
     /// `timings.stop`. Returns once the exit is journaled.
     public func stop(_ intent: StopIntent) async {
+        stopRequested = true
         if let startTask { _ = try? await startTask.value }
         if intent == .user {
             // Before EOF: a daemon crash mid-close must not resume a session the user closed.
@@ -274,15 +281,13 @@ public actor SessionSupervisor {
         if stopping == nil || intent == .user { stopping = intent }
         await process.closeStdin()
         let deadline = context.timings.stop
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { await drainTask.value }
-            group.addTask {
-                do { try await Task.sleep(for: deadline) } catch { return }
-                await self.killStraggler(process, after: deadline)
-            }
-            await group.next()
-            group.cancelAll()
+        let killer = Task {
+            do { try await Task.sleep(for: deadline) } catch { return }
+            await self.killStraggler(process, after: deadline)
         }
+        // A SIGKILLed straggler ends the drain too, so this always returns with the exit journaled.
+        await drainTask.value
+        killer.cancel()
     }
 
     private func killStraggler(_ process: OmpProcess, after deadline: Duration) async {
@@ -466,7 +471,7 @@ public actor SessionSupervisor {
     /// dialogs, and settle the session's status.
     private func handleExit(_ exit: OmpExit, of process: OmpProcess) async {
         guard self.process === process else { return }
-        let sessionFile = await context.manifest.entry(sessionKey)?.sessionFile ?? bridgeInfo?.sessionFile
+        let sessionFile = await context.manifest.entry(sessionKey)?.sessionFile ?? bridgeHello?.sessionFile
         let exitKind = sessionFile.flatMap { SessionFileTail.sessionExitKind(path: $0, recordedSince: spawnedAt) }
         await journalDaemon(.exited(code: exit.code, signal: exit.signal, sessionExitKind: exitKind), durable: true)
         for id in openPrompts {
@@ -478,7 +483,7 @@ public actor SessionSupervisor {
         bridgeEventsTask?.cancel()
         bridgeEventsTask = nil
         await context.bridge.forget(sessionKey)
-        bridgeInfo = nil
+        bridgeHello = nil
         self.process = nil
         drainTask = nil
         switch stopping {
@@ -542,7 +547,7 @@ public actor SessionSupervisor {
     }
 
     private func takeOwnershipBeforeFirstPrompt() async throws {
-        if bridgeInfo != nil {
+        if let bridgeHello, bridgeHello.capabilities["session.ensureOnDisk"] != false {
             do {
                 _ = try await context.bridge.call(
                     sessionKey, method: "session.ensureOnDisk", params: [:], timeout: context.timings.bridgeCall)
@@ -556,9 +561,9 @@ public actor SessionSupervisor {
                 "warning", "Without the ide-bridge the first prompt is not saved before omp replies; it is lost if omp dies first.")
         }
         let entry = await context.manifest.entry(sessionKey)
-        guard lock == nil, let file = entry?.sessionFile ?? bridgeInfo?.sessionFile else { return }
+        guard lock == nil, let file = entry?.sessionFile ?? bridgeHello?.sessionFile else { return }
         do {
-            try acquireLock(sessionFile: file, sessionId: entry?.sessionId ?? bridgeInfo?.sessionId)
+            try acquireLock(sessionFile: file, sessionId: entry?.sessionId ?? bridgeHello?.sessionId)
         } catch let error as DaemonError where error.code == .sessionBusy {
             throw error
         } catch {

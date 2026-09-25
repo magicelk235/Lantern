@@ -36,6 +36,35 @@ enum SessionFileTail {
         return nil
     }
 
+    /// Returns once `path` has not changed (size and modification time) for `quietPeriod`, or after `timeout`.
+    /// A one-off check at resume time, sampled every 100 ms.
+    static func waitForQuiescence(path: String, quietPeriod: Duration = .seconds(1), timeout: Duration = .seconds(15)) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        var last = fingerprint(path)
+        var stableSince = clock.now
+        while clock.now < deadline, clock.now - stableSince < quietPeriod {
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            let current = fingerprint(path)
+            if current != last {
+                last = current
+                stableSince = clock.now
+            }
+        }
+    }
+
+    private struct Fingerprint: Equatable {
+        var size: off_t
+        var seconds: Int
+        var nanoseconds: Int
+    }
+
+    private static func fingerprint(_ path: String) -> Fingerprint? {
+        var info = stat()
+        guard stat(path, &info) == 0 else { return nil }
+        return Fingerprint(size: info.st_size, seconds: info.st_mtimespec.tv_sec, nanoseconds: info.st_mtimespec.tv_nsec)
+    }
+
     /// omp's `recordedAt`: `2026-09-25T10:45:22.233Z`.
     private static func parseTimestamp(_ text: String) -> Date? {
         if let date = try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(text) { return date }

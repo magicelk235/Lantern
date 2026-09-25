@@ -326,6 +326,19 @@ import Testing
         await fixture.supervisor.stop(.user)
     }
 
+    @Test func readOnlyModeKeepsDrainingWithoutJournaling() async throws {
+        let fixture = try await SupervisorFixture()
+        try await fixture.supervisor.start(.fresh)
+        let journaled = try await fixture.records().count
+        #expect(fixture.readOnly.trip())
+        _ = try await fixture.supervisor.command(["type": "prompt", "message": "x"])
+        // omp is still drained (the turn completes and the manifest follows it); nothing reaches the journal.
+        try await eventually("settled in the manifest") { try await fixture.entry.lastSettledAt != nil }
+        #expect(try await fixture.records().count == journaled)
+        await fixture.supervisor.stop(.user)
+        #expect(try await fixture.entry.status == .closed)
+    }
+
     @Test func sessionExitKindComesFromThisRunOnly() throws {
         let temp = try ShortTempDir()
         let file = temp.url.appending(path: "s.jsonl").path(percentEncoded: false)
