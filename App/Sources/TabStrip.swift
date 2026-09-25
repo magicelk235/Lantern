@@ -5,6 +5,8 @@ import SwiftUI
 /// The tabs of the workspace on screen, above the detail area. Selecting a tab shows it; closing one leaves its omp
 /// session or terminal running, and closing an editor with unsaved edits asks first.
 struct TabStrip: View {
+    static let height: CGFloat = 32
+
     let app: AppState
     let strip: TabLayout.Strip
 
@@ -22,7 +24,8 @@ struct TabStrip: View {
                 HStack(spacing: 2) {
                     ForEach(strip.tabs, id: \.self) { tab in
                         TabItem(
-                            tab: tab, entry: tab.sessionKey.flatMap(app.entry(for:)), terminal: terminalLabel(tab),
+                            tab: tab, title: title(of: tab), status: tab.sessionKey.flatMap(app.entry(for:))?.status,
+                            terminalExited: tab.ptyId.map { app.terminals.model($0)?.hasExited == true },
                             document: tab.editorPath.flatMap(app.editors.document(for:)),
                             isSelected: app.tabs.selection == tab, select: { app.selectTab(tab) }, close: { app.closeTab(tab) })
                     }
@@ -31,7 +34,7 @@ struct TabStrip: View {
             }
             .scrollIndicators(.never)
         }
-        .frame(height: 32)
+        .frame(height: Self.height)
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
     }
@@ -41,17 +44,22 @@ struct TabStrip: View {
         return name.isEmpty ? strip.workspace : name
     }
 
-    private func terminalLabel(_ tab: TabKind) -> TerminalLabel? {
-        guard let ptyId = tab.ptyId else { return nil }
-        return TerminalLabel(title: app.terminals.title(for: ptyId), hasExited: app.terminals.model(ptyId)?.hasExited == true)
+    private func title(of tab: TabKind) -> String {
+        switch tab {
+        case .session(let key): app.sessionTitle(key)
+        case .terminal(let ptyId): app.terminals.title(for: ptyId)
+        case .editor(let path): (path as NSString).lastPathComponent
+        }
     }
 }
 
 private struct TabItem: View {
     let tab: TabKind
-    let entry: SessionManifestEntry?
-    /// Set for a terminal tab.
-    let terminal: TerminalLabel?
+    let title: String
+    /// The session's status, for a session tab.
+    let status: SessionStatus?
+    /// Whether the program ended, for a terminal tab.
+    let terminalExited: Bool?
     /// The file an editor tab shows.
     let document: EditorDocument?
     let isSelected: Bool
@@ -63,14 +71,14 @@ private struct TabItem: View {
         HStack(spacing: 6) {
             Button(action: select) {
                 HStack(spacing: 6) {
-                    if let terminal {
+                    if let terminalExited {
                         Image(systemName: "terminal")
                             .font(.system(size: 10))
-                            .foregroundStyle(terminal.hasExited ? .tertiary : .secondary)
+                            .foregroundStyle(terminalExited ? .tertiary : .secondary)
                     } else if let document {
                         EditorTabIndicator(document: document)
                     } else {
-                        TabStatusIndicator(status: entry?.status)
+                        TabStatusIndicator(status: status)
                     }
                     Text(title)
                         .lineLimit(1)
@@ -101,46 +109,21 @@ private struct TabItem: View {
         .onHover { hovering = $0 }
     }
 
-    private var title: String {
-        switch tab {
-        case .session(let key): entry?.displayTitle ?? "Session \(key.prefix(8))"
-        case .terminal: terminal?.title ?? "Terminal"
-        case .editor(let path): (path as NSString).lastPathComponent
-        }
-    }
-
     private var background: Color {
         if isSelected { return Color.accentColor.opacity(0.16) }
         return hovering ? Color.secondary.opacity(0.1) : .clear
     }
 }
 
-/// What a terminal tab shows.
-private struct TerminalLabel {
-    var title: String
-    var hasExited: Bool
-}
-
 private struct TabStatusIndicator: View {
     let status: SessionStatus?
 
     var body: some View {
-        switch status {
-        case .busy, .starting, .resuming:
+        if let status, status.isInProgress {
             ProgressView().controlSize(.mini)
-        case .settled:
-            dot(.green)
-        case .interrupted:
-            dot(.orange)
-        case .needsAttention:
-            dot(.red)
-        case .closed, nil:
-            dot(.secondary)
+        } else {
+            Circle().fill(status?.dotColor ?? .secondary).frame(width: 7, height: 7)
         }
-    }
-
-    private func dot(_ color: Color) -> some View {
-        Circle().fill(color).frame(width: 7, height: 7)
     }
 }
 

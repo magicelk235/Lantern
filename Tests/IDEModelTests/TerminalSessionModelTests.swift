@@ -6,20 +6,10 @@ import Testing
 @MainActor
 @Suite(.timeLimit(.minutes(1)))
 struct TerminalSessionModelTests {
-    private let backoff = DaemonConnection.Backoff(initial: .milliseconds(20), maximum: .milliseconds(200))
-
-    private func connect(_ home: TempHome, configure: (TerminalRegistry) -> Void = { _ in }) async throws -> DaemonConnection {
-        let connection = DaemonConnection(paths: home.paths, clientVersion: "test", backoff: backoff)
-        configure(connection.terminals)
-        connection.start()
-        try await eventually("connected") { connection.isConnected }
-        return connection
-    }
-
     @Test func attachShowsTheScreenThenEveryLaterChunkOnceAndInOrder() async throws {
         let home = try TempHome()
         defer { home.remove() }
-        let daemon = FakePTYDaemon()
+        let daemon = FakeDaemon()
         daemon.addPTY("p1", output: "$ seq 1 300\r\n")
         // Printed after ompd subscribed the connection, before it answers: these frames overtake the attach response.
         daemon.printDuringNextAttach(["raced 1\r\n", "raced 2\r\n"])
@@ -55,7 +45,7 @@ struct TerminalSessionModelTests {
     @Test func inputReachesThePTYInOrderWithOneWriteInFlight() async throws {
         let home = try TempHome()
         defer { home.remove() }
-        let daemon = FakePTYDaemon()
+        let daemon = FakeDaemon()
         daemon.addPTY("p1")
         // ompd serves a connection's requests concurrently: with writes this slow, parallel ones would overtake each other.
         daemon.setWriteDelay(milliseconds: 1 ... 12)
@@ -89,7 +79,7 @@ struct TerminalSessionModelTests {
     @Test func reattachesAfterAReconnectAndStartsTheDisplayOverFromTheFreshScreen() async throws {
         let home = try TempHome()
         defer { home.remove() }
-        let first = FakePTYDaemon()
+        let first = FakeDaemon()
         first.addPTY("p1", output: "$ vim\r\n")
         var server = try await home.startServer(first)
         let connection = try await connect(home)
@@ -103,7 +93,7 @@ struct TerminalSessionModelTests {
         await server.stop()
         try await eventually("detached") { model.phase == .detached }
         model.send(Data("typed while offline".utf8))
-        let second = FakePTYDaemon()
+        let second = FakeDaemon()
         second.addPTY("p1", output: "$ vim\r\ntyped before the outage\r\n— terminal restarted —\r\n$ ")
         server = try await home.startServer(second)
         try await eventually("attached again") { model.isAttached && display.resets.count == 2 }
@@ -124,7 +114,7 @@ struct TerminalSessionModelTests {
     @Test func attachAndDetachReachOmpdInCallOrder() async throws {
         let home = try TempHome()
         defer { home.remove() }
-        let daemon = FakePTYDaemon()
+        let daemon = FakeDaemon()
         daemon.addPTY("p1")
         daemon.setAttachDelay(milliseconds: 60)
         let server = try await home.startServer(daemon)
@@ -152,7 +142,7 @@ struct TerminalSessionModelTests {
     @Test func resizesAreDebouncedAndOmpdEndsUpWithTheLastSize() async throws {
         let home = try TempHome()
         defer { home.remove() }
-        let daemon = FakePTYDaemon()
+        let daemon = FakeDaemon()
         daemon.addPTY("p1", size: .standard)
         let server = try await home.startServer(daemon)
         let connection = try await connect(home) { $0.resizeDebounce = .milliseconds(80) }
@@ -178,21 +168,23 @@ struct TerminalSessionModelTests {
         await server.stop()
     }
 
-    @Test func theListShowsExitedProgramsAndReportsPTYsOmpdNoLongerHas() async throws {
+    @Test func pushesKeepTheListCurrentWithoutPolling() async throws {
         let home = try TempHome()
         defer { home.remove() }
-        let daemon = FakePTYDaemon()
+        let daemon = FakeDaemon()
         daemon.addPTY("p1")
         daemon.addPTY("p2")
+        daemon.addSession("s1", ptyId: "tui-1")
         let server = try await home.startServer(daemon)
-        let connection = try await connect(home) { $0.refreshInterval = .milliseconds(30) }
+        let connection = try await connect(home)
         let terminals = connection.terminals
         var gone: [PTYID] = []
         terminals.onGone = { gone.append($0) }
         let shell = terminals.model(for: "p1")
         shell.attach(to: RecordingDisplay())
         let restoredTab = terminals.model(for: "p2")
-        try await eventually("listed") { terminals.ptys.map(\.ptyId) == ["p1", "p2"] && shell.isAttached }
+        try await eventually("listed") { terminals.ptys.map(\.ptyId) == ["p1", "p2", "tui-1"] && shell.isAttached }
+        #expect(terminals.terminals.map(\.ptyId) == ["p1", "p2"], "a session's TUI is not a terminal")
 
         daemon.exit("p1")
         try await eventually("exit noticed") { shell.hasExited }
@@ -202,24 +194,41 @@ struct TerminalSessionModelTests {
         daemon.forget("p2")
         try await eventually("gone") { gone == ["p2"] }
         #expect(restoredTab.phase == .gone)
-        #expect(terminals.ptys.map(\.ptyId) == ["p1"])
+        #expect(terminals.ptys.map(\.ptyId) == ["p1", "tui-1"])
 
-        // A list that was requested before a PTY was opened does not know it yet: it must not make it gone.
-        daemon.setListDelay(milliseconds: 150)
-        terminals.refresh()
-        try await Task.sleep(for: .milliseconds(20))
         let opened = try await terminals.open(cwd: "/tmp/project", size: TerminalSize(cols: 100, rows: 30))
-        #expect(terminals.ptys.map(\.ptyId) == ["p1", opened.ptyId])
-        try await Task.sleep(for: .milliseconds(400))
-        #expect(gone == ["p2"])
-        #expect(terminals.ptys.map(\.ptyId) == ["p1", opened.ptyId])
+        #expect(terminals.ptys.map(\.ptyId) == ["p1", "tui-1", opened.ptyId])
         #expect(opened.info?.size == TerminalSize(cols: 100, rows: 30))
 
         try await terminals.close("p1")
         #expect(gone == ["p2", "p1"])
-        #expect(terminals.ptys.map(\.ptyId) == [opened.ptyId])
+        #expect(terminals.ptys.map(\.ptyId) == ["tui-1", opened.ptyId])
         #expect(daemon.lifecycle.last == "close p1")
         #expect(daemon.writes.isEmpty, "input to an exited program goes nowhere")
+
+        // Held open long enough for any poll to have fired: the list came once, at connect.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(daemon.lists == 1)
+
+        await connection.stop()
+        await server.stop()
+    }
+
+    @Test func theListAtConnectLosesToAPushThatOvertookIt() async throws {
+        let home = try TempHome()
+        defer { home.remove() }
+        let daemon = FakeDaemon()
+        daemon.addPTY("p1")
+        // `pty.list` looks at the PTYs, then takes a while to answer: a PTY opened meanwhile is missing from it.
+        daemon.setListDelay(milliseconds: 200)
+        let server = try await home.startServer(daemon)
+        let connection = try await connect(home)
+        let terminals = connection.terminals
+        try await eventually("list requested") { daemon.lists == 1 }
+        daemon.addPTY("p2")
+        try await eventually("pushed") { terminals.ptys.map(\.ptyId) == ["p1", "p2"] }
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(terminals.ptys.map(\.ptyId) == ["p1", "p2"], "the older answer does not take p2 away")
 
         await connection.stop()
         await server.stop()

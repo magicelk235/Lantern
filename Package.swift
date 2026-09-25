@@ -28,9 +28,9 @@ let package = Package(
             dependencies: ["IDEProtocol", "IDETransport", .product(name: "SwiftTerm", package: "SwiftTerm")]
         ),
         .executableTarget(name: "ompd", dependencies: ["OmpdCore", "IDETransport"]),
-        // App-side state (no AppKit/SwiftUI): daemon connection, per-session sync, transcript reducer.
+        // App-side state (no AppKit/SwiftUI): daemon connection, session TUIs and terminals on ompd's PTYs.
         .target(name: "IDEModel", dependencies: ["IDETransport"]),
-        // App-owned persistent state (no AppKit/SwiftUI): windows, tabs, per-session UI and hot-exit dirty buffers in
+        // App-owned persistent state (no AppKit/SwiftUI): windows, tabs, editor positions and hot-exit dirty buffers in
         // `state.sqlite`.
         .target(name: "IDEState", dependencies: ["IDEProtocol", .product(name: "GRDB", package: "GRDB.swift")]),
         // Editor logic without AppKit/SwiftUI: text file I/O with content hashes, the
@@ -41,7 +41,7 @@ let package = Package(
         .testTarget(name: "IDEProtocolTests", dependencies: ["IDEProtocol"]),
         .testTarget(name: "IDETransportTests", dependencies: ["IDETransport"]),
         .testTarget(name: "OmpdCoreTests", dependencies: ["OmpdCore"]),
-        .testTarget(name: "IDEModelTests", dependencies: ["IDEModel"], resources: [.copy("Fixtures")]),
+        .testTarget(name: "IDEModelTests", dependencies: ["IDEModel"]),
         .testTarget(name: "IDEStateTests", dependencies: ["IDEState", .product(name: "GRDB", package: "GRDB.swift")]),
         .testTarget(name: "IDEEditorModelTests", dependencies: ["IDEEditorModel", "IDEState"]),
     ],

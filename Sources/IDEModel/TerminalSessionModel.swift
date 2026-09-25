@@ -13,8 +13,25 @@ public protocol TerminalDisplay: AnyObject {
     func feed(_ data: Data)
 }
 
-/// One terminal the app shows: a PTY in ompd, attached to this client while a display shows it. The PTY
-/// outlives the model, the app and the connection; only `TerminalRegistry.close` ends it.
+/// What a terminal emulator shows and types into: one PTY (`TerminalSessionModel`), or an omp session's TUI on
+/// whichever PTY omp runs on now (`SessionTerminal`).
+@MainActor
+public protocol TerminalEndpoint: AnyObject {
+    /// Shows the output on `display`, starting with a fresh screen.
+    func attach(to display: any TerminalDisplay)
+    /// The display is gone; ompd stops streaming to this client.
+    func detach()
+    /// What the user typed, or the emulator answered.
+    func send(_ bytes: Data)
+    /// The display's size in cells.
+    func resize(_ size: TerminalSize)
+    /// Title the program set (OSC 0/2), as the display's emulator reports it.
+    var programTitle: String? { get set }
+}
+
+/// One PTY the app shows: a terminal, or the TUI of an omp session, attached to this client while a display
+/// shows it. The PTY outlives the model, the app and the connection; only `TerminalRegistry.close` (or, for a session's
+/// TUI, ompd) ends it.
 ///
 /// - Output: `attach(to:)` sends `pty.attach`, resets the display with the returned screen, then feeds the live
 ///   `ptyOutput` chunks. ompd subscribes the connection and serializes the screen in one step, so every chunk that
@@ -28,7 +45,7 @@ public protocol TerminalDisplay: AnyObject {
 /// - Attach and detach reach ompd one at a time, in call order: the subscription belongs to the connection, so a
 ///   detach that overtook a later attach would silence the terminal.
 @MainActor @Observable
-public final class TerminalSessionModel: Identifiable {
+public final class TerminalSessionModel: Identifiable, TerminalEndpoint {
     public enum Phase: Equatable, Sendable {
         /// No display, or waiting for a connection.
         case detached
@@ -251,12 +268,13 @@ public final class TerminalSessionModel: Identifiable {
         enqueueLifecycle { backend in try? await backend.detachPTY(ptyId) }
     }
 
-    /// Runs `operation` after the previous attach or detach finished.
+    /// Runs `operation` after the previous attach or detach finished. The task holds the backend, not the model: a model
+    /// released right after `detach()` (a session that moved to another PTY) still ends its subscription.
     private func enqueueLifecycle(_ operation: @escaping @MainActor (any TerminalBackend) async -> Void) {
+        guard let backend else { return }
         let previous = lifecycle
-        lifecycle = Task { [weak self] in
+        lifecycle = Task {
             await previous?.value
-            guard let backend = self?.backend else { return }
             await operation(backend)
         }
     }

@@ -1,25 +1,34 @@
 import AppKit
 import IDEModel
 import Observation
+import SwiftTerm
 
 enum TerminalSettings {
     /// Point size of terminal text (SF Mono).
     static let fontSizeKey = "terminalFontSize"
     static let defaultFontSize = 12.0
     static let fontSizes = 9.0 ... 24.0
+    /// Option sends Meta (Esc + key) in omp session tabs, where omp binds Alt chords (Alt+P, Alt+M, Alt+Shift+P, …).
+    static let sessionOptionAsMetaKey = "sessionOptionAsMeta"
+    /// Option sends Meta in terminal tabs; off, Option types the characters of the keyboard layout.
+    static let terminalOptionAsMetaKey = "terminalOptionAsMeta"
 
     static var fontSize: Double {
         let size = UserDefaults.standard.double(forKey: fontSizeKey)
         return size == 0 ? defaultFontSize : min(max(size, fontSizes.lowerBound), fontSizes.upperBound)
     }
 
+    static var sessionOptionAsMeta: Bool { UserDefaults.standard.object(forKey: sessionOptionAsMetaKey) as? Bool ?? true }
+    static var terminalOptionAsMeta: Bool { UserDefaults.standard.object(forKey: terminalOptionAsMetaKey) as? Bool ?? true }
+
     static func font(size: Double) -> NSFont {
         .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 }
 
-/// The app's terminals: opens, restarts and closes PTYs in ompd, keeps an emulator per terminal tab once it
-/// was shown, and knows which workspace each PTY belongs to.
+/// The app's terminal emulators: terminal tabs on PTYs in ompd, which it opens, restarts and closes, and
+/// session tabs showing omp's TUI. Keeps an emulator per tab once it was shown, and knows which workspace each terminal
+/// belongs to.
 @MainActor @Observable
 final class TerminalsController {
     let registry: TerminalRegistry
@@ -28,9 +37,13 @@ final class TerminalsController {
     private var workspaces: [PTYID: String] = [:]
     /// Emulators of the terminal tabs shown so far, until their tab closes.
     @ObservationIgnored private var emulators: [PTYID: TerminalTab] = [:]
-    /// Size of the terminal shown last: new PTYs start with it, so the shell's first prompt already fits.
-    @ObservationIgnored private var lastSize: TerminalSize?
+    /// Emulators of the session tabs shown so far, until their tab closes.
+    @ObservationIgnored private var sessionEmulators: [SessionKey: TerminalTab] = [:]
+    /// Size of the emulator that changed size last.
+    @ObservationIgnored private(set) var lastSize: TerminalSize?
     @ObservationIgnored private var fontSize = TerminalSettings.fontSize
+    @ObservationIgnored private var sessionOptionAsMeta = TerminalSettings.sessionOptionAsMeta
+    @ObservationIgnored private var terminalOptionAsMeta = TerminalSettings.terminalOptionAsMeta
     @ObservationIgnored private var defaultsObserver: (any NSObjectProtocol)?
 
     init(registry: TerminalRegistry) {
@@ -38,11 +51,11 @@ final class TerminalsController {
         defaultsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.applyFontSize() }
+            MainActor.assumeIsolated { self?.applySettings() }
         }
     }
 
-    // MARK: - Tabs
+    // MARK: - Terminal tabs
 
     /// A terminal tab is (or will be) open in `workspace`. Its model exists from now on, so a PTY that is gone from ompd
     /// is noticed and its tab closed even before it is shown.
@@ -58,9 +71,7 @@ final class TerminalsController {
     /// The emulator of `ptyId`'s tab, made the first time the tab is shown; it attaches the PTY.
     func emulator(for ptyId: PTYID) -> TerminalTab {
         if let emulator = emulators[ptyId] { return emulator }
-        let emulator = TerminalTab(model: registry.model(for: ptyId), font: TerminalSettings.font(size: fontSize)) {
-            [weak self] size in self?.lastSize = size
-        }
+        let emulator = makeEmulator(registry.model(for: ptyId), optionAsMeta: terminalOptionAsMeta)
         emulators[ptyId] = emulator
         return emulator
     }
@@ -80,11 +91,26 @@ final class TerminalsController {
         workspaces[ptyId] = nil
     }
 
+    // MARK: - Session tabs
+
+    /// The emulator of `session`'s tab, made the first time the tab is shown; it attaches omp's TUI.
+    func emulator(for session: SessionTerminal) -> TerminalTab {
+        if let emulator = sessionEmulators[session.sessionKey] { return emulator }
+        let emulator = makeEmulator(session, optionAsMeta: sessionOptionAsMeta)
+        sessionEmulators[session.sessionKey] = emulator
+        return emulator
+    }
+
+    /// The session's tab closed: its emulator goes. omp keeps running.
+    func releaseSession(_ sessionKey: SessionKey) {
+        sessionEmulators.removeValue(forKey: sessionKey)?.close()
+    }
+
     // MARK: - Commands
 
-    /// Starts the login shell on a new PTY in `workspace`.
-    func open(in workspace: String) async throws -> PTYID {
-        let model = try await registry.open(cwd: workspace, size: lastSize ?? .standard)
+    /// Starts the login shell on a new PTY in `workspace`, `size` big.
+    func open(in workspace: String, size: TerminalSize) async throws -> PTYID {
+        let model = try await registry.open(cwd: workspace, size: size)
         workspaces[model.ptyId] = workspace
         return model.ptyId
     }
@@ -109,6 +135,16 @@ final class TerminalsController {
         try await registry.close(ptyId)
     }
 
+    /// The cells an emulator `size` points big has in the current font: what a new tab's PTY should start with, so
+    /// the program's first screen already fits.
+    func cells(fitting size: CGSize) -> TerminalSize {
+        guard size.width > 0, size.height > 0 else { return lastSize ?? .standard }
+        let probe = OmpTerminalView(frame: .zero, font: TerminalSettings.font(size: fontSize), options: TerminalOptions(scrollback: 0))
+        probe.setFrameSize(size)
+        let terminal = probe.getTerminal()
+        return TerminalSize(cols: terminal.cols, rows: terminal.rows)
+    }
+
     // MARK: - Titles and sidebar
 
     /// The title the program set, else the terminal's folder and program.
@@ -126,16 +162,34 @@ final class TerminalsController {
         return containing.max { $0.count < $1.count } ?? info.cwd
     }
 
-    /// ompd's PTYs by the workspace they belong to, each in creation order.
+    /// ompd's terminals (not the session TUIs) by the workspace they belong to, each in creation order.
     func byWorkspace(among workspaces: [String]) -> [String: [PTYInfo]] {
-        Dictionary(grouping: registry.ptys) { workspace(of: $0, among: workspaces) }
+        Dictionary(grouping: registry.terminals) { workspace(of: $0, among: workspaces) }
     }
 
-    private func applyFontSize() {
+    private func makeEmulator(_ endpoint: any TerminalEndpoint, optionAsMeta: Bool) -> TerminalTab {
+        TerminalTab(endpoint: endpoint, font: TerminalSettings.font(size: fontSize), optionAsMeta: optionAsMeta) {
+            [weak self] size in self?.lastSize = size
+        }
+    }
+
+    private func applySettings() {
         let size = TerminalSettings.fontSize
-        guard size != fontSize else { return }
-        fontSize = size
-        let font = TerminalSettings.font(size: size)
-        for emulator in emulators.values { emulator.setFont(font) }
+        if size != fontSize {
+            fontSize = size
+            let font = TerminalSettings.font(size: size)
+            for emulator in emulators.values { emulator.setFont(font) }
+            for emulator in sessionEmulators.values { emulator.setFont(font) }
+        }
+        let sessionMeta = TerminalSettings.sessionOptionAsMeta
+        if sessionMeta != sessionOptionAsMeta {
+            sessionOptionAsMeta = sessionMeta
+            for emulator in sessionEmulators.values { emulator.setOptionAsMeta(sessionMeta) }
+        }
+        let terminalMeta = TerminalSettings.terminalOptionAsMeta
+        if terminalMeta != terminalOptionAsMeta {
+            terminalOptionAsMeta = terminalMeta
+            for emulator in emulators.values { emulator.setOptionAsMeta(terminalMeta) }
+        }
     }
 }

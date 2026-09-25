@@ -1,13 +1,12 @@
 import IDEProtocol
 
-/// What a detail-area tab shows. The value is the tab's identity: a session (later a terminal or a file) has at most
-/// one tab per window.
+/// What a detail-area tab shows. The value is the tab's identity: a session, a terminal or a file has at most one tab
+/// per window.
 ///
-/// Stored as `{"kind": …, "id": …}` so the Terminal and Editor slices add their cases (`terminal` ↔ `PTYID`, `editor`
-/// ↔ file path) with one more `kind` string. A stored tab whose kind this build does not know is dropped
-/// when a `TabLayout` is decoded.
+/// Stored as `{"kind": …, "id": …}` (`session` ↔ `SessionKey`, `terminal` ↔ `PTYID`, `editor` ↔ file path).
+/// A stored tab whose kind this build does not know is dropped when a `TabLayout` is decoded.
 public enum TabKind: Hashable, Sendable {
-    /// An omp session's transcript and composer. Closing the tab leaves the session running.
+    /// An omp session: omp's own TUI, on whichever PTY omp runs on now. Closing the tab leaves the session running.
     case session(SessionKey)
     /// A file in the editor, by absolute path. Closing the tab of a buffer with unsaved edits asks first.
     case editor(path: String)

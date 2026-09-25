@@ -15,7 +15,7 @@ public protocol TerminalBackend: AnyObject, Sendable {
     func listPTYs() async throws -> [PTYInfo]
 }
 
-extension DaemonConnection: TerminalBackend {
+extension DaemonConnection {
     public func openPTY(_ params: PTYOpen.Params) async throws -> PTYInfo {
         try await connectedClient().call(PTYOpen.self, params)
     }

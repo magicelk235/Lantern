@@ -1,5 +1,4 @@
 import Foundation
-import IDEProtocol
 
 /// A window frame in screen coordinates (AppKit: points, origin at the bottom left of the primary screen).
 public struct WindowFrame: Equatable, Sendable {
@@ -36,26 +35,6 @@ public struct WindowState: Equatable, Sendable {
         self.sidebarWidth = sidebarWidth
         self.sidebarVisible = sidebarVisible
         self.tabs = tabs
-    }
-}
-
-/// The UI of one session, kept whether or not it has a tab (table `session_ui`).
-public struct SessionUIState: Equatable, Sendable {
-    public var sessionKey: SessionKey
-    /// Unsent composer text.
-    public var draft: String
-    /// Id of the transcript row at the bottom edge of the viewport; nil while the transcript was scrolled to its end,
-    /// where it sticks as new output arrives.
-    public var scrollAnchor: String?
-    /// Highest journal seq the transcript had applied: a relaunch replays the journal from 0 and knows it has covered
-    /// everything that was on screen once it reaches this seq.
-    public var lastSeq: Seq
-
-    public init(sessionKey: SessionKey, draft: String = "", scrollAnchor: String? = nil, lastSeq: Seq = 0) {
-        self.sessionKey = sessionKey
-        self.draft = draft
-        self.scrollAnchor = scrollAnchor
-        self.lastSeq = lastSeq
     }
 }
 

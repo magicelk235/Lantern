@@ -4,6 +4,8 @@ import SwiftUI
 struct SettingsView: View {
     @AppStorage(AppSettings.defaultApprovalModeKey) private var approvalMode = ""
     @AppStorage(TerminalSettings.fontSizeKey) private var terminalFontSize = TerminalSettings.defaultFontSize
+    @AppStorage(TerminalSettings.sessionOptionAsMetaKey) private var sessionOptionAsMeta = true
+    @AppStorage(TerminalSettings.terminalOptionAsMetaKey) private var terminalOptionAsMeta = true
 
     var body: some View {
         Form {
@@ -24,6 +26,16 @@ struct SettingsView: View {
                     Text("\(Int(terminalFontSize)) pt").monospacedDigit()
                 }
             }
+            LabeledContent("Option key sends Meta") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("In omp sessions", isOn: $sessionOptionAsMeta)
+                    Toggle("In terminals", isOn: $terminalOptionAsMeta)
+                }
+            }
+            Text("On, Option+key reaches the program as Alt+key (omp's Alt+P, Alt+M, …); off, Option types the characters of your keyboard layout.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(20)
         .frame(width: 480)

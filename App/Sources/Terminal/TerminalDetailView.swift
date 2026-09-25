@@ -16,10 +16,7 @@ struct TerminalDetailView: View {
                 if case .failed(let message) = model.phase {
                     Banner(systemImage: "exclamationmark.triangle", tint: .orange, title: "ompd could not attach this terminal", message: message)
                 }
-                TerminalHostView(terminals: app.terminals, ptyId: ptyId)
-                    .padding(.leading, 6)
-                    .padding(.vertical, 4)
-                    .background(Color(nsColor: .textBackgroundColor))
+                TerminalPane { app.terminals.emulator(for: ptyId) }
                 if model.hasExited {
                     ExitedBar { app.restartTerminal(ptyId) }
                 }
@@ -50,14 +47,32 @@ struct TerminalDetailView: View {
     }
 }
 
-/// Hosts a terminal tab's emulator. The emulator belongs to the tab, not to this view, so it keeps its screen,
-/// scrollback and selection while other tabs are shown.
+/// Hosts a tab's emulator in the detail area, inset from its edges. The emulator belongs to the tab, not to this view,
+/// so it keeps its screen, scrollback and selection while other tabs are shown.
+struct TerminalPane: View {
+    /// Room around the emulator.
+    static let insets = EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 0)
+
+    /// The tab's emulator, made the first time the pane is shown.
+    let emulator: @MainActor () -> TerminalTab
+
+    var body: some View {
+        TerminalHostView(emulator: emulator)
+            .padding(Self.insets)
+            .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    /// The points an emulator gets in a pane `size` big.
+    static func emulatorSize(in size: CGSize) -> CGSize {
+        CGSize(width: size.width - insets.leading - insets.trailing, height: size.height - insets.top - insets.bottom)
+    }
+}
+
 struct TerminalHostView: NSViewRepresentable {
-    let terminals: TerminalsController
-    let ptyId: PTYID
+    let emulator: @MainActor () -> TerminalTab
 
     func makeNSView(context: Context) -> TerminalHostingView {
-        TerminalHostingView(terminal: terminals.emulator(for: ptyId).view)
+        TerminalHostingView(terminal: emulator().view)
     }
 
     func updateNSView(_ nsView: TerminalHostingView, context: Context) {}

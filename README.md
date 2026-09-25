@@ -11,7 +11,7 @@ Native macOS IDE for [omp](https://github.com/can1357/oh-my-pi) (Swift 6, SwiftU
 | `Sources/IDETransport` | length-prefixed frames over a unix socket (`IDEServer`, `IDEClient`, `IDERouter`) |
 | `Sources/OmpdCore` | daemon: journal, manifest, session supervisor, PTY pool, ide-bridge server, power observers |
 | `Sources/ompd` | `ompd run \| status [--json] \| --version` |
-| `Sources/IDEModel` | app-side models: transcript reducer, session view model, daemon connection, terminal models (PTY attach, serial input, `pty.list` registry) |
+| `Sources/IDEModel` | app-side models: daemon connection, session TUIs that follow omp from PTY to PTY (`SessionTerminal`), terminal models (PTY attach, serial input, push-driven PTY registry) |
 | `Sources/IDEEditorModel` | editor logic without AppKit: text file read/atomic save, content-hash buffer state machine (dirty, revert, external change, hot-exit restore), line diff, navigator listing, FSEvents watcher |
 | `bridge/ide-bridge.ts` | omp extension loaded into every daemon-owned omp (agent registry, revive, ownership lock) |
 | `App/` | XcodeGen spec + SwiftUI sources for `omp IDE.app` (embeds `ompd` and its LaunchAgent plist) |
@@ -53,4 +53,4 @@ With `OMPD_HOME` set, the app does not register the production LaunchAgent (`com
 | 4 Agent supervision UX (agent tree, jobs, director, session picker) | not started |
 | 5 Hardening (upgrades, journal compaction, disk pressure) | not started |
 
-Known gaps: the app polls `pty.list` every 2 s instead of receiving a push; the transcript is a SwiftUI `LazyVStack`, not a TextKit 2 view; a relaunch replays each journal from seq 0 because reducer state isn't cached yet; production `SMAppService` registration hasn't run with a Developer ID build.
+Known gaps: production `SMAppService` registration hasn't run with a Developer ID build.

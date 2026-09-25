@@ -45,10 +45,10 @@ final class TempHome: Sendable {
     }
 }
 
-/// The committed draft of `sessionKey`, or nil when no row is committed.
-func committedDraft(_ observer: DatabaseQueue, _ sessionKey: SessionKey) throws -> String? {
+/// The committed vertical scroll position of the editor of `path`, or nil when no row is committed.
+func committedScroll(_ observer: DatabaseQueue, _ path: String) throws -> Double? {
     try observer.read { db in
-        try String.fetchOne(db, sql: "SELECT draft FROM session_ui WHERE sessionKey = ?", arguments: [sessionKey])
+        try Double.fetchOne(db, sql: "SELECT scrollY FROM editor_ui WHERE path = ?", arguments: [path])
     }
 }
 
