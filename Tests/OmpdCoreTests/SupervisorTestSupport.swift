@@ -11,14 +11,15 @@ import Testing
 /// A `/bin/sh` stand-in for omp's TUI, run on a session PTY. Everything it does is recorded in files of its directory
 /// (passed as `$FAKE_OMP_DIR`):
 /// - `argv`: each invocation's arguments, one line per spawn; `env.<pid>`: each spawn's environment.
-/// - `session.<pid>`: the session file that spawn serves (its `--resume` file, else `session.jsonl`), created on start
-///   the way omp's ensureOnDisk would.
+/// - `session.<pid>`: the session file that spawn serves (its `--resume` file, else a new `session-<pid>.jsonl`), created
+///   on start the way the bridge's first-run ensureOnDisk would.
 /// - `input`: every line typed into its terminal; `events`: `graceful` (SIGUSR1, what `ScriptedBridge` sends for
 ///   `session.shutdown`) or `hup`.
 /// Typed `exit` quits normally (as omp's `/exit`), `crash` exits 3; anything else is echoed as `echo:<line>`. A graceful
 /// stop or a normal quit appends `session_exit {kind:"normal"}` to the session file, SIGHUP one with kind `signal` and
 /// exit 129 (omp's postmortem). `$FAKE_OMP_HUP=ignore` ignores SIGHUP; a `crash-at-start` file in its directory
-/// makes it exit 3 before doing anything.
+/// makes it exit 3 before doing anything. Its signal handling is in place before `session.<pid>` exists (which is what
+/// the scripted hello waits for), so a stop right after the hello is handled like omp handles it.
 struct FakeOmp: Sendable {
     let directory: URL
     let executable: String
@@ -27,17 +28,12 @@ struct FakeOmp: Sendable {
         #!/bin/sh
         if [ "$1" = "--version" ]; then echo "omp/18.3.1"; exit 0; fi
         dir="$FAKE_OMP_DIR"
-        session="$dir/session.jsonl"
+        session="$dir/session-$$.jsonl"
         previous=""
         for argument in "$@"; do
           if [ "$previous" = "--resume" ]; then session="$argument"; fi
           previous="$argument"
         done
-        printf '%s\n' "$*" >> "$dir/argv"
-        env > "$dir/env.$$"
-        if [ -f "$dir/crash-at-start" ]; then exit 3; fi
-        : >> "$session"
-        printf '%s' "$session" > "$dir/session.$$"
         record_exit() {
           ts=$(perl -MTime::HiRes=time -MPOSIX=strftime -e 'my $t = time; printf "%s.%03dZ", strftime("%Y-%m-%dT%H:%M:%S", gmtime($t)), int(($t - int($t)) * 1000)')
           printf '{"type":"custom","customType":"session_exit","data":{"reason":"%s","kind":"%s","recordedAt":"%s"}}\n' "$1" "$2" "$ts" >> "$session"
@@ -48,6 +44,11 @@ struct FakeOmp: Sendable {
         else
           trap 'printf "hup\n" >> "$dir/events"; record_exit sighup signal; exit 129' HUP
         fi
+        printf '%s\n' "$*" >> "$dir/argv"
+        env > "$dir/env.$$"
+        if [ -f "$dir/crash-at-start" ]; then exit 3; fi
+        : >> "$session"
+        printf '%s' "$session" > "$dir/.session.$$" && mv "$dir/.session.$$" "$dir/session.$$"
         printf 'fake omp %s\n' "$$"
         while :; do
           if ! IFS= read -r line; then sleep 1; continue; fi
@@ -78,9 +79,6 @@ struct FakeOmp: Sendable {
         return environment
     }
 
-    /// The session file of a fresh spawn.
-    var sessionFile: String { directory.appending(path: "session.jsonl").path(percentEncoded: false) }
-
     func file(_ name: String) -> URL { directory.appending(path: name, directoryHint: .notDirectory) }
 
     func lines(_ name: String) -> [String] {
@@ -97,7 +95,7 @@ struct FakeOmp: Sendable {
 
     /// The session file the spawn with `pid` serves, once it started.
     func sessionFile(of pid: Int32) -> String? {
-        try? String(contentsOf: file("session.\(pid)"), encoding: .utf8)
+        (try? String(contentsOf: file("session.\(pid)"), encoding: .utf8)).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// `session_exit` kinds recorded in `path`.
@@ -146,7 +144,8 @@ actor ScriptedBridge: SessionBridgeLink {
         let file = try await eventuallyValue("fake omp \(pid) to start", timeout: timeout) { omp.sessionFile(of: pid) }
         return BridgeHello(
             sessionKey: sessionKey, pid: pid, ompVersion: "18.3.1",
-            capabilities: ["session.info": true, "session.shutdown": shutdown], sessionId: "fake-session",
+            capabilities: ["session.info": true, "session.shutdown": shutdown, "events.activity": true, "events.title": true],
+            sessionId: "fake-session",
             sessionFile: file, onDisk: true, cwd: "/", artifactsDir: nil, title: nil, raw: ["t": "hello"])
     }
 
@@ -252,6 +251,8 @@ struct SupervisorFixture {
     /// Notices the supervisor sent (`SupervisorContext.notify`).
     let notices = Box<[DaemonNotice]>([])
     let persistenceFailures = Box<[String]>([])
+    /// Manifest and PTY-list changes in publication order (what the daemon broadcasts as `sessions` and `ptys`).
+    let published = Box<[Published]>([])
     let workspace: String
     let key: SessionKey = "session-1"
     let supervisor: SessionSupervisor
@@ -278,6 +279,13 @@ struct SupervisorFixture {
         configure(&entry)
         let seeded = entry
         try await manifest.update { $0.sessions = [seeded] }
+        let published = published
+        let key = key
+        manifest.setSink { list in
+            guard let entry = list.sessions.first(where: { $0.sessionKey == key }) else { return }
+            published.mutate { $0.append(.sessions(ptyId: entry.ptyId, status: entry.status)) }
+        }
+        await pool.setChangeHandler { list in published.mutate { $0.append(.ptys(list.map(\.ptyId))) } }
         let notices = notices
         let persistenceFailures = persistenceFailures
         let context = SupervisorContext(
@@ -312,6 +320,11 @@ struct SupervisorFixture {
         await supervisor.stop(.daemonShutdown)
         try? await pool.shutdown()
     }
+}
+
+enum Published: Sendable, Equatable {
+    case sessions(ptyId: PTYID?, status: SessionStatus)
+    case ptys([PTYID])
 }
 
 extension SupervisorTimings {
