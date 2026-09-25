@@ -36,7 +36,7 @@ xcodebuild -project OmpIDE.xcodeproj -scheme "omp IDE" -configuration Debug \
 ```sh
 export OMPD_HOME=/tmp/oi                 # keep it short: the socket path must stay under 104 bytes
 .build/debug/ompd run &                  # add --omp-arg … to pass flags to every new omp session
-"~/Library/Developer/omp-ide/dd-main/Build/Products/Debug/omp IDE.app/Contents/MacOS/omp IDE"
+"$HOME/Library/Developer/omp-ide/dd-main/Build/Products/Debug/omp IDE.app/Contents/MacOS/omp IDE" &
 .build/debug/ompd status
 ```
 
