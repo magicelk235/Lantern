@@ -42,6 +42,8 @@
  * what the TUI's own /exit does: `session_exit {kind:"normal"}` with the pending tool calls, the turn aborted,
  * subagents, kernels and tool processes torn down — and the process exits 0 through omp's postmortem `quit`.
  * `ctx.shutdown()` is not used: in the TUI it waits until the session is idle with no background work.
+ * At the main agent's first run the bridge writes the lazily created session file (`ensureOnDisk`), so a TUI that dies
+ * during its first turn can be resumed.
  *
  * Internal omp subpaths (registry/agent-lifecycle, registry/persisted-agents, modes/agent-hub-runtime) and
  * @oh-my-pi/pi-utils are imported dynamically: a missing module turns the matching capability off instead of failing
@@ -199,22 +201,47 @@ const DAEMON = daemonEnv();
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Duplicate-load guard. A daemon-spawned omp usually loads this file twice: the lock-mode copy from the agent's
-// extensions dir (auto-discovered, loaded first) and ompd's copy via `-e` (loaded last). The factory is re-bound, not
-// re-imported, for child and revived sessions, so one evaluation serves the whole process. The last evaluation wins
-// (ompd's `-e` copy over a possibly stale global copy) unless the owner already dialed the daemon; handlers of a
-// superseded evaluation stay registered but do nothing.
+// extensions dir and ompd's copy via `-e`. The factory is re-bound, not re-imported, for child and revived sessions, so
+// one evaluation serves the whole process: the newest `BRIDGE_REVISION`, the last evaluation among equals, and nobody
+// takes over once the owner dialed the daemon. Handlers of a superseded evaluation stay registered but do nothing.
+// Evaluation order is not guaranteed, and copies older than the revision field (RPC-era installs) overwrite the slot
+// unconditionally when they evaluate; an accessor ignores such writes, so a stale global copy never wins over ompd's.
 // ---------------------------------------------------------------------------------------------------------------------
+
+/** Bumped whenever the daemon-mode behavior changes (2: TUI sessions: shutdown, activity, title). */
+const BRIDGE_REVISION = 2;
 
 interface GuardSlot {
 	/** The evaluation of this file that serves the process. */
 	owner: string;
 	/** The owner dialed the daemon; later evaluations no longer take over. */
 	connected: boolean;
+	/** Absent in copies from before revisions (treated as 0). */
+	revision?: number;
 }
 
 const GUARD = Symbol.for("omp-ide.bridge");
 const guardSlots = globalThis as unknown as Record<symbol, GuardSlot | undefined>;
-if (!guardSlots[GUARD]?.connected) guardSlots[GUARD] = { owner: EVAL_ID, connected: false };
+
+function claimGuard(): void {
+	const current = guardSlots[GUARD];
+	if (current?.connected || (current?.revision ?? 0) > BRIDGE_REVISION) return;
+	let slot: GuardSlot = { owner: EVAL_ID, connected: false, revision: BRIDGE_REVISION };
+	try {
+		Object.defineProperty(globalThis, GUARD, {
+			configurable: true,
+			enumerable: false,
+			get: () => slot,
+			set: (next: GuardSlot | undefined) => {
+				if (next && !slot.connected && (next.revision ?? 0) >= BRIDGE_REVISION) slot = next;
+			},
+		});
+	} catch {
+		guardSlots[GUARD] = slot;
+	}
+}
+
+claimGuard();
 
 function owns(): boolean {
 	return guardSlots[GUARD]?.owner === EVAL_ID;
@@ -1093,10 +1120,14 @@ function registerDaemonMode(on: On, daemon: DaemonEnv): void {
 	on("session_before_switch", async (event, rawCtx) => (owns() ? vetoOwnedSwitch(event, rawCtx) : undefined));
 
 	// Busy/idle of the session = the main agent's runs; child sessions fire these into their own instances.
-	on("agent_start", async () => {
+	on("agent_start", async (_event, rawCtx) => {
 		if (!owns() || inst !== S.main) return;
 		try {
 			setActivity("busy");
+			// omp creates the session file lazily, with the first assistant reply.
+			// Written now (the prompt included), a TUI that dies during its first turn is resumed instead of started over.
+			const sm = (rawCtx as CtxLike).sessionManager;
+			if (!attempt(() => sm.isSessionOnDisk(), true)) await sm.ensureOnDisk();
 		} catch (e) {
 			log(`agent_start: ${errText(e)}`);
 		}
