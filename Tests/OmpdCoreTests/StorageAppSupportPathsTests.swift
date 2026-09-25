@@ -1,4 +1,5 @@
 import Foundation
+import IDEProtocol
 import Testing
 @testable import OmpdCore
 
