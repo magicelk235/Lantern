@@ -358,6 +358,9 @@ public actor SessionSupervisor {
         }
         guard generation == self.generation, pid != nil else { return }
         bridgeHello = hello
+        if hello.capabilities["events.activity"] != true {
+            notify("warning", "An older copy of the ide-bridge serves this omp (no activity or title events); the session's status and title will not update until it is restarted with the current omp IDE.")
+        }
         await adopt(sessionFile: hello.sessionFile, sessionId: hello.sessionId, title: hello.title, replacingTitle: false)
         await becomeIdleIfStarting()
         for await event in await context.bridge.events(sessionKey) {
