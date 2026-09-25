@@ -170,7 +170,8 @@ public enum IDECoding {
         e.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         e.dateEncodingStrategy = .custom { date, enc in
             var c = enc.singleValueContainer()
-            try c.encode(date.formatted(.iso8601.year().month().day().time(includingFractionalSeconds: true)))
+            // FormatStyle truncates to ms; bias by half a ms so encode∘decode is a fixed point (byte-stable replay).
+            try c.encode(date.addingTimeInterval(0.0005).formatted(.iso8601.year().month().day().time(includingFractionalSeconds: true)))
         }
         return e
     }
