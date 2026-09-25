@@ -16,6 +16,9 @@ public struct JournalRecord: Sendable, Equatable, Codable {
         case stderr
         /// Deltas collapsed after `session_settled`. Points at the durable omp entry.
         case compacted
+        /// ide-bridge push (agent registry change, async-job snapshot, …): the complete agent tree incl.
+        /// idle/parked/aborted rows that RPC `get_subagents` never reports.
+        case bridge
     }
 
     public init(sessionKey: SessionKey, seq: Seq, ts: Date, kind: Kind, payload: JSONValue) {
