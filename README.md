@@ -42,3 +42,15 @@ export OMPD_HOME=/tmp/oi                 # keep it short: the socket path must s
 ```
 
 With `OMPD_HOME` set, the app does not register the production LaunchAgent (`com.omp-ide.ompd`), and the daemon does not install the lock-mode bridge into `~/.omp/agent/extensions`.
+
+## Status
+
+| Phase | State |
+|---|---|
+| 1 ompd core | done. `scripts/acceptance.sh`: after a reconnect with `since`, the replayed stream matches an always-connected client byte for byte; `launchctl kickstart -k` mid-run resumes the session (`session_exit` normal, `--resume`) |
+| 2 App shell | done for Regime A: ⌘Q during a 3-level nested subagent run with a running terminal and a dirty editor, then relaunch, restores everything and the agents never notice. Regime B2 (real logout/reboot) not yet exercised |
+| 3 Regime B (continuation policy, service relaunch) | not started |
+| 4 Agent supervision UX (agent tree, jobs, director, session picker) | not started |
+| 5 Hardening (upgrades, journal compaction, disk pressure) | not started |
+
+Known gaps: the app polls `pty.list` every 2 s instead of receiving a push; the transcript is a SwiftUI `LazyVStack`, not a TextKit 2 view; a relaunch replays each journal from seq 0 because reducer state isn't cached yet; production `SMAppService` registration hasn't run with a Developer ID build.
