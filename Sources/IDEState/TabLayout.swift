@@ -9,11 +9,18 @@ import IDEProtocol
 public enum TabKind: Hashable, Sendable {
     /// An omp session's transcript and composer. Closing the tab leaves the session running.
     case session(SessionKey)
+    /// A file in the editor, by absolute path. Closing the tab of a buffer with unsaved edits asks first.
+    case editor(path: String)
 
     public var sessionKey: SessionKey? {
         switch self {
         case .session(let key): key
+        case .editor: nil
         }
+    }
+
+    public var editorPath: String? {
+        if case .editor(let path) = self { path } else { nil }
     }
 }
 
@@ -25,6 +32,7 @@ extension TabKind: Codable {
         let kind = try container.decode(String.self, forKey: .kind)
         switch kind {
         case "session": self = .session(try container.decode(SessionKey.self, forKey: .id))
+        case "editor": self = .editor(path: try container.decode(String.self, forKey: .id))
         default:
             throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "unknown tab kind \(kind)")
         }
@@ -36,6 +44,9 @@ extension TabKind: Codable {
         case .session(let key):
             try container.encode("session", forKey: .kind)
             try container.encode(key, forKey: .id)
+        case .editor(let path):
+            try container.encode("editor", forKey: .kind)
+            try container.encode(path, forKey: .id)
         }
     }
 }

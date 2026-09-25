@@ -13,6 +13,8 @@ final class AppState {
     let connection = DaemonConnection(
         clientVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev")
     let agent = DaemonAgent()
+    /// Open files and the file navigators.
+    let editors: Editors
     /// Detail-area tabs, one strip per workspace. The selected tab is what the detail area shows; when it is a
     /// session, the sidebar highlights it.
     private(set) var tabs: TabLayout
@@ -40,6 +42,7 @@ final class AppState {
     init() {
         persistence = StatePersistence(paths: .standard)
         let restored = persistence.restoredWindow
+        editors = Editors(persistence: persistence)
         tabs = restored?.tabs ?? TabLayout()
         columnVisibility = restored?.sidebarVisible == false ? .detailOnly : .all
         initialSidebarWidth = restored?.sidebarWidth ?? 270
@@ -48,6 +51,7 @@ final class AppState {
         // Regime A: each restored session tab subscribes once connected, replaying its journal from the
         // start; nothing is sent to omp.
         for sessionKey in tabs.tabs.compactMap(\.sessionKey) { openSession(sessionKey) }
+        restoreEditors()
         observeSystemPower()
     }
 
@@ -77,14 +81,46 @@ final class AppState {
     }
 
     func selectTab(_ tab: TabKind) {
+        editors.highlight = nil
         tabs.select(tab)
         saveWindow()
     }
 
-    /// Closes the tab only: the session keeps running (Close Session is what stops omp).
+    /// Closes the tab only: the session keeps running (Close Session is what stops omp). An editor with unsaved edits
+    /// asks to save them first.
     func closeTab(_ tab: TabKind) {
-        tabs.close(tab)
+        guard let path = tab.editorPath else {
+            tabs.close(tab)
+            saveWindow()
+            return
+        }
+        Task {
+            guard await editors.closeIfConfirmed(path, window: window) else { return }
+            tabs.close(tab)
+            saveWindow()
+        }
+    }
+
+    /// Shows `path` in its editor tab, opening one at the end of `workspace`'s strip first if needed.
+    func openEditor(_ path: String, in workspace: String) {
+        editors.open(path, in: workspace).focusOnAppear = true
+        editors.highlight = nil
+        tabs.open(.editor(path: path), in: workspace)
         saveWindow()
+    }
+
+    /// Reopens the documents of the restored editor tabs, and gives a tab to every unsaved buffer of the previous run
+    /// that has none: hot-exit never drops an edit silently.
+    private func restoreEditors() {
+        for strip in tabs.strips {
+            for path in strip.tabs.compactMap(\.editorPath) { editors.open(path, in: strip.workspace) }
+        }
+        let selection = tabs.selection
+        for (path, workspace) in editors.unclaimedBuffers(workspaces: tabs.strips.map(\.workspace)) {
+            editors.open(path, in: workspace)
+            tabs.open(.editor(path: path), in: workspace)
+        }
+        if let selection { tabs.select(selection) }
     }
 
     /// Picks a workspace folder and asks ompd to start omp there with the default approval mode.
@@ -197,6 +233,7 @@ final class AppState {
     func flushState() {
         windowFrameChanged()
         for model in connection.openSessions.values { saveSessionUI(of: model) }
+        editors.flush()
         saveWindow()
         persistence.flush()
     }

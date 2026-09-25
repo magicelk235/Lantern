@@ -77,3 +77,31 @@ public struct DirtyBuffer: Equatable, Sendable {
         self.updatedAt = updatedAt
     }
 }
+
+/// Where an editor was in a file (table `editor_ui`): kept after its tab closes, so the file reopens there.
+public struct EditorUIState: Equatable, Sendable {
+    /// A selected range in UTF-16 units, as `NSRange`; an empty one is a caret.
+    public struct Selection: Equatable, Sendable, Codable {
+        public var location: Int
+        public var length: Int
+
+        public init(location: Int, length: Int) {
+            self.location = location
+            self.length = length
+        }
+    }
+
+    /// Absolute path of the file.
+    public var path: String
+    public var selections: [Selection]
+    /// Top-left corner of the visible part of the text, in points.
+    public var scrollX: Double
+    public var scrollY: Double
+
+    public init(path: String, selections: [Selection] = [], scrollX: Double = 0, scrollY: Double = 0) {
+        self.path = path
+        self.selections = selections
+        self.scrollX = scrollX
+        self.scrollY = scrollY
+    }
+}

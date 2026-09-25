@@ -35,6 +35,15 @@ enum StateSchema {
                 table.column("updatedAt", .double).notNull()
             }
         }
+        migrator.registerMigration("editor_ui") { db in
+            try db.create(table: EditorUIRecord.databaseTableName) { table in
+                table.primaryKey("path", .text)
+                // `[{"location": …, "length": …}, …]`.
+                table.column("selections", .text).notNull()
+                table.column("scrollX", .double).notNull()
+                table.column("scrollY", .double).notNull()
+            }
+        }
         return migrator
     }()
 }
@@ -114,5 +123,31 @@ struct DirtyBufferRecord: FetchableRecord, PersistableRecord {
         container["contents"] = buffer.contents
         container["baselineHash"] = buffer.baselineHash
         container["updatedAt"] = buffer.updatedAt.timeIntervalSinceReferenceDate
+    }
+}
+
+struct EditorUIRecord: FetchableRecord, PersistableRecord {
+    static let databaseTableName = "editor_ui"
+    var state: EditorUIState
+
+    init(_ state: EditorUIState) { self.state = state }
+
+    init(row: Row) throws {
+        let path: String = row["path"]
+        let json: String = row["selections"]
+        var selections: [EditorUIState.Selection] = []
+        do {
+            selections = try JSONDecoder().decode([EditorUIState.Selection].self, from: Data(json.utf8))
+        } catch {
+            stateLog.error("editor \(path, privacy: .private): unreadable selections, dropped: \(String(describing: error), privacy: .public)")
+        }
+        state = EditorUIState(path: path, selections: selections, scrollX: row["scrollX"], scrollY: row["scrollY"])
+    }
+
+    func encode(to container: inout PersistenceContainer) throws {
+        container["path"] = state.path
+        container["selections"] = String(decoding: try JSONEncoder().encode(state.selections), as: UTF8.self)
+        container["scrollX"] = state.scrollX
+        container["scrollY"] = state.scrollY
     }
 }

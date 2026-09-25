@@ -1,11 +1,13 @@
+import Dispatch
 import IDEModel
 import IDEState
 import os
 
 let appLog = Logger(subsystem: "com.omp-ide.app", category: "state")
 
-/// The app's side of `state.sqlite`: what the previous run left, the latest UI of every session, and
-/// debounced saving. Without a usable database the app still works for this run, it just does not remember it.
+/// The app's side of `state.sqlite`: what the previous run left, the latest UI of every session and editor,
+/// debounced saving, and ordered durable writes of unsaved editor text (hot-exit). Without a usable database the app
+/// still works for this run, it just does not remember it.
 @MainActor
 final class StatePersistence {
     /// Why nothing is saved this run; nil when `state.sqlite` works.
@@ -14,13 +16,22 @@ final class StatePersistence {
     let restoredWindow: WindowState?
     /// The latest UI of each session that has one (restored at launch, then kept current).
     private(set) var sessions: [SessionKey: SessionUIState]
+    /// Unsaved editor buffers the previous run left (hot-exit), by path.
+    let restoredDirtyBuffers: [String: DirtyBuffer]
+    /// Where each file's editor was (restored at launch, then kept current).
+    private(set) var editorUI: [String: EditorUIState]
 
     private let store: StateStore?
+    /// Dirty-buffer writes run here, one after the other in call order: each is durable (two `F_FULLFSYNC`s), which
+    /// takes too long for the main thread.
+    private let dirtyBufferQueue = DispatchQueue(label: "com.omp-ide.hot-exit", qos: .userInitiated)
 
     init(paths: AppSupportPaths) {
         var store: StateStore?
         var window: WindowState?
         var sessions: [SessionKey: SessionUIState] = [:]
+        var dirtyBuffers: [String: DirtyBuffer] = [:]
+        var editorUI: [String: EditorUIState] = [:]
         var reason: String?
         do {
             let opened = try StateStore(paths: paths)
@@ -31,6 +42,8 @@ final class StatePersistence {
             }
             window = try opened.window(id: AppState.mainWindowID)
             sessions = try opened.sessionUIStates()
+            dirtyBuffers = Dictionary(try opened.dirtyBuffers().map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
+            editorUI = try opened.editorUIStates()
             store = opened
         } catch {
             reason = String(describing: error)
@@ -39,6 +52,8 @@ final class StatePersistence {
         self.store = store
         restoredWindow = window
         self.sessions = sessions
+        restoredDirtyBuffers = dirtyBuffers
+        self.editorUI = editorUI
         unavailableReason = reason
     }
 
@@ -55,12 +70,44 @@ final class StatePersistence {
         store?.setSessionUI(state)
     }
 
-    /// Writes everything pending now.
+    /// Remembers where the editor of `state.path` is; a real change is saved (debounced).
+    func updateEditorUI(_ state: EditorUIState) {
+        guard state != editorUI[state.path] else { return }
+        editorUI[state.path] = state
+        store?.setEditorUI(state)
+    }
+
+    /// Stores the unsaved text of an editor buffer durably, after every earlier dirty-buffer call.
+    func saveDirtyBuffer(_ buffer: DirtyBuffer) {
+        guard let store else { return }
+        dirtyBufferQueue.async {
+            do {
+                try store.saveDirtyBuffer(buffer)
+            } catch {
+                appLog.error("saving the unsaved text of \(buffer.path, privacy: .private) failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    /// Forgets the unsaved text of `path` (saved, reverted or discarded), after every earlier dirty-buffer call.
+    func clearDirtyBuffer(path: String) {
+        guard let store else { return }
+        dirtyBufferQueue.async {
+            do {
+                try store.clearDirtyBuffer(path: path)
+            } catch {
+                appLog.error("forgetting the unsaved text of \(path, privacy: .private) failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    /// Writes everything pending now, and returns once the dirty-buffer writes asked for so far are durable.
     func flush() {
         do {
             try store?.flush()
         } catch {
             appLog.error("saving the window state failed: \(String(describing: error), privacy: .public)")
         }
+        dirtyBufferQueue.sync {}
     }
 }

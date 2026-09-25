@@ -55,7 +55,7 @@ import Testing
         let json = """
             {"strips": [
               {"workspace": "/w/a", "tabs": [{"kind": "terminal", "id": "pty-1"}, {"kind": "session", "id": "a1"}]},
-              {"workspace": "/w/b", "tabs": [{"kind": "editor", "id": "/w/b/main.swift"}]},
+              {"workspace": "/w/b", "tabs": [{"kind": "notebook", "id": "/w/b/main.ipynb"}]},
               {"workspace": "/w/a", "tabs": [{"kind": "session", "id": "a1"}, {"kind": "session", "id": "a2"}]}
             ],
             "selection": {"kind": "terminal", "id": "pty-1"}}

@@ -23,6 +23,9 @@ struct ContentView: View {
                         onScrollAnchorChange: { app.scrollAnchorChanged($0, in: model) }, onClose: { app.close(key) }
                     )
                     .id(key)
+                } else if let path = app.tabs.selection?.editorPath, let document = app.editors.document(for: path) {
+                    EditorView(app: app, document: document)
+                        .id(path)
                 } else {
                     ContentUnavailableView {
                         Label("No Session", systemImage: "bubble.left.and.text.bubble.right")
@@ -57,18 +60,19 @@ struct SidebarView: View {
     @Bindable var app: AppState
 
     var body: some View {
-        List(selection: Binding(get: { app.selectedSession }, set: { key in if let key { app.showSession(key) } })) {
+        List(selection: Binding(get: { app.sidebarSelection }, set: { app.selectInSidebar($0) })) {
             ForEach(app.connection.workspaces) { workspace in
                 Section {
                     ForEach(workspace.sessions, id: \.sessionKey) { entry in
                         SessionRow(entry: entry)
-                            .tag(entry.sessionKey)
+                            .tag(TabKind.session(entry.sessionKey))
                             .badge(entry.pending.uiRequests.count)
                             .contextMenu {
                                 Button("Close Session") { app.close(entry.sessionKey) }
                                     .disabled(entry.closedByUser || entry.status == .closed)
                             }
                     }
+                    WorkspaceFiles(app: app, workspace: workspace.path)
                 } header: {
                     Label(workspace.name, systemImage: "folder")
                         .help(workspace.path)
@@ -76,6 +80,7 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .fileNavigatorActions(app)
         .overlay {
             if app.connection.sessions.isEmpty, app.connection.isConnected {
                 ContentUnavailableView("No Sessions", systemImage: "tray", description: Text("⌘N starts one."))

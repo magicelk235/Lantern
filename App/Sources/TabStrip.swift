@@ -3,7 +3,7 @@ import IDEState
 import SwiftUI
 
 /// The tabs of the workspace on screen, above the detail area. Selecting a tab shows it; closing one leaves its omp
-/// session running.
+/// session running, and closing an editor with unsaved edits asks first.
 struct TabStrip: View {
     let app: AppState
     let strip: TabLayout.Strip
@@ -22,8 +22,9 @@ struct TabStrip: View {
                 HStack(spacing: 2) {
                     ForEach(strip.tabs, id: \.self) { tab in
                         TabItem(
-                            tab: tab, entry: tab.sessionKey.flatMap(app.entry(for:)), isSelected: app.tabs.selection == tab,
-                            select: { app.selectTab(tab) }, close: { app.closeTab(tab) })
+                            tab: tab, entry: tab.sessionKey.flatMap(app.entry(for:)),
+                            document: tab.editorPath.flatMap(app.editors.document(for:)),
+                            isSelected: app.tabs.selection == tab, select: { app.selectTab(tab) }, close: { app.closeTab(tab) })
                     }
                 }
                 .padding(.horizontal, 6)
@@ -44,6 +45,8 @@ struct TabStrip: View {
 private struct TabItem: View {
     let tab: TabKind
     let entry: SessionManifestEntry?
+    /// The file an editor tab shows.
+    let document: EditorDocument?
     let isSelected: Bool
     let select: () -> Void
     let close: () -> Void
@@ -53,7 +56,11 @@ private struct TabItem: View {
         HStack(spacing: 6) {
             Button(action: select) {
                 HStack(spacing: 6) {
-                    TabStatusIndicator(status: entry?.status)
+                    if let document {
+                        EditorTabIndicator(document: document)
+                    } else {
+                        TabStatusIndicator(status: entry?.status)
+                    }
                     Text(title)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -62,8 +69,8 @@ private struct TabItem: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(title)
-            .accessibilityLabel("Tab \(title)")
+            .help(tab.editorPath ?? title)
+            .accessibilityLabel("Tab \(title)" + (document?.isDirty == true ? ", edited" : ""))
             .accessibilityAddTraits(isSelected ? .isSelected : [])
             Button(action: close) {
                 Image(systemName: "xmark")
@@ -73,7 +80,7 @@ private struct TabItem: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(isSelected || hovering ? .secondary : .tertiary)
-            .help("Close Tab (the session keeps running)")
+            .help(document == nil ? "Close Tab (the session keeps running)" : "Close Tab")
             .accessibilityLabel("Close Tab \(title)")
         }
         .font(.callout)
@@ -86,6 +93,7 @@ private struct TabItem: View {
     private var title: String {
         switch tab {
         case .session(let key): entry?.displayTitle ?? "Session \(key.prefix(8))"
+        case .editor(let path): (path as NSString).lastPathComponent
         }
     }
 
@@ -115,5 +123,23 @@ private struct TabStatusIndicator: View {
 
     private func dot(_ color: Color) -> some View {
         Circle().fill(color).frame(width: 7, height: 7)
+    }
+}
+
+/// A file icon, or a dot while the file has unsaved edits.
+private struct EditorTabIndicator: View {
+    let document: EditorDocument
+
+    var body: some View {
+        if document.isDirty {
+            Circle()
+                .fill(.primary)
+                .frame(width: 7, height: 7)
+                .help("Unsaved changes")
+        } else {
+            Image(systemName: "doc.text")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
     }
 }

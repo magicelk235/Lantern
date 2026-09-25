@@ -25,6 +25,7 @@ struct OmpIDEApp: App {
                     .keyboardShortcut("n")
                     .disabled(!app.connection.isConnected)
             }
+            EditorCommands(app: app)
         }
 
         Settings {

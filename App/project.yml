@@ -21,6 +21,17 @@ settings:
 packages:
   OmpIDE:
     path: ..
+  # The editor: CodeEditSourceEditor with tree-sitter grammars from CodeEditLanguages. The two packages it
+  # builds on are listed for the modules the app imports, pinned where it pins them.
+  CodeEditSourceEditor:
+    url: https://github.com/CodeEditApp/CodeEditSourceEditor
+    exactVersion: 0.15.2
+  CodeEditTextView:
+    url: https://github.com/CodeEditApp/CodeEditTextView
+    from: 0.12.1
+  CodeEditLanguages:
+    url: https://github.com/CodeEditApp/CodeEditLanguages
+    exactVersion: 0.1.20
 targets:
   omp IDE:
     type: application
@@ -37,6 +48,11 @@ targets:
         product: IDEModel
       - package: OmpIDE
         product: IDEState
+      - package: OmpIDE
+        product: IDEEditorModel
+      - package: CodeEditSourceEditor
+      - package: CodeEditTextView
+      - package: CodeEditLanguages
       # The daemon ships inside the app so SMAppService can register it.
       - target: ompd
         embed: true
