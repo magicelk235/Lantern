@@ -5,7 +5,6 @@ let package = Package(
     name: "OmpIDE",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "OmpRPC", targets: ["OmpRPC"]),
         .library(name: "IDEProtocol", targets: ["IDEProtocol"]),
         .library(name: "IDETransport", targets: ["IDETransport"]),
         .library(name: "OmpdCore", targets: ["OmpdCore"]),
@@ -19,16 +18,14 @@ let package = Package(
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
     ],
     targets: [
-        // omp `--mode rpc|rpc-ui` client: JSONL framing, v2 rpc_chunk reassembly, typed commands/events, process transport.
-        .target(name: "OmpRPC"),
         // Daemon <-> UI wire contract (pure Codable types, shared by ompd and the app).
         .target(name: "IDEProtocol"),
         // Length-prefixed frames over a unix domain socket (NWListener/NWConnection), used by ompd and the app.
         .target(name: "IDETransport", dependencies: ["IDEProtocol"]),
-        // Daemon internals: journal, manifest, supervisor, PTY pool, power observers.
+        // Daemon internals: manifest, session supervisors (omp TUIs in PTYs), PTY pool, ide-bridge server, power observers.
         .target(
             name: "OmpdCore",
-            dependencies: ["OmpRPC", "IDEProtocol", "IDETransport", .product(name: "SwiftTerm", package: "SwiftTerm")]
+            dependencies: ["IDEProtocol", "IDETransport", .product(name: "SwiftTerm", package: "SwiftTerm")]
         ),
         .executableTarget(name: "ompd", dependencies: ["OmpdCore", "IDETransport"]),
         // App-side state (no AppKit/SwiftUI): daemon connection, session TUIs and terminals on ompd's PTYs.
@@ -41,7 +38,6 @@ let package = Package(
         // directory listing and FSEvents watching.
         .target(name: "IDEEditorModel", dependencies: ["IDEState"]),
 
-        .testTarget(name: "OmpRPCTests", dependencies: ["OmpRPC"], exclude: ["Fixtures"]),
         .testTarget(name: "IDEProtocolTests", dependencies: ["IDEProtocol"]),
         .testTarget(name: "IDETransportTests", dependencies: ["IDETransport"]),
         .testTarget(name: "OmpdCoreTests", dependencies: ["OmpdCore"]),

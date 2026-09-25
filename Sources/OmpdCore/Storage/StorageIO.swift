@@ -1,25 +1,16 @@
 import Darwin
 import Foundation
-import IDEProtocol
 import os
 
-/// Failure of the daemon's on-disk storage (journal, manifest, `$APP_SUPPORT` layout).
+/// Failure of the daemon's on-disk storage (manifest, ownership locks, `$APP_SUPPORT` layout).
 public enum StorageError: Error, Sendable, Equatable, CustomStringConvertible {
     /// A system call failed; `code` is its `errno`.
     case system(operation: String, path: String, code: Int32)
-    /// The session key cannot name a journal file (empty, `.`/`..`, contains `/` or NUL, or too long).
-    case invalidSessionKey(SessionKey)
-    /// The journal was closed; it accepts no further reads or appends.
-    case journalClosed(SessionKey)
 
     public var description: String {
         switch self {
         case .system(let operation, let path, let code):
             "\(operation) \(path): \(String(cString: strerror(code))) (errno \(code))"
-        case .invalidSessionKey(let key):
-            "invalid session key \(key.debugDescription)"
-        case .journalClosed(let key):
-            "journal of session \(key) is closed"
         }
     }
 }
@@ -28,9 +19,6 @@ public enum StorageError: Error, Sendable, Equatable, CustomStringConvertible {
 /// stable storage.
 enum StorageIO {
     static let log = Logger(subsystem: "com.omp-ide.ompd", category: "storage")
-
-    /// Bytes read per `pread` when scanning files backwards.
-    static let chunkSize = 64 * 1024
 
     static func displayPath(_ url: URL) -> String { url.path(percentEncoded: false) }
 
@@ -55,15 +43,6 @@ enum StorageIO {
             }
             if fd >= 0 { return fd }
             if code != EINTR { throw failure("open", url, code: code) }
-        }
-    }
-
-    /// Opens `url` read-write in append mode, creating it with mode 0600 when missing.
-    static func openForAppend(_ url: URL) throws -> (fd: Int32, created: Bool) {
-        do {
-            return (try open(url, O_RDWR | O_APPEND | O_CREAT | O_EXCL), true)
-        } catch StorageError.system(_, _, let code) where code == EEXIST {
-            return (try open(url, O_RDWR | O_APPEND), false)
         }
     }
 

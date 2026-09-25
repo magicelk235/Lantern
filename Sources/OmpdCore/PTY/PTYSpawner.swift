@@ -25,9 +25,9 @@ enum PTYSpawner {
         passwdField { $0.pw_dir } ?? NSHomeDirectory()
     }
 
-    /// Daemon environment adjusted for an interactive terminal, overlaid with `overlay`.
-    static func environment(overlay: [String: String]?, cwd: String) -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
+    /// `base` (normally the daemon's environment) adjusted for an interactive terminal, overlaid with `overlay`.
+    static func environment(base: [String: String], overlay: [String: String]?, cwd: String) -> [String: String] {
+        var env = base
         // Sizes and identities of whatever terminal the daemon was started from must not leak.
         for key in ["COLUMNS", "LINES", "TERMCAP", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TERM_SESSION_ID", "OLDPWD"] {
             env[key] = nil

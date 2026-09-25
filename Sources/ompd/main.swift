@@ -13,7 +13,7 @@ let usage = """
                --omp          omp executable for new sessions (default: $OMP_BIN, PATH, /opt/homebrew/bin/omp)
                --omp-arg      argument appended to every new session's omp command line (repeatable)
                --session-dir  omp --session-dir for new sessions (default: omp's per-workspace directory)
-      status   Ask the running daemon for its sessions and terminals.
+      status   Ask the running daemon for its sessions and PTYs (session TUIs and terminals).
     """
 
 struct UsageError: Error, CustomStringConvertible {
@@ -70,32 +70,30 @@ func status(json: Bool) async throws {
 enum StatusTable {
     static func render(_ status: DaemonStatus.Result) -> String {
         var lines = [
-            "ompd \(status.daemonVersion)  pid \(status.pid)  up since \(stamp(status.startedAt))\(status.readOnly ? "  READ-ONLY (journal write failed)" : "")",
+            "ompd \(status.daemonVersion)  pid \(status.pid)  up since \(stamp(status.startedAt))\(status.readOnly ? "  READ-ONLY (manifest write failed)" : "")",
             "",
         ]
         if status.sessions.isEmpty {
             lines.append("no sessions")
         } else {
-            var rows = [["SESSION", "STATUS", "SEQ", "PENDING", "LAST SETTLED", "WORKSPACE", "TITLE"]]
+            var rows = [["SESSION", "STATUS", "PTY", "LAST ACTIVE", "WORKSPACE", "TITLE"]]
             for entry in status.sessions {
-                let pending = entry.pending.uiRequests.count + entry.pending.hostToolCalls.count
                 rows.append([
-                    entry.sessionKey, entry.closedByUser && entry.status == .closed ? "closed" : entry.status.rawValue,
-                    String(entry.lastSeq), String(pending), entry.lastSettledAt.map(stamp) ?? "-", entry.workspace,
-                    entry.title ?? "-",
+                    entry.sessionKey, entry.closedByUser && entry.status == .closed ? "closed (by user)" : entry.status.rawValue,
+                    entry.ptyId ?? "-", entry.lastActiveAt.map(stamp) ?? "-", entry.workspace, entry.title ?? "-",
                 ])
             }
             lines += table(rows)
         }
         lines.append("")
         if status.ptys.isEmpty {
-            lines.append("no terminals")
+            lines.append("no PTYs")
         } else {
-            var rows = [["TERMINAL", "PID", "SIZE", "CWD", "COMMAND"]]
+            var rows = [["PTY", "SESSION", "PID", "SIZE", "CWD", "COMMAND"]]
             for pty in status.ptys {
                 rows.append([
-                    pty.ptyId, pty.pid.map(String.init) ?? (pty.running ? "?" : "exited"), "\(pty.cols)x\(pty.rows)",
-                    pty.cwd, pty.command.joined(separator: " "),
+                    pty.ptyId, pty.sessionKey ?? "-", pty.pid.map(String.init) ?? (pty.running ? "?" : "exited"),
+                    "\(pty.cols)x\(pty.rows)", pty.cwd, pty.command.joined(separator: " "),
                 ])
             }
             lines += table(rows)

@@ -5,13 +5,12 @@ import IDEProtocol
 /// ompd's end of the ide-bridge control channel (`$APP_SUPPORT/run/bridge.sock`).
 ///
 /// Per spawn: `expect(sessionKey:)` mints a fresh single-use token and returns the environment for the omp child, which
-/// must be this process's direct child; `setExpectedPID(_:for:)` registers that child's pid once it is running (before
-/// or after its first RPC round trip). The bridge inside omp connects at the main session's `session_start` and sends
-/// `hello` without blocking omp; the server accepts it only if the token matches (constant time), the session has no
-/// bridge yet, and the socket peer (`LOCAL_PEERPID`) is the registered pid. Hellos that arrive before the pid is
-/// registered wait for it. Verdicts go back as `{t:"welcome"}` or `{t:"reject", reason}` (the bridge of a rejected
-/// process refuses to keep a daemon-owned session open). A session is ready once RPC `ready` and `waitForHello` have
-/// both completed.
+/// must be this process's direct child; `setExpectedPID(_:for:)` registers that child's pid once it is running. The
+/// bridge inside omp connects at the main session's `session_start` and sends `hello` without blocking omp; the server
+/// accepts it only if the token matches (constant time), the session has no bridge yet, and the socket peer
+/// (`LOCAL_PEERPID`) is the registered pid. Hellos that arrive before the pid is registered wait for it. Verdicts go
+/// back as `{t:"welcome"}` or `{t:"reject", reason}` (the bridge of a rejected process refuses to keep a daemon-owned
+/// session open).
 ///
 /// Wire: JSON lines. ompd → bridge `{t:"req", id, method, params}`; bridge → ompd `{t:"res", id, ok, result|error}`,
 /// `{t:"evt", seq, ts, agentId, kind, data}`, `{t:"gap", ...}`. Requests on one session run concurrently in the bridge.

@@ -2,14 +2,16 @@ import Darwin
 import Foundation
 import IDEProtocol
 
-/// On-disk form of one PTY (`<dir>/<ptyId>.json`): enough to recreate the terminal after the daemon
-/// or the machine restarted.
+/// On-disk form of one PTY (`<dir>/<ptyId>.json`): enough to recreate a terminal after the daemon or the
+/// machine restarted, or to continue a respawned session's screen.
 struct PTYSnapshot: Codable, Equatable {
     var info: PTYInfo
     /// Serialized screen (`TerminalMirror.serialize(includePending: false)`), base64 in JSON.
     var screen: Data
-    /// Environment overrides the PTY was opened with (not the merged environment).
+    /// Environment overrides the PTY was opened with (not the merged environment); nil for session PTYs.
     var env: [String: String]?
+    /// When the snapshot was taken (nil in snapshots written before it was recorded).
+    var savedAt: Date?
 }
 
 /// Snapshot files: written atomically (0600 temp file, fsync, rename) since they hold terminal contents.
