@@ -12,6 +12,7 @@ Native macOS IDE for [omp](https://github.com/can1357/oh-my-pi) (Swift 6, SwiftU
 | `Sources/OmpdCore` | daemon: journal, manifest, session supervisor, PTY pool, ide-bridge server, power observers |
 | `Sources/ompd` | `ompd run \| status [--json] \| --version` |
 | `Sources/IDEModel` | app-side models: transcript reducer, session view model, daemon connection, terminal models (PTY attach, serial input, `pty.list` registry) |
+| `Sources/IDEEditorModel` | editor logic without AppKit: text file read/atomic save, content-hash buffer state machine (dirty, revert, external change, hot-exit restore), line diff, navigator listing, FSEvents watcher |
 | `bridge/ide-bridge.ts` | omp extension loaded into every daemon-owned omp (agent registry, revive, ownership lock) |
 | `App/` | XcodeGen spec + SwiftUI sources for `omp IDE.app` (embeds `ompd` and its LaunchAgent plist) |
 | `scripts/` | `dev-launchagent.sh` (dev LaunchAgent), `acceptance.sh` (Phase 1 acceptance with real omp) |
