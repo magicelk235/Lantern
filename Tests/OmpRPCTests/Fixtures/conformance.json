@@ -1,0 +1,3467 @@
+{
+ "generator": "Tests/OmpRPCTests/Fixtures/oracle/generate.ts",
+ "omp": "omp/18.3.1",
+ "bun": "1.4.2",
+ "python": "Python 3.14.7",
+ "reference": "can1357/oh-my-pi v18.3.1",
+ "base": [
+  [
+   "{\"type\":\"ready\",\"protocolVersion\":1,\"supportedProtocolVersions\":[1,2],\"maxFrameBytes\":1048576,\"maxReassembledFrameBytes\":67108864}\n"
+  ],
+  [
+   "{\"type\":\"available_commands_update\",\"commands\":[{\"name\":\"compact\",\"source\":\"builtin\",\"description\":\"Compact the conversation — keep ✓ 🚀\"}]}\n"
+  ],
+  [
+   "{\"id\":\"req_1\",\"type\":\"response\",\"command\":\"negotiate_protocol\",\"success\":true,\"data\":{\"protocolVersion\":2}}\n"
+  ],
+  [
+   "{\"type\":\"message_update\",\"messageId\":\"msg-1\",\"assistantMessageEvent\":{\"type\":\"text_delta\",\"delta\":\"Grüße, 世界 😀\\n\\\"quoted\\\" \\\\ /\"},\"message\":{\"role\":\"assistant\",\"content\":[]}}\n"
+  ],
+  [
+   "{\"type\":\"rpc_chunk\",\"chunkId\":\"rpc-1\",\"index\":0,\"count\":7,\"byteLength\":1573870,\"data\":\"eyJpZCI6InJlcV8yIiwidHlwZSI6InJlc3BvbnNlIiwiY29tbWFuZCI6ImdldF9tZXNzYWdlcyIsInN1Y2Nlc3MiOnRydWUsImRhdGEiOnsidGV4dCI6ImVzY2FwZXMgXFwgXCIgXG4gXHQgLyDinJMg",
+   [
+    "eHh4",
+    87343
+   ],
+   "ww==\"}\n"
+  ],
+  [
+   "{\"type\":\"rpc_chunk\",\"chunkId\":\"rpc-1\",\"index\":1,\"count\":7,\"byteLength\":1573870,\"data\":\"qX",
+   [
+    "h4eH",
+    87380
+   ],
+   "h44g==\"}\n"
+  ],
+  [
+   "{\"type\":\"rpc_chunk\",\"chunkId\":\"rpc-1\",\"index\":2,\"count\":7,\"byteLength\":1573870,\"data\":\"gqx",
+   [
+    "4eHh",
+    87379
+   ],
+   "4eHjigg==\"}\n"
+  ],
+  [
+   "{\"type\":\"rpc_chunk\",\"chunkId\":\"rpc-1\",\"index\":3,\"count\":7,\"byteLength\":1573870,\"data\":\"r",
+   [
+    "Hh4e",
+    87380
+   ],
+   "Hh48A==\"}\n"
+  ],
+  [
+   "{\"type\":\"rpc_chunk\",\"chunkId\":\"rpc-1\",\"index\":4,\"count\":7,\"byteLength\":1573870,\"data\":\"n5iA",
+   [
+    "eHh4",
+    87379
+   ],
+   "eHjwnw==\"}\n"
+  ],
+  [
+   "{\"type\":\"rpc_chunk\",\"chunkId\":\"rpc-1\",\"index\":5,\"count\":7,\"byteLength\":1573870,\"data\":\"mIB",
+   [
+    "4eHh",
+    87379
+   ],
+   "4ePCfmA==\"}\n"
+  ],
+  [
+   "{\"type\":\"rpc_chunk\",\"chunkId\":\"rpc-1\",\"index\":6,\"count\":7,\"byteLength\":1573870,\"data\":\"g",
+   [
+    "Hh4e",
+    334
+   ],
+   "CJ9fQ==\"}\n"
+  ],
+  [
+   "{\"type\":\"tool_execution_update\",\"toolCallId\":\"toolu_1\",\"partialResult\":{\"content\":[{\"type\":\"text\",\"text\":\"tick\"}]}}\n"
+  ],
+  [
+   "{\"type\":\"rpc_chunk\",\"chunkId\":\"rpc-2\",\"index\":0,\"count\":5,\"byteLength\":1100136,\"data\":\"eyJ0eXBlIjoidG9vbF9leGVjdXRpb25fZW5kIiwidG9vbENhbGxJZCI6InRvb2x1XzEiLCJ0b29sTmFtZSI6ImJhc2giLCJyZXN1bHQiOnsiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0Ijoi",
+   [
+    "eXl5",
+    87343
+   ],
+   "eQ==\"}\n"
+  ],
+  [
+   "{\"type\":\"rpc_chunk\",\"chunkId\":\"rpc-2\",\"index\":1,\"count\":5,\"byteLength\":1100136,\"data\":\"",
+   [
+    "eXl5",
+    87381
+   ],
+   "eQ==\"}\n"
+  ],
+  [
+   "{\"type\":\"rpc_chunk\",\"chunkId\":\"rpc-2\",\"index\":2,\"count\":5,\"byteLength\":1100136,\"data\":\"",
+   [
+    "eXl5",
+    87381
+   ],
+   "eQ==\"}\n"
+  ],
+  [
+   "{\"type\":\"rpc_chunk\",\"chunkId\":\"rpc-2\",\"index\":3,\"count\":5,\"byteLength\":1100136,\"data\":\"",
+   [
+    "eXl5",
+    87381
+   ],
+   "eQ==\"}\n"
+  ],
+  [
+   "{\"type\":\"rpc_chunk\",\"chunkId\":\"rpc-2\",\"index\":4,\"count\":5,\"byteLength\":1100136,\"data\":\"",
+   [
+    "eXl5",
+    17179
+   ],
+   "eXkifV19LCJpc0Vycm9yIjpmYWxzZX0=\"}\n"
+  ],
+  [
+   "{\"type\":\"prompt_result\",\"id\":\"req_2\",\"agentInvoked\":true,\"status\":\"completed\",\"sessionSettled\":true}\n"
+  ],
+  [
+   "{\"type\":\"session_settled\"}\n"
+  ]
+ ],
+ "frames": [
+  [
+   "{\"type\":\"ready\",\"protocolVersion\":1,\"supportedProtocolVersions\":[1,2],\"maxFrameBytes\":1048576,\"maxReassembledFrameBytes\":67108864}"
+  ],
+  [
+   "{\"type\":\"available_commands_update\",\"commands\":[{\"name\":\"compact\",\"source\":\"builtin\",\"description\":\"Compact the conversation — keep ✓ 🚀\"}]}"
+  ],
+  [
+   "{\"id\":\"req_1\",\"type\":\"response\",\"command\":\"negotiate_protocol\",\"success\":true,\"data\":{\"protocolVersion\":2}}"
+  ],
+  [
+   "{\"type\":\"message_update\",\"messageId\":\"msg-1\",\"assistantMessageEvent\":{\"type\":\"text_delta\",\"delta\":\"Grüße, 世界 😀\\n\\\"quoted\\\" \\\\ /\"},\"message\":{\"role\":\"assistant\",\"content\":[]}}"
+  ],
+  [
+   "{\"id\":\"req_2\",\"type\":\"response\",\"command\":\"get_messages\",\"success\":true,\"data\":{\"text\":\"escapes \\\\ \\\" \\n \\t / ✓ ",
+   [
+    "xxxx",
+    65507
+   ],
+   "xé",
+   [
+    "xxxx",
+    65535
+   ],
+   "xx€",
+   [
+    "xxxx",
+    65535
+   ],
+   "€",
+   [
+    "xxxx",
+    65535
+   ],
+   "xx😀",
+   [
+    "xxxx",
+    65534
+   ],
+   "xxx😀",
+   [
+    "xxxx",
+    65534
+   ],
+   "xxx😀",
+   [
+    "xxxx",
+    250
+   ],
+   "xx\"}}"
+  ],
+  [
+   "{\"type\":\"tool_execution_update\",\"toolCallId\":\"toolu_1\",\"partialResult\":{\"content\":[{\"type\":\"text\",\"text\":\"tick\"}]}}"
+  ],
+  [
+   "{\"type\":\"tool_execution_end\",\"toolCallId\":\"toolu_1\",\"toolName\":\"bash\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"",
+   [
+    "yyyy",
+    275000
+   ],
+   "y\"}]},\"isError\":false}"
+  ],
+  [
+   "{\"type\":\"prompt_result\",\"id\":\"req_2\",\"agentInvoked\":true,\"status\":\"completed\",\"sessionSettled\":true}"
+  ],
+  [
+   "{\"type\":\"session_settled\"}"
+  ],
+  [
+   "{\"type\":\"bom\",\"s\":\"",
+   [
+    "aaaa",
+    262138
+   ],
+   "\"}"
+  ],
+  [
+   "{\"type\":\"pretty\",\"s\":\"",
+   [
+    "aaaa",
+    262135
+   ],
+   "aa\"}"
+  ],
+  [
+   "{\"type\":\"a\",\"n\":1}"
+  ],
+  [
+   "{\"type\":\"b\",\"n\":2}"
+  ],
+  [
+   "{\"type\":\"a\"}"
+  ],
+  [
+   "{\"type\":\"b\"}"
+  ],
+  [
+   "{\"type\":\"u\",\"a\":\"�\",\"b\":\"��\",\"c\":\"���\",\"d\":\"�x\",\"e\":\"�\",\"f\":\"����\",\"g\":\"��\",\"h\":\"�����\",\"i\":\"���\",\"j\":\"ok €\"}"
+  ],
+  [
+   "{\"type\":\"e\",\"s\":\"é😀\\n\\t\\\"\\\\/\\b\\f\\r\\u0000 ￿\"}"
+  ],
+  [
+   "{\"type\":\"n\",\"a\":0,\"b\":100000,\"c\":1.5e-7,\"d\":12345678901234567000,\"e\":0.1,\"f\":-12345.6,\"g\":9007199254740992,\"h\":5e-324,\"i\":1.7976931348623157e+308}"
+  ],
+  [
+   "{\"type\":\"d\",\"k\":2}"
+  ],
+  [
+   "{\"type\":\"u\",\"s\":\"a b c\"}"
+  ],
+  [
+   "{\"type\":\"deep\",\"v\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}"
+  ],
+  [
+   "{\"type\":\"w\",\"a\":[1,2,{},[]]}"
+  ]
+ ],
+ "cases": [
+  {
+   "name": "stream/golden",
+   "lines": [
+    {
+     "range": [
+      0,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567266,
+   "sha256": "3973e0745b850e4aef4c1f7d7cb43ea929dcd2fa846ca861c2ca44dd6d8f071a",
+   "ts": {
+    "ok": true,
+    "frames": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 9,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "stream/final-frame-without-newline",
+   "lines": [
+    {
+     "range": [
+      0,
+      18
+     ]
+    },
+    {
+     "base": 18,
+     "noNewline": true
+    }
+   ],
+   "byteCount": 3567265,
+   "sha256": "e1d5c20bf27711af5c7715488e0a87ed60462bdc6706a8e326f331ee9cedf630",
+   "ts": {
+    "ok": true,
+    "frames": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 9,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "stream/crlf-inside-sequence",
+   "lines": [
+    {
+     "range": [
+      0,
+      5
+     ]
+    },
+    {
+     "base": 5,
+     "crlf": true
+    },
+    {
+     "base": 6,
+     "crlf": true
+    },
+    {
+     "range": [
+      7,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567268,
+   "sha256": "370570abe3bf979ec53250362a5120aa0f8ed9d346b99c7ce68f1c252b2a3414",
+   "ts": {
+    "ok": true,
+    "frames": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 9,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "stream/blank-lines-inside-sequence",
+   "lines": [
+    {
+     "range": [
+      0,
+      6
+     ]
+    },
+    {
+     "segments": [
+      "\n",
+      " \t\r\n",
+      "\n"
+     ]
+    },
+    {
+     "range": [
+      6,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567272,
+   "sha256": "8cbb0704ff075c226062722c61f410bab46a4ee81e5d70deac8951e72c91f83d",
+   "ts": {
+    "ok": true,
+    "frames": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 9,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "stream/negative-zero-index",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"index\":0,",
+      "\"index\":-0,"
+     ]
+    },
+    {
+     "range": [
+      5,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567267,
+   "sha256": "bc0f0495adaeb7316132bf365b05f92348fc6b383fb7f6e639d5832ce2c85999",
+   "ts": {
+    "ok": true,
+    "frames": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 9,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "stream/integral-float-index",
+   "lines": [
+    {
+     "range": [
+      0,
+      5
+     ]
+    },
+    {
+     "base": 5,
+     "replace": [
+      "\"index\":1,",
+      "\"index\":1.0,"
+     ]
+    },
+    {
+     "range": [
+      6,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567268,
+   "sha256": "bb75076e590163f9986e0b931285b594bccfab04bc653b988719ce1855bc8bb1",
+   "ts": {
+    "ok": true,
+    "frames": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "stream/exponent-index",
+   "lines": [
+    {
+     "range": [
+      0,
+      5
+     ]
+    },
+    {
+     "base": 5,
+     "replace": [
+      "\"index\":1,",
+      "\"index\":1e0,"
+     ]
+    },
+    {
+     "range": [
+      6,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567268,
+   "sha256": "51d797edf6b90c46b8fbc96a668fc9a636a8c2e58d0d84fcc7c33c0866c0e11a",
+   "ts": {
+    "ok": true,
+    "frames": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "stream/chunk-id-128-ascii",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\""
+     ]
+    },
+    {
+     "base": 5,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\""
+     ]
+    },
+    {
+     "base": 6,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\""
+     ]
+    },
+    {
+     "base": 7,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\""
+     ]
+    },
+    {
+     "base": 8,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\""
+     ]
+    },
+    {
+     "base": 9,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\""
+     ]
+    },
+    {
+     "base": 10,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\""
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3568127,
+   "sha256": "7a19b641ae7a8ac6c902242eccc352d86f46007b10d3e4eaf7584a288882156c",
+   "ts": {
+    "ok": true,
+    "frames": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 9,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "stream/chunk-id-128-utf16-units",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\""
+     ]
+    },
+    {
+     "base": 5,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\""
+     ]
+    },
+    {
+     "base": 6,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\""
+     ]
+    },
+    {
+     "base": 7,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\""
+     ]
+    },
+    {
+     "base": 8,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\""
+     ]
+    },
+    {
+     "base": 9,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\""
+     ]
+    },
+    {
+     "base": 10,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\""
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3569023,
+   "sha256": "e9bf05e42519de4e819ebfc8e22abb0b409f1e459a8c1985bd67c67594b18259",
+   "ts": {
+    "ok": true,
+    "frames": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 9,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "chunk/chunk-id-mismatch",
+   "lines": [
+    {
+     "range": [
+      0,
+      6
+     ]
+    },
+    {
+     "base": 6,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"rpc-9\""
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 2516978,
+   "sha256": "4ce9b2e00435b05bd67a0236edcc0e40951394ed9f03eac6ba9f527e5d149402",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "rpc chunk sequence mismatch",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "RPC chunk sequence mismatch"
+   }
+  },
+  {
+   "name": "chunk/index-gap",
+   "lines": [
+    {
+     "range": [
+      0,
+      6
+     ]
+    },
+    {
+     "range": [
+      7,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3217648,
+   "sha256": "8e633db83aca34fab706b1ab12f915ab4d61b018159c54ce8938f969c0027a55",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "rpc chunk sequence mismatch",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "RPC chunk sequence mismatch"
+   }
+  },
+  {
+   "name": "chunk/index-swapped",
+   "lines": [
+    {
+     "range": [
+      0,
+      6
+     ]
+    },
+    {
+     "base": 7
+    },
+    {
+     "base": 6
+    },
+    {
+     "range": [
+      8,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567266,
+   "sha256": "cd7593dc9c47acd11ac57a6aef050c3ae3d6b7ac05865550dbf803e19977d366",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "rpc chunk sequence mismatch",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "RPC chunk sequence mismatch"
+   }
+  },
+  {
+   "name": "chunk/index-repeated",
+   "lines": [
+    {
+     "range": [
+      0,
+      7
+     ]
+    },
+    {
+     "base": 6
+    },
+    {
+     "range": [
+      7,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3916884,
+   "sha256": "4ce91527582cc369297fbd72b808345f42996bb46fbaa53287a4d14f30f6d528",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "rpc chunk sequence mismatch",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "RPC chunk sequence mismatch"
+   }
+  },
+  {
+   "name": "chunk/must-start-at-index-0",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "range": [
+      5,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3217648,
+   "sha256": "f8060ed39d23d9cb8b998a76efc5c4c0b66ebbcc3c224bab22b092f22435466b",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "rpc chunk sequence must start at index 0",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "RPC chunk sequence must start at index 0"
+   }
+  },
+  {
+   "name": "chunk/count-mismatch",
+   "lines": [
+    {
+     "range": [
+      0,
+      6
+     ]
+    },
+    {
+     "base": 6,
+     "replace": [
+      "\"count\":7,",
+      "\"count\":8,"
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 2516978,
+   "sha256": "2bf1986d10a185ff80aaf076109f13a5a31d1d8d503a64f6c64eed677467382d",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "rpc chunk sequence mismatch",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "RPC chunk sequence mismatch"
+   }
+  },
+  {
+   "name": "chunk/byte-length-mismatch",
+   "lines": [
+    {
+     "range": [
+      0,
+      6
+     ]
+    },
+    {
+     "base": 6,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1573871,"
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 2516978,
+   "sha256": "2c014d4350c673c7313b2d1796df552a043ad034b853091ca208a9caf5d1c307",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "rpc chunk sequence mismatch",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "RPC chunk sequence mismatch"
+   }
+  },
+  {
+   "name": "chunk/declared-length-exceeds-data",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1573871,"
+     ]
+    },
+    {
+     "base": 5,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1573871,"
+     ]
+    },
+    {
+     "base": 6,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1573871,"
+     ]
+    },
+    {
+     "base": 7,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1573871,"
+     ]
+    },
+    {
+     "base": 8,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1573871,"
+     ]
+    },
+    {
+     "base": 9,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1573871,"
+     ]
+    },
+    {
+     "base": 10,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1573871,"
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567266,
+   "sha256": "440d259a810003db16eb057d98f9e2616430758a464501dce93d837ed694a03c",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "rpc chunk sequence length mismatch",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "RPC chunk sequence length mismatch"
+   }
+  },
+  {
+   "name": "chunk/data-exceeds-declared-length",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1572863,"
+     ]
+    },
+    {
+     "base": 5,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1572863,"
+     ]
+    },
+    {
+     "base": 6,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1572863,"
+     ]
+    },
+    {
+     "base": 7,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1572863,"
+     ]
+    },
+    {
+     "base": 8,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1572863,"
+     ]
+    },
+    {
+     "base": 9,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1572863,"
+     ]
+    },
+    {
+     "base": 10,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1572863,"
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567266,
+   "sha256": "d1f59a916d2a3bea954bab35cdfb676bc60a2e2e13bf104f80880e55c582a8fe",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "rpc chunk sequence exceeds declared length",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "RPC chunk sequence exceeds its declared length"
+   }
+  },
+  {
+   "name": "chunk/interleaved-event",
+   "lines": [
+    {
+     "range": [
+      0,
+      6
+     ]
+    },
+    {
+     "base": 11
+    },
+    {
+     "range": [
+      6,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567382,
+   "sha256": "80ff90201064fb36a22c5fdc0a7cf816e2297a6e5147074247e11581e8eac8b1",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "rpc chunk sequence interrupted",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "RPC chunk sequence was interrupted"
+   }
+  },
+  {
+   "name": "chunk/interleaved-array",
+   "lines": [
+    {
+     "range": [
+      0,
+      6
+     ]
+    },
+    {
+     "segments": [
+      "[1,2]\n"
+     ]
+    },
+    {
+     "range": [
+      6,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567272,
+   "sha256": "5b0e34e6d22e7f7856550364cdea25aa0cb9980f6a0c3bb2fca751601449dda4",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "rpc chunk sequence interrupted",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "RPC chunk sequence was interrupted"
+   }
+  },
+  {
+   "name": "chunk/interleaved-number",
+   "lines": [
+    {
+     "range": [
+      0,
+      6
+     ]
+    },
+    {
+     "segments": [
+      "42\n"
+     ]
+    },
+    {
+     "range": [
+      6,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567269,
+   "sha256": "5c44a36f09ee13eee3271541946d5298f3c019a4deb4b3ee7c8d44b339f37b05",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "rpc chunk sequence interrupted",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "RPC chunk sequence was interrupted"
+   }
+  },
+  {
+   "name": "chunk/interleaved-new-sequence",
+   "lines": [
+    {
+     "range": [
+      0,
+      6
+     ]
+    },
+    {
+     "base": 12
+    },
+    {
+     "range": [
+      6,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3916884,
+   "sha256": "1839850430a2992ce081174bc2240d6ab8fcf1d3944107184ff45d613601e1be",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "rpc chunk sequence mismatch",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "RPC chunk sequence mismatch"
+   }
+  },
+  {
+   "name": "chunk/stream-ends-mid-sequence",
+   "lines": [
+    {
+     "range": [
+      0,
+      7
+     ]
+    }
+   ],
+   "byteCount": 1049424,
+   "sha256": "509d1964eecc6f2b0fadb5e28e55dc7fa6008d67a608024b9a6073005147d13e",
+   "ts": {
+    "ok": true,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "pendingAtEOF": true
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 4,
+    "pendingAtEOF": true
+   }
+  },
+  {
+   "name": "metadata/byte-length-above-reassembly-limit",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":67108865,"
+     ]
+    },
+    {
+     "base": 5,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":67108865,"
+     ]
+    },
+    {
+     "base": 6,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":67108865,"
+     ]
+    },
+    {
+     "base": 7,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":67108865,"
+     ]
+    },
+    {
+     "base": 8,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":67108865,"
+     ]
+    },
+    {
+     "base": 9,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":67108865,"
+     ]
+    },
+    {
+     "base": 10,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":67108865,"
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567273,
+   "sha256": "aa2629be40de51bc09fdec9c7d7be7d382ebb1a5929ac4ca497e2fa9c038406e",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk metadata",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "metadata/byte-length-below-frame-limit",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1048575,"
+     ]
+    },
+    {
+     "base": 5,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1048575,"
+     ]
+    },
+    {
+     "base": 6,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1048575,"
+     ]
+    },
+    {
+     "base": 7,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1048575,"
+     ]
+    },
+    {
+     "base": 8,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1048575,"
+     ]
+    },
+    {
+     "base": 9,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1048575,"
+     ]
+    },
+    {
+     "base": 10,
+     "replace": [
+      "\"byteLength\":1573870,",
+      "\"byteLength\":1048575,"
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567266,
+   "sha256": "b3eb62229c7be935203cace9ae370a3db9eb894437f5dbc83294fc7e64db3c91",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk metadata",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "metadata/count-above-limit",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"count\":7,",
+      "\"count\":257,"
+     ]
+    },
+    {
+     "range": [
+      5,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567268,
+   "sha256": "a82a62d270e0fdbcf89c627e1c9f8a1c03ffc0d5c400f445d682800c8a918707",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk metadata",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "metadata/count-below-two",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"count\":7,",
+      "\"count\":1,"
+     ]
+    },
+    {
+     "range": [
+      5,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567266,
+   "sha256": "5fcbd3def3007ac0e79384b226fee35a24bb0eb676a6fb47a9d2f73e6f62499f",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk metadata",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "metadata/index-not-below-count",
+   "lines": [
+    {
+     "range": [
+      0,
+      10
+     ]
+    },
+    {
+     "base": 10,
+     "replace": [
+      "\"index\":6,",
+      "\"index\":7,"
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567266,
+   "sha256": "0463eb35f594d70722cadb4fe2758ea49676a468bc3f1332de1bdf90fd769be7",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk metadata",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "metadata/fractional-index",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"index\":0,",
+      "\"index\":0.5,"
+     ]
+    },
+    {
+     "range": [
+      5,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567268,
+   "sha256": "d50a98715db78b2fe56769a38f339645acc9b09e3ff62072d1e004bbf2773bda",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk metadata",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "metadata/negative-index",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"index\":0,",
+      "\"index\":-1,"
+     ]
+    },
+    {
+     "range": [
+      5,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567267,
+   "sha256": "0cafe3912a4b6aeed36a7afa969e5469d3f5feeecf8e91ad59c36a33f564a1fc",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk metadata",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "metadata/string-count",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"count\":7,",
+      "\"count\":\"7\","
+     ]
+    },
+    {
+     "range": [
+      5,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567268,
+   "sha256": "a30fbf43a16eb8912e414c8d6a5ad1976313dc98fcf54b661807663175e2398b",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk metadata",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "metadata/empty-chunk-id",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"\""
+     ]
+    },
+    {
+     "base": 5,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"\""
+     ]
+    },
+    {
+     "base": 6,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"\""
+     ]
+    },
+    {
+     "base": 7,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"\""
+     ]
+    },
+    {
+     "base": 8,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"\""
+     ]
+    },
+    {
+     "base": 9,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"\""
+     ]
+    },
+    {
+     "base": 10,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"\""
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567231,
+   "sha256": "fbbd6a496ac480b5aa4a650fcef6eb5437810314d894ebf8fcfcaec32364cb65",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk metadata",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "metadata/chunk-id-129-ascii",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\""
+     ]
+    },
+    {
+     "base": 5,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\""
+     ]
+    },
+    {
+     "base": 6,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\""
+     ]
+    },
+    {
+     "base": 7,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\""
+     ]
+    },
+    {
+     "base": 8,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\""
+     ]
+    },
+    {
+     "base": 9,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\""
+     ]
+    },
+    {
+     "base": 10,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\""
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3568134,
+   "sha256": "6ca6791edb4221fe6df2325f2df983773b3de6f92e4aeb504d1fd51f129d30a1",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk metadata",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "metadata/chunk-id-130-utf16-units",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\""
+     ]
+    },
+    {
+     "base": 5,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\""
+     ]
+    },
+    {
+     "base": 6,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\""
+     ]
+    },
+    {
+     "base": 7,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\""
+     ]
+    },
+    {
+     "base": 8,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\""
+     ]
+    },
+    {
+     "base": 9,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\""
+     ]
+    },
+    {
+     "base": 10,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\""
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3569051,
+   "sha256": "4427835615387b544a9b6928bfbd90a78ebef6dc7757a19d28c164a30ddb854f",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk metadata",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 9,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "metadata/numeric-chunk-id",
+   "lines": [
+    {
+     "range": [
+      0,
+      4
+     ]
+    },
+    {
+     "base": 4,
+     "replace": [
+      "\"chunkId\":\"rpc-1\"",
+      "\"chunkId\":1"
+     ]
+    },
+    {
+     "range": [
+      5,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567260,
+   "sha256": "6d3209472f14d0129f0b20457ece1980cf990e6f9e95e59c78d93fded23876f4",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk metadata",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "data/missing",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"x\",\"index\":0,\"count\":4,\"byteLength\":1048576}\n"
+     ]
+    }
+   ],
+   "byteCount": 76,
+   "sha256": "9ac933591b9f49ec6f8cd375295a77ed096eba5e531258391e1c44a51c62edab",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "invalid rpc chunk data",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "data/empty",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"x\",\"index\":0,\"count\":4,\"byteLength\":1048576,\"data\":\"\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 86,
+   "sha256": "233d9bf7fa45159db45312134b3e0903b61a30e1aa38d4d6a0fa357807f8bc58",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "invalid rpc chunk data",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "data/not-a-string",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"x\",\"index\":0,\"count\":4,\"byteLength\":1048576,\"data\":[\"QQ==\"]}\n"
+     ]
+    }
+   ],
+   "byteCount": 92,
+   "sha256": "cc3b2106950afcf3cbfa889a6cd513592d63f099b71c0026f7dec2fefa1c80eb",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "invalid rpc chunk data",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "Invalid RPC chunk metadata"
+   }
+  },
+  {
+   "name": "data/character-outside-alphabet",
+   "lines": [
+    {
+     "range": [
+      0,
+      5
+     ]
+    },
+    {
+     "base": 5,
+     "replace": [
+      "\"data\":\"qXh4",
+      "\"data\":\"!Xh4"
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 2167360,
+   "sha256": "d2a75ec06a09d80646aa92d496a8b8ad28cdbe7282a6435569603d4c8ec5f90c",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk data",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk data"
+   }
+  },
+  {
+   "name": "data/escaped-newline",
+   "lines": [
+    {
+     "range": [
+      0,
+      5
+     ]
+    },
+    {
+     "base": 5,
+     "replace": [
+      "\"data\":\"",
+      "\"data\":\"\\n"
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 2167362,
+   "sha256": "07ad7fc760f5616ea854ee6d2514d683901880e9e613da91bb97fe74167198b1",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk data",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk data"
+   }
+  },
+  {
+   "name": "data/non-canonical-pad-bits-double",
+   "lines": [
+    {
+     "range": [
+      0,
+      10
+     ]
+    },
+    {
+     "base": 10,
+     "replace": [
+      "fQ==",
+      "fR=="
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567266,
+   "sha256": "0f40a5042ef3d1eba28fead0ae5657d20f655d532fba98570cb1e71bdd1c152f",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk data",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk data"
+   }
+  },
+  {
+   "name": "data/non-canonical-pad-bits-single",
+   "lines": [
+    {
+     "range": [
+      0,
+      16
+     ]
+    },
+    {
+     "base": 16,
+     "replace": [
+      "ZX0=",
+      "ZX1="
+     ]
+    },
+    {
+     "range": [
+      17,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567266,
+   "sha256": "48360aef88477d1fb67882767604fd309cc50a46974580350b38b6576e1363ac",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "error": "invalid rpc chunk data",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 6,
+    "error": "Invalid RPC chunk data"
+   }
+  },
+  {
+   "name": "data/missing-padding",
+   "lines": [
+    {
+     "range": [
+      0,
+      10
+     ]
+    },
+    {
+     "base": 10,
+     "replace": [
+      "fQ==\"}",
+      "fQ\"}"
+     ]
+    },
+    {
+     "range": [
+      11,
+      19
+     ]
+    }
+   ],
+   "byteCount": 3567264,
+   "sha256": "b1ef5ac9cc5fd6f9701083ae5b924f584f02ed981254dbc3cdc96e0c1817b253",
+   "ts": {
+    "ok": false,
+    "frames": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "error": "invalid rpc chunk data",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 4,
+    "error": "Invalid RPC chunk data"
+   }
+  },
+  {
+   "name": "data/payload-above-chunk-limit",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"big\",\"index\":0,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "AAAA",
+       87382.33333333333
+      ],
+      "\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 349616,
+   "sha256": "1cba1a6fc05536b15d993999dfc582ae689513027d9c40545a058ed2723aa561",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "rpc chunk payload exceeds the transport limit",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "RPC chunk payload exceeds the transport limit"
+   }
+  },
+  {
+   "name": "payload/invalid-utf8",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":0,\"count\":4,\"byteLength\":1048576,\"data\":\"eyJ0eXBlIjoieCIsInMiOiJ",
+      [
+       "hYWF",
+       87375
+      ],
+      "hYQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":1,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":2,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":3,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87380
+      ],
+      "Yf8ifQ==\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 1398460,
+   "sha256": "5e19abc23e4c2a800da1c2f1c28140075f8b9c6d8cf4b8285691cc82836d2ea8",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "The encoded data was not valid for encoding utf-8",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "Failed to decode reassembled RPC frame"
+   }
+  },
+  {
+   "name": "payload/overlong-utf8",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":0,\"count\":4,\"byteLength\":1048576,\"data\":\"eyJ0eXBlIjoieCIsInMiOiJ",
+      [
+       "hYWF",
+       87375
+      ],
+      "hYQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":1,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":2,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":3,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87380
+      ],
+      "wK8ifQ==\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 1398460,
+   "sha256": "e78ce2e0da8c5d03bc5312fa84988cde8bc2987d0dde497b7a8c618f1b9026b4",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "The encoded data was not valid for encoding utf-8",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "Failed to decode reassembled RPC frame"
+   }
+  },
+  {
+   "name": "payload/utf8-surrogate",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":0,\"count\":4,\"byteLength\":1048576,\"data\":\"eyJ0eXBlIjoieCIsInMiOiJ",
+      [
+       "hYWF",
+       87375
+      ],
+      "hYQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":1,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":2,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":3,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87379
+      ],
+      "YWHtoIAifQ==\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 1398460,
+   "sha256": "fa4bbbf9a1d7b3bf84ded69109f6b47bbd9a349e00cb67f50bdd2142ad079b54",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "The encoded data was not valid for encoding utf-8",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "Failed to decode reassembled RPC frame"
+   }
+  },
+  {
+   "name": "payload/truncated-utf8-sequence",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":0,\"count\":4,\"byteLength\":1048576,\"data\":\"eyJ0eXBlIjoieCIsInMiOiJ",
+      [
+       "hYWF",
+       87375
+      ],
+      "hYQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":1,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":2,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"u8\",\"index\":3,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87379
+      ],
+      "YWHwn5gifQ==\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 1398460,
+   "sha256": "d6d0ad5e7913db75d186ad08d01f73031f4061ce1310574518f755c0d87d680a",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "The encoded data was not valid for encoding utf-8",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "Failed to decode reassembled RPC frame"
+   }
+  },
+  {
+   "name": "payload/leading-bom",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"bom\",\"index\":0,\"count\":4,\"byteLength\":1048576,\"data\":\"77u/eyJ0eXBlIjoiYm9tIiwicyI6Im",
+      [
+       "FhYW",
+       87373
+      ],
+      "FhYQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"bom\",\"index\":1,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"bom\",\"index\":2,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"bom\",\"index\":3,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87380
+      ],
+      "YWEifQ==\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 1398464,
+   "sha256": "cee8b8e86dee7665a252f53ce5a580635a3e20c8c81f9fe34c4c3da26e597040",
+   "ts": {
+    "ok": true,
+    "frames": [
+     9
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "Failed to decode reassembled RPC frame"
+   }
+  },
+  {
+   "name": "payload/whitespace-and-newlines",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"ws\",\"index\":0,\"count\":4,\"byteLength\":1048576,\"data\":\"ewogICJ0eXBlIjogInByZXR0eSIsDQoJInMiOiAi",
+      [
+       "YWFh",
+       87371
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"ws\",\"index\":1,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"ws\",\"index\":2,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"ws\",\"index\":3,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87380
+      ],
+      "Igp9Cg==\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 1398460,
+   "sha256": "af9e5aa8a15b48dcea288444820d787408b21bbf57b855401c4d0dc8388b9ce1",
+   "ts": {
+    "ok": true,
+    "frames": [
+     10
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 1,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "payload/array",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"arr\",\"index\":0,\"count\":4,\"byteLength\":1048576,\"data\":\"WyJ",
+      [
+       "hYWF",
+       87380
+      ],
+      "hYQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"arr\",\"index\":1,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"arr\",\"index\":2,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"arr\",\"index\":3,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87380
+      ],
+      "YWEiXQ==\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 1398464,
+   "sha256": "82e67795e5b6cead35067a6727b62ee87ef7ff7c83447c65377303a198b45627",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "rpc frame must be an object",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "RPC frame must be a JSON object"
+   }
+  },
+  {
+   "name": "payload/string",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"str\",\"index\":0,\"count\":4,\"byteLength\":1048576,\"data\":\"Im",
+      [
+       "FhYW",
+       87380
+      ],
+      "FhYQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"str\",\"index\":1,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"str\",\"index\":2,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"str\",\"index\":3,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "Ig==\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 1398464,
+   "sha256": "12472b146daa9446053d47ddb4fe6f4d382097c23274f22f877d07391c8b71c4",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "rpc frame must be an object",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "RPC frame must be a JSON object"
+   }
+  },
+  {
+   "name": "payload/unterminated-json",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"cut\",\"index\":0,\"count\":4,\"byteLength\":1048576,\"data\":\"eyJ0eXBlIjoieCIsInMiOiJ",
+      [
+       "hYWF",
+       87375
+      ],
+      "hYQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"cut\",\"index\":1,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"cut\",\"index\":2,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"cut\",\"index\":3,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 1398464,
+   "sha256": "01778a1913103a388329db553ae0aef6b6d636bf731febbdd16e7f6bfb2063bf",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "JSON Parse error: Unterminated string",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "Failed to decode reassembled RPC frame"
+   }
+  },
+  {
+   "name": "payload/trailing-data",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"trail\",\"index\":0,\"count\":4,\"byteLength\":1048576,\"data\":\"eyJ0eXBlIjoieCIsInMiOiJ",
+      [
+       "hYWF",
+       87375
+      ],
+      "hYQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"trail\",\"index\":1,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"trail\",\"index\":2,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87381
+      ],
+      "YQ==\"}\n"
+     ]
+    },
+    {
+     "segments": [
+      "{\"type\":\"rpc_chunk\",\"chunkId\":\"trail\",\"index\":3,\"count\":4,\"byteLength\":1048576,\"data\":\"",
+      [
+       "YWFh",
+       87380
+      ],
+      "In0geA==\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 1398472,
+   "sha256": "ea2e6091c723f7ea0336109b015273fb07dcbaa0ccfe0a3c89479b1724671268",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "JSON Parse error: Unable to parse JSON string",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "Failed to decode reassembled RPC frame"
+   }
+  },
+  {
+   "name": "lines/crlf",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"a\",\"n\":1}\r\n{\"type\":\"b\",\"n\":2}\r\n"
+     ]
+    }
+   ],
+   "byteCount": 40,
+   "sha256": "85e4d59666ade3adc3df3bcfdd84e6eaedc57d08f6561a0bb0c90a71af8b9b85",
+   "ts": {
+    "ok": true,
+    "frames": [
+     11,
+     12
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 2,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "lines/blank-and-whitespace-lines",
+   "lines": [
+    {
+     "segments": [
+      "\n \t \r\n{\"type\":\"a\"}\n\n\r\n  \n{\"type\":\"b\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 38,
+   "sha256": "bac5e1d19b208739e53483c3c6f0ff03ae923a62615d000705a7de9bbc070d67",
+   "ts": {
+    "ok": true,
+    "frames": [
+     13,
+     14
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 2,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "lines/bom-at-stream-start",
+   "lines": [
+    {
+     "segments": [
+      {
+       "bytes": "77u/"
+      },
+      "{\"type\":\"a\"}\n{\"type\":\"b\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 29,
+   "sha256": "a43de6bd84cd293dd02cf1498e9df386a9106aced8343c3dfa54caa1aec818f2",
+   "ts": {
+    "ok": true,
+    "frames": [
+     13,
+     14
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)"
+   }
+  },
+  {
+   "name": "lines/bom-on-second-line",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"a\"}\n",
+      {
+       "bytes": "77u/"
+      },
+      "{\"type\":\"b\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 29,
+   "sha256": "af766e3fa7a7a574e734f445c2b7aac62bc0a30ca49dccb3d5c39409a8adb5a1",
+   "ts": {
+    "ok": false,
+    "frames": [
+     13
+    ],
+    "error": "Failed to parse JSONL",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 1,
+    "error": "Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)"
+   }
+  },
+  {
+   "name": "lines/final-line-without-newline",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"a\"}\n{\"type\":\"b\"}"
+     ]
+    }
+   ],
+   "byteCount": 25,
+   "sha256": "b970a3bbc466c9e6386a0f2e3679bab12ec96115389dd889f7df45eed3bf7b31",
+   "ts": {
+    "ok": true,
+    "frames": [
+     13,
+     14
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 2,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "lines/incomplete-final-line",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"a\"}\n{\"type\":\"b\",\"s\":\"unterminated"
+     ]
+    }
+   ],
+   "byteCount": 42,
+   "sha256": "15946b94b92b46a08d8c777b04f54f558a3154f08b51faa3fd8ae40760126a7b",
+   "ts": {
+    "ok": false,
+    "frames": [
+     13
+    ],
+    "error": "JSONL stream ended unexpectedly",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 1,
+    "error": "Unterminated string starting at: line 1 column 17 (char 16)"
+   }
+  },
+  {
+   "name": "lines/malformed-line",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"a\"}\n{type:b}\n{\"type\":\"c\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 35,
+   "sha256": "3942520370dcf52c3c13983c8553734d371adfac31a8a764dc87d29b4a9f2ce5",
+   "ts": {
+    "ok": false,
+    "frames": [
+     13
+    ],
+    "error": "Failed to parse JSONL",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 1,
+    "error": "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+   }
+  },
+  {
+   "name": "lines/control-character-in-string",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"a\",\"s\":\"",
+      {
+       "bytes": "AQ=="
+      },
+      "\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 21,
+   "sha256": "1fae2cd0aa2ba9ad469603b440c1882c5413f4f2425b907c9d47381d344c0ef2",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "Failed to parse JSONL",
+    "errorKind": "parse"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "Invalid control character at: line 1 column 18 (char 17)"
+   }
+  },
+  {
+   "name": "lines/number-frame",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"a\"}\n42\n"
+     ]
+    }
+   ],
+   "byteCount": 16,
+   "sha256": "d6598bb1e66797e8e9b923fda5c6d1687bce8714b069570e5eb4646a90b34bad",
+   "ts": {
+    "ok": false,
+    "frames": [
+     13
+    ],
+    "error": "rpc frame must be an object",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 1,
+    "error": "RPC frame must be a JSON object"
+   }
+  },
+  {
+   "name": "lines/array-frame",
+   "lines": [
+    {
+     "segments": [
+      "[{\"type\":\"a\"}]\n"
+     ]
+    }
+   ],
+   "byteCount": 15,
+   "sha256": "eabbec0b57eaf0293c7bb4196177b774aeb4c3be5b54d61c9d7ac0fcfa7fd1bb",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "rpc frame must be an object",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "RPC frame must be a JSON object"
+   }
+  },
+  {
+   "name": "lines/null-frame",
+   "lines": [
+    {
+     "segments": [
+      "null\n"
+     ]
+    }
+   ],
+   "byteCount": 5,
+   "sha256": "38e0b9de817f645c4bec37c0d4a3e58baecccb040f5718dc069a72c7385a0bed",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "rpc frame must be an object",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "RPC frame must be a JSON object"
+   }
+  },
+  {
+   "name": "lines/string-frame",
+   "lines": [
+    {
+     "segments": [
+      "\"ready\"\n"
+     ]
+    }
+   ],
+   "byteCount": 8,
+   "sha256": "ac8a678ef912430809ab85a0f09486cde4bdea72aa47580f7d1740c7bdb2de14",
+   "ts": {
+    "ok": false,
+    "frames": [],
+    "error": "rpc frame must be an object",
+    "errorKind": "chunk"
+   },
+   "python": {
+    "ok": false,
+    "frameCount": 0,
+    "error": "RPC frame must be a JSON object"
+   }
+  },
+  {
+   "name": "lines/invalid-utf8-replaced",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"u\",\"a\":\"",
+      {
+       "bytes": "/w=="
+      },
+      "\",\"b\":\"",
+      {
+       "bytes": "wK8="
+      },
+      "\",\"c\":\"",
+      {
+       "bytes": "7aCA"
+      },
+      "\",\"d\":\"",
+      {
+       "bytes": "8J+Y"
+      },
+      "x",
+      "\",\"e\":\"",
+      {
+       "bytes": "4oI="
+      },
+      "\",\"f\":\"",
+      {
+       "bytes": "9JCAgA=="
+      },
+      "\",\"g\":\"",
+      {
+       "bytes": "gL8="
+      },
+      "\",\"h\":\"",
+      {
+       "bytes": "+IiAgIA="
+      },
+      "\",\"i\":\"",
+      {
+       "bytes": "4ICA"
+      },
+      "\",\"j\":\"ok ",
+      {
+       "bytes": "4oKs"
+      },
+      "\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 115,
+   "sha256": "8375894c26939c12ef66f01fe3f8925fe8a8cb770aea08cf1be7ad3ea5d2a7d7",
+   "ts": {
+    "ok": true,
+    "frames": [
+     15
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 1,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "lines/escapes",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"e\",\"s\":\"\\u00e9\\ud83d\\ude00\\n\\t\\\"\\\\\\/\\b\\f\\r\\u0000 \\uFFFF\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 67,
+   "sha256": "2ea5afe5ecdd1fdbc2e0edde30f41cdfa3d8c4d57772d3abeb033e4969ab2d9d",
+   "ts": {
+    "ok": true,
+    "frames": [
+     16
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 1,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "lines/numbers",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"n\",\"a\":-0,\"b\":1e5,\"c\":1.5e-7,\"d\":12345678901234567890,\"e\":0.1,\"f\":-123.456E+2,\"g\":9007199254740993,\"h\":5e-324,\"i\":1.7976931348623157e308}\n"
+     ]
+    }
+   ],
+   "byteCount": 147,
+   "sha256": "f11ff937c4a017c976868ec3fd28df2fc50c433b32a916a9ea42733c61b8bd1f",
+   "ts": {
+    "ok": true,
+    "frames": [
+     17
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 1,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "lines/duplicate-keys",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"d\",\"k\":1,\"k\":2}\n"
+     ]
+    }
+   ],
+   "byteCount": 25,
+   "sha256": "27c9ad48a3d46786c049082eaecb0e3787d193c909032fd8fe33bf297f4f4a03",
+   "ts": {
+    "ok": true,
+    "frames": [
+     18
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 1,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "lines/line-separators-in-string",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"u\",\"s\":\"a b c\"}\n"
+     ]
+    }
+   ],
+   "byteCount": 29,
+   "sha256": "9e646724cb53e1197daa6bb72dc4c8163b804929324586f34762f11102b98fb7",
+   "ts": {
+    "ok": true,
+    "frames": [
+     19
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 1,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "lines/nested-64",
+   "lines": [
+    {
+     "segments": [
+      "{\"type\":\"deep\",\"v\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}\n"
+     ]
+    }
+   ],
+   "byteCount": 147,
+   "sha256": "bb57ff920c2f2ae04b37b7985da8790f8bf84731a3c33cf727c057d554680328",
+   "ts": {
+    "ok": true,
+    "frames": [
+     20
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 1,
+    "pendingAtEOF": false
+   }
+  },
+  {
+   "name": "lines/whitespace-inside-values",
+   "lines": [
+    {
+     "segments": [
+      "{ \"type\" : \"w\" ,\t\"a\" : [ 1 , 2 , { } , [ ] ] }\r\n"
+     ]
+    }
+   ],
+   "byteCount": 48,
+   "sha256": "2afa971df366e522204b46c7f551cc2003291e3dd39d0bae9759969497fdb6f9",
+   "ts": {
+    "ok": true,
+    "frames": [
+     21
+    ],
+    "pendingAtEOF": false
+   },
+   "python": {
+    "ok": true,
+    "frameCount": 1,
+    "pendingAtEOF": false
+   }
+  }
+ ]
+}
