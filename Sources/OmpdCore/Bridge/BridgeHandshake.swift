@@ -43,6 +43,8 @@ public struct BridgeHello: Sendable, Equatable {
     public let onDisk: Bool
     public let cwd: String
     public let artifactsDir: String?
+    /// The session's name when the bridge said hello (a resumed session keeps its title); nil when unnamed.
+    public let title: String?
     /// The hello frame without `token`.
     public let raw: JSONValue
 }
@@ -76,6 +78,7 @@ extension BridgeHello {
         self.init(
             sessionKey: sessionKey, pid: pid, ompVersion: ompVersion,
             capabilities: capabilities.compactMapValues(\.boolValue), sessionId: sessionId, sessionFile: sessionFile,
-            onDisk: onDisk, cwd: cwd, artifactsDir: session["artifactsDir"]?.stringValue, raw: .object(raw))
+            onDisk: onDisk, cwd: cwd, artifactsDir: session["artifactsDir"]?.stringValue,
+            title: session["title"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }, raw: .object(raw))
     }
 }

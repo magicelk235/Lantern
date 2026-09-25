@@ -6,7 +6,7 @@ import Testing
     private static let frames: [ClientFrame] = [
         .hello(Hello(clientVersion: "1.0", token: "t")),
         .request(Request(id: "7", method: PTYWrite.name, params: ["ptyId": "p1", "data": "aGVsbG8="])),
-        .request(Request(id: "8", method: OmpCommand.name, params: ["command": ["type": "prompt", "message": "ünïcødé ✓"]])),
+        .request(Request(id: "8", method: SessionCreate.name, params: ["workspace": "/Users/me/ünïcødé ✓", "cols": 120, "rows": 40])),
     ]
 
     @Test func encodeWritesBigEndianLengthThenIDECodingJSON() throws {

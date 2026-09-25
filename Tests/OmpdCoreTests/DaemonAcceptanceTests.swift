@@ -6,120 +6,105 @@ import Testing
 
 @testable import OmpdCore
 
-/// Acceptance with the real `ompd` binary, real omp and `anthropic/claude-haiku-4-5` (costs model
-/// calls, ~2–4 min). Not part of the default run: `scripts/acceptance.sh` builds ompd and runs it with
+/// Acceptance for TUI sessions, with the real `ompd` binary, real omp and `anthropic/claude-haiku-4-5`
+/// (costs model calls, a few minutes). Not part of the default run: `scripts/acceptance.sh` builds ompd and runs it with
 /// `OMPD_ACCEPTANCE=1`. Uses the dev LaunchAgent `com.omp-ide.ompd.dev` (installed and removed by the test) and only
 /// signals processes it started.
 @Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["OMPD_ACCEPTANCE"] == "1", "set OMPD_ACCEPTANCE=1 (scripts/acceptance.sh)"))
 struct DaemonAcceptanceTests {
     static let prompt = """
-        Use the task tool exactly once to run 3 subagents in parallel, with ids Sleeper1, Sleeper2 and Sleeper3. \
-        Each subagent's assignment: run the bash command `/bin/sleep 5` (exactly that command, nothing else), then \
-        reply with just its own id. When all three have finished, reply with exactly FANOUT-DONE and nothing else.
+        Use the task tool exactly once to run one subagent with id Sleeper. Its assignment: run the bash command \
+        `/bin/sleep 10` (exactly that command, nothing else), then reply with just its own id. When it has finished, \
+        reply with exactly NESTED-DONE and nothing else.
         """
 
-    @Test(.timeLimit(.minutes(20))) func fanOutSurvivesReconnectAndDaemonRestart() async throws {
+    @Test(.timeLimit(.minutes(20))) func tuiSessionSurvivesReattachAndDaemonRestart() async throws {
         let rig = try AcceptanceRig()
         defer {
-            // The run's home, journals and omp session files: removed unless OMPD_ACCEPTANCE_KEEP=1.
+            // The run's home and omp session files: removed unless OMPD_ACCEPTANCE_KEEP=1.
             if ProcessInfo.processInfo.environment["OMPD_ACCEPTANCE_KEEP"] == "1" {
                 print("acceptance: evidence kept in \(rig.root.path(percentEncoded: false))")
             } else {
                 rig.remove()
             }
         }
-        let phase1Key = try await replayMatchesAnAlwaysConnectedClient(rig)
+        let phase1Key = try await reattachMidRunShowsTheTUI(rig)
         try await kickstartResumesTheSession(rig, alsoRestoring: phase1Key)
     }
 
-    /// Clients A (always connected) and B (drops mid-run, resubscribes with its last seq) see the same records.
-    private func replayMatchesAnAlwaysConnectedClient(_ rig: AcceptanceRig) async throws -> SessionKey {
+    /// A client drops and re-attaches while a nested subagent runs `/bin/sleep 10`: the repaint is the TUI, nothing in
+    /// omp noticed, and the turn completes. Then SIGTERM takes the graceful path.
+    private func reattachMidRunShowsTheTUI(_ rig: AcceptanceRig) async throws -> SessionKey {
         let daemon = try rig.launchDaemon(log: "phase1.log")
         defer { if daemon.isRunning { kill(daemon.processIdentifier, SIGTERM) } }
         let a = try await rig.connect()
-        let entry = try await a.client.call(
-            SessionCreate.self, .init(workspace: rig.workspace, approvalMode: "yolo", model: "anthropic/claude-haiku-4-5"))
-        let key = entry.sessionKey
-        _ = try await a.client.call(Subscribe.self, .init(sessionKey: key, since: 0))
-        let b = try await rig.connect()
-        _ = try await b.client.call(Subscribe.self, .init(sessionKey: key, since: 0))
         let started = ContinuousClock.now
-        _ = try await a.client.call(OmpCommand.self, .init(sessionKey: key, command: ["type": "prompt", "message": .string(Self.prompt)]))
+        let (key, ptyId, sessionFile) = try await rig.startSession(a)
+        let ompPID = try await rig.pid(of: ptyId, a)
+        try await rig.prompt(a, ptyId)
+        try await a.waitForStatus(key, .busy, timeout: .seconds(60))
+        // The bridge wrote the session file at the first run: a crash during this turn would resume, not start over.
+        try await eventually("session file on disk during the first turn", timeout: .seconds(10)) {
+            FileManager.default.fileExists(atPath: sessionFile)
+        }
+        let sleeper = try await eventuallyValue("a subagent running /bin/sleep 10", timeout: .seconds(240)) {
+            try rig.descendant(of: ompPID, command: "/bin/sleep 10")
+        }
 
-        try await eventually("a subagent running /bin/sleep", timeout: .seconds(240)) { b.events(key).contains(where: isSubagentSleep) }
-        let beforeDrop = b.events(key)
-        let dropSeq = try #require(beforeDrop.last?.seq)
+        let b = try await rig.connect()
+        let before = screenLines(try await b.client.call(PTYAttach.self, .init(ptyId: ptyId)))
         await b.close()
-        try await Task.sleep(for: .seconds(3))
+        try await Task.sleep(for: .seconds(2))
         let b2 = try await rig.connect()
-        let resubscribed = try await b2.client.call(Subscribe.self, .init(sessionKey: key, since: dropSeq))
+        let after = screenLines(try await b2.client.call(PTYAttach.self, .init(ptyId: ptyId))).joined(separator: "\n")
+        #expect(after.contains("NESTED-DONE"), "the typed prompt is on the TUI's screen")
+        #expect(after.contains("Haiku"), "omp's status line is on the screen")
+        #expect(kill(sleeper, 0) == 0, "the subagent's tool kept running while the client was away")
+        #expect(try await a.entry(key).ptyId == ptyId && kill(ompPID, 0) == 0, "omp was never touched")
 
-        try await eventually("session_settled", timeout: .seconds(300)) { a.events(key).contains { $0.ompType == "session_settled" } }
-        try await Task.sleep(for: .seconds(2)) // trailing records (status change, widgets)
-        let aRecords = a.events(key)
-        let lastSeq = try #require(aRecords.last?.seq)
-        try await eventually("B caught up to seq \(lastSeq)") { (b2.events(key).last?.seq ?? 0) >= lastSeq }
-        let bRecords = beforeDrop + b2.events(key).filter { $0.seq <= lastSeq }
-
-        #expect(aRecords.map(\.seq) == Array(1...lastSeq))
-        #expect(bRecords.map(\.seq) == Array(1...lastSeq))
-        let aBytes = try recordBytes(aRecords)
-        #expect(try recordBytes(bRecords) == aBytes)
-        let disk = try rig.journalLines(key)
-        #expect(Array(disk.prefix(aBytes.count)) == aBytes)
-        let spawns = aRecords.compactMap { if case .spawned(let pid, _, _)? = $0.daemonEvent { pid } else { nil } }
-        #expect(spawns.count == 1)
-        #expect(!aRecords.contains { if case .exited? = $0.daemonEvent { true } else { false } })
-        let subagents = Set(aRecords.filter { $0.ompType == "subagent_lifecycle" }.compactMap { $0.payload["payload"]?["id"]?.stringValue })
-        #expect(subagents.count >= 3)
-
-        let elapsed = ContinuousClock.now - started
+        try await a.waitForStatus(key, .idle, timeout: .seconds(300))
+        let finished = try await a.entry(key)
+        let reply = try rig.assistantTexts(sessionFile).last ?? ""
+        #expect(reply.contains("NESTED-DONE"))
+        #expect(finished.title != nil && finished.lastActiveAt != nil)
         print("""
-            acceptance phase 1 (direct child ompd pid \(daemon.processIdentifier), session \(key)):
-              records 1...\(lastSeq) in \(elapsed); kinds \(histogram(aRecords.map(\.kind.rawValue)))
-              omp frame types \(histogram(aRecords.compactMap(\.ompType)))
-              subagents \(subagents.sorted()); omp spawned once (pid \(spawns.first ?? -1)), no exits
-              B dropped after seq \(dropSeq) (\(beforeDrop.count) records), resubscribed since \(dropSeq): replayedThrough \
-            \(resubscribed.replayedThrough), then live to \(lastSeq)
-              B == A byte-for-byte for all \(lastSeq) records: \(try recordBytes(bRecords) == aBytes); wire == journal file: \
-            \(Array(disk.prefix(aBytes.count)) == aBytes)
-              final reply: \(finalAssistantText(aRecords) ?? "?")
+            acceptance phase 1 (direct child ompd pid \(daemon.processIdentifier), session \(key), omp pid \(ompPID)):
+              turn with nested /bin/sleep 10 (pid \(sleeper)) done in \(ContinuousClock.now - started); title "\(finished.title ?? "-")"
+              B attached (\(before.count) lines), dropped mid-run, re-attached: screen shows the TUI (prompt + status line): \
+            \(after.contains("NESTED-DONE") && after.contains("Haiku"))
+              final reply: \(reply)
             """)
         await a.close()
         await b2.close()
 
-        // Graceful SIGTERM path: omp gets stdin EOF and records session_exit {kind:"normal"}; ompd exits 0.
-        let sessionFile = try #require(try rig.manifest().sessions.first { $0.sessionKey == key }?.sessionFile)
+        // Graceful SIGTERM path: the bridge disposes omp (`session_exit {kind:"normal"}`); ompd exits 0.
         let signalled = Date()
         kill(daemon.processIdentifier, SIGTERM)
         let status = try await rig.waitForExit(daemon, timeout: .seconds(30))
         let exitKind = SessionFileTail.sessionExitKind(path: sessionFile, recordedSince: signalled)
-        let journaledExit = try rig.journalRecords(key).last { if case .exited? = $0.daemonEvent { true } else { false } }?.daemonEvent
         #expect(status == 0)
         #expect(exitKind == "normal")
-        #expect(journaledExit == .exited(code: 0, signal: nil, sessionExitKind: "normal"))
-        print("  SIGTERM: ompd exit \(status); session JSONL session_exit kind \(exitKind ?? "none"); journal \(String(describing: journaledExit))")
+        #expect(kill(ompPID, 0) != 0)
+        print("  SIGTERM: ompd exit \(status); session JSONL session_exit kind \(exitKind ?? "none"); omp \(ompPID) gone")
         return key
     }
 
-    /// `launchctl kickstart -k` of the dev LaunchAgent mid-fan-out: omp ends on stdin EOF (`session_exit` normal) and
-    /// the restarted daemon resumes the session with `--resume`.
+    /// `launchctl kickstart -k` of the dev LaunchAgent mid-run: omp is disposed through its bridge (`session_exit`
+    /// normal) and the restarted daemon respawns the session with `--resume` into a new PTY.
     private func kickstartResumesTheSession(_ rig: AcceptanceRig, alsoRestoring phase1Key: SessionKey) async throws {
         defer { _ = try? rig.agent("uninstall") }
         try rig.agent("install", rig.home.path(percentEncoded: false), "--", arguments: rig.ompdArguments)
         let first = try await rig.connect(timeout: .seconds(60))
         let firstStatus = try await first.client.call(DaemonStatus.self, Empty())
-        try await eventually("phase-1 session resumed", timeout: .seconds(60)) {
-            try await first.client.call(ListSessions.self, Empty()).sessions.first { $0.sessionKey == phase1Key }?.status == .settled
+        try await first.waitForStatus(phase1Key, .idle, timeout: .seconds(60))
+        let restoredPhase1 = try await first.entry(phase1Key)
+
+        let (key, oldPTY, sessionFile) = try await rig.startSession(first)
+        let oldOmp = try await rig.pid(of: oldPTY, first)
+        try await rig.prompt(first, oldPTY)
+        let sleeper = try await eventuallyValue("a subagent running /bin/sleep 10", timeout: .seconds(240)) {
+            try rig.descendant(of: oldOmp, command: "/bin/sleep 10")
         }
-        let entry = try await first.client.call(
-            SessionCreate.self, .init(workspace: rig.workspace, approvalMode: "yolo", model: "anthropic/claude-haiku-4-5"))
-        let key = entry.sessionKey
-        _ = try await first.client.call(Subscribe.self, .init(sessionKey: key, since: 0))
-        _ = try await first.client.call(OmpCommand.self, .init(sessionKey: key, command: ["type": "prompt", "message": .string(Self.prompt)]))
-        try await eventually("a subagent running /bin/sleep", timeout: .seconds(240)) { first.events(key).contains(where: isSubagentSleep) }
-        let preKick = try #require(first.events(key).last?.seq)
-        let oldOmp = first.events(key).compactMap { if case .spawned(let pid, _, _)? = $0.daemonEvent { pid } else { nil } }.last
 
         let kicked = Date()
         try rig.agent("kickstart")
@@ -129,44 +114,37 @@ struct DaemonAcceptanceTests {
             else { return nil }
             return client
         }
-        _ = try await second.client.call(Subscribe.self, .init(sessionKey: key, since: preKick))
-        try await eventually("resumed spawn", timeout: .seconds(90)) {
-            second.events(key).contains { if case .spawned(_, _, true)? = $0.daemonEvent { true } else { false } }
-        }
-        try await eventually("settled after resume", timeout: .seconds(120)) {
-            try await second.client.call(ListSessions.self, Empty()).sessions.first { $0.sessionKey == key }?.status == .settled
-        }
-        let afterKick = second.events(key)
-        let manifestEntry = try #require(try await second.client.call(ListSessions.self, Empty()).sessions.first { $0.sessionKey == key })
-        let sessionFile = try #require(manifestEntry.sessionFile)
+        try await second.waitForStatus(key, .idle, timeout: .seconds(120))
+        let resumed = try await second.entry(key)
+        let newPTY = try #require(resumed.ptyId)
+        let newOmp = try await rig.pid(of: newPTY, second)
+        let newArgv = try rig.run("/bin/ps", ["-o", "command=", "-p", String(newOmp)]).stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         let exitKind = SessionFileTail.sessionExitKind(path: sessionFile, recordedSince: kicked)
-        let newOmp = afterKick.compactMap { if case .spawned(let pid, _, true)? = $0.daemonEvent { pid } else { nil } }.last
-        let newArgv = try newOmp.map { try rig.run("/bin/ps", ["-o", "command=", "-p", String($0)]).stdout.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let screen = screenLines(try await second.client.call(PTYAttach.self, .init(ptyId: newPTY)))
         let statusJSON = try rig.run(rig.ompd, ["status", "--json"], environment: ["OMPD_HOME": rig.home.path(percentEncoded: false)]).stdout
         let statusTable = try rig.run(rig.ompd, ["status"], environment: ["OMPD_HOME": rig.home.path(percentEncoded: false)]).stdout
         let cliStatus = try IDECoding.decoder().decode(DaemonStatus.Result.self, from: Data(statusJSON.utf8))
 
+        #expect(newPTY != oldPTY)
         #expect(exitKind == "normal")
-        #expect(afterKick.contains { $0.daemonEvent == .exited(code: 0, signal: nil, sessionExitKind: "normal") })
-        // The prompt in flight is completed as aborted: by omp itself on stdin EOF, or else by ompd's synthesized one.
-        #expect(afterKick.contains { $0.ompType == "prompt_result" && $0.payload["status"] == "aborted" })
-        #expect(afterKick.contains { $0.daemonEvent == .statusChanged(.resuming) })
-        #expect(afterKick.contains { if case .notice("info", let message)? = $0.daemonEvent { message.contains("resuming") } else { false } })
-        #expect(newArgv?.contains("--resume ") == true && newArgv?.contains(URL(filePath: sessionFile).lastPathComponent) == true)
+        #expect(kill(oldOmp, 0) != 0 && kill(sleeper, 0) != 0, "the old omp and its tool processes are gone")
+        #expect(newArgv.contains("--resume ") && newArgv.contains(URL(filePath: sessionFile).lastPathComponent))
+        #expect(screen.contains("— terminal restarted —"), "the new PTY continues the old screen")
         #expect(cliStatus.pid != firstStatus.pid)
-        #expect(cliStatus.sessions.first { $0.sessionKey == key }?.status == .settled)
-        #expect(cliStatus.sessions.first { $0.sessionKey == key }?.closedByUser == false)
+        #expect(cliStatus.sessions.first { $0.sessionKey == key }.map { $0.status == .idle && !$0.closedByUser } == true)
+        #expect(cliStatus.ptys.first { $0.ptyId == newPTY }?.sessionKey == key)
 
         let log = (try? String(contentsOf: rig.home.appending(path: "ompd.log"), encoding: .utf8)) ?? ""
         print("""
             acceptance phase 2 (LaunchAgent com.omp-ide.ompd.dev):
-              ompd pid \(firstStatus.pid) -> \(cliStatus.pid) after kickstart -k; omp pid \(oldOmp ?? -1) -> \(newOmp ?? -1)
-              journal after seq \(preKick): \(afterKick.compactMap { $0.daemonEvent.map(describe) ?? ($0.ompType == "prompt_result" ? "prompt_result \($0.payload["status"]?.stringValue ?? "?")\($0.payload["synthesized"] == true ? " (synthesized by ompd)" : " (from omp)")" : nil) })
+              phase-1 session \(phase1Key) resumed at daemon start: \(restoredPhase1.status.rawValue), pty \(restoredPhase1.ptyId ?? "-")
+              ompd pid \(firstStatus.pid) -> \(cliStatus.pid) after kickstart -k; session \(key): pty \(oldPTY) -> \(newPTY), \
+            omp pid \(oldOmp) -> \(newOmp) (sleep \(sleeper) gone: \(kill(sleeper, 0) != 0))
               session JSONL \(sessionFile): newest session_exit since the kick has kind \(exitKind ?? "none")
-              resumed omp argv: \(newArgv ?? "?")
+              resumed omp argv: \(newArgv)
+              new PTY screen has the restart divider: \(screen.contains("— terminal restarted —"))
             ompd status:
             \(statusTable)
-            ompd status --json (sessions): \(cliStatus.sessions.map { "\($0.sessionKey) \($0.status.rawValue) lastSeq \($0.lastSeq)" })
             ompd.log:
             \(log)
             """)
@@ -176,39 +154,8 @@ struct DaemonAcceptanceTests {
         let daemonPID = cliStatus.pid
         try rig.agent("uninstall")
         try await eventually("dev ompd gone after bootout", timeout: .seconds(30)) { kill(daemonPID, 0) != 0 }
-        if let newOmp { try await eventually("omp gone after bootout", timeout: .seconds(30)) { kill(newOmp, 0) != 0 } }
-        print("  uninstall: ompd \(daemonPID) and omp \(newOmp ?? -1) exited")
-    }
-}
-
-/// A subagent's `bash` tool starting (the fan-out is under way), from `subagent_event` frames.
-private func isSubagentSleep(_ record: JournalRecord) -> Bool {
-    guard record.ompType == "subagent_event", let event = record.payload["payload"]?["event"] else { return false }
-    return event["type"] == "tool_execution_start" && event["toolName"] == "bash"
-}
-
-private func finalAssistantText(_ records: [JournalRecord]) -> String? {
-    for record in records.reversed() where record.ompType == "message_end" {
-        guard let message = record.payload["message"], message["role"] == "assistant" else { continue }
-        let text = (message["content"]?.arrayValue ?? []).compactMap { $0["type"] == "text" ? $0["text"]?.stringValue : nil }.joined()
-        if !text.isEmpty { return text }
-    }
-    return nil
-}
-
-private func histogram(_ values: [String]) -> String {
-    Dictionary(values.map { ($0, 1) }, uniquingKeysWith: +).sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: " ")
-}
-
-private func describe(_ event: DaemonEvent) -> String {
-    switch event {
-    case .spawned(let pid, let version, let resumed): "spawned(pid \(pid), omp \(version), resumed \(resumed))"
-    case .exited(let code, let signal, let kind): "exited(code \(code.map(String.init) ?? "-"), signal \(signal.map(String.init) ?? "-"), session_exit \(kind ?? "-"))"
-    case .statusChanged(let status): "status \(status.rawValue)"
-    case .notice(let level, let message): "notice[\(level)] \(message)"
-    case .uiAnswered(let id, let response): "uiAnswered \(id) \(response)"
-    case .uiAbandoned(let id): "uiAbandoned \(id)"
-    case .lost(let from, let to, let reason): "lost \(from)...\(to) \(reason)"
+        try await eventually("omp gone after bootout", timeout: .seconds(30)) { kill(newOmp, 0) != 0 }
+        print("  uninstall: ompd \(daemonPID) and omp \(newOmp) exited")
     }
 }
 
@@ -278,7 +225,7 @@ struct AcceptanceRig {
         process.executableURL = URL(filePath: ompd)
         process.arguments = ["run"] + ompdArguments
         var environment = ProcessInfo.processInfo.environment.filter { key, _ in
-            !key.hasPrefix("DYLD_") && !key.hasPrefix("__XPC_")
+            !key.hasPrefix("DYLD_") && !key.hasPrefix("__XPC_") && !key.hasPrefix("OMP_IDE_")
                 && !["OMPCODE", "CLAUDECODE", "CI", "ORCA_PI_STATUS_OWNED", "AGENT", "OMPD_ACCEPTANCE", "OMPD_BINARY"].contains(key)
         }
         environment[AppSupportPaths.homeEnvironmentKey] = home.path(percentEncoded: false)
@@ -308,18 +255,54 @@ struct AcceptanceRig {
         }
     }
 
-    func manifest() throws -> SessionManifest {
-        try IDECoding.decoder().decode(SessionManifest.self, from: Data(contentsOf: paths.manifest))
+    /// A new session on haiku (yolo approvals), attached by `client`, once its TUI is idle.
+    func startSession(_ client: Connected) async throws -> (SessionKey, PTYID, String) {
+        let entry = try await client.client.call(
+            SessionCreate.self, .init(workspace: workspace, approvalMode: "yolo", model: "anthropic/claude-haiku-4-5", cols: 120, rows: 40))
+        let ptyId = try #require(entry.ptyId)
+        _ = try await client.client.call(PTYAttach.self, .init(ptyId: ptyId))
+        try await client.waitForStatus(entry.sessionKey, .idle, timeout: .seconds(60))
+        let sessionFile = try #require(try await client.entry(entry.sessionKey).sessionFile)
+        return (entry.sessionKey, ptyId, sessionFile)
     }
 
-    func journalLines(_ key: SessionKey) throws -> [Data] {
-        let data = try Data(contentsOf: paths.journalDir.appending(path: "\(key).jsonl"))
-        return data.split(separator: 0x0A, omittingEmptySubsequences: true).map { Data($0) }
+    /// Types `DaemonAcceptanceTests.prompt` into the TUI and submits it, as a user at the keyboard would.
+    func prompt(_ client: Connected, _ ptyId: PTYID) async throws {
+        _ = try await client.client.call(PTYWrite.self, .init(ptyId: ptyId, data: Data(DaemonAcceptanceTests.prompt.utf8)))
+        try await Task.sleep(for: .milliseconds(500))
+        _ = try await client.client.call(PTYWrite.self, .init(ptyId: ptyId, data: Data("\r".utf8)))
     }
 
-    func journalRecords(_ key: SessionKey) throws -> [JournalRecord] {
-        let decoder = IDECoding.decoder()
-        return try journalLines(key).map { try decoder.decode(JournalRecord.self, from: $0) }
+    func pid(of ptyId: PTYID, _ client: Connected) async throws -> Int32 {
+        try #require(try await client.client.call(PTYList.self, Empty()).ptys.first { $0.ptyId == ptyId }?.pid)
+    }
+
+    /// A process below `ancestor` whose command line is exactly `command`.
+    func descendant(of ancestor: Int32, command: String) throws -> Int32? {
+        let rows = try run("/bin/ps", ["-axo", "pid=,ppid=,command="]).stdout.split(separator: "\n").compactMap { line -> (Int32, Int32, String)? in
+            let fields = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard fields.count == 3, let pid = Int32(fields[0]), let ppid = Int32(fields[1]) else { return nil }
+            return (pid, ppid, String(fields[2]))
+        }
+        let parents = Dictionary(rows.map { ($0.0, $0.1) }, uniquingKeysWith: { first, _ in first })
+        for (pid, _, line) in rows where line == command {
+            var cursor = pid
+            while let parent = parents[cursor], parent > 1 {
+                if parent == ancestor { return pid }
+                cursor = parent
+            }
+        }
+        return nil
+    }
+
+    /// Text of every assistant message in an omp session JSONL, in order.
+    func assistantTexts(_ sessionFile: String) throws -> [String] {
+        try String(contentsOfFile: sessionFile, encoding: .utf8).split(separator: "\n").compactMap { line -> String? in
+            guard let entry = try? JSONDecoder().decode(JSONValue.self, from: Data(line.utf8)), entry["type"] == "message",
+                  let message = entry["message"], message["role"] == "assistant" else { return nil }
+            let text = (message["content"]?.arrayValue ?? []).compactMap { $0["type"] == "text" ? $0["text"]?.stringValue : nil }.joined()
+            return text.isEmpty ? nil : text
+        }
     }
 
     /// `scripts/dev-launchagent.sh <verb> [<args>...]` with this run's ompd binary.

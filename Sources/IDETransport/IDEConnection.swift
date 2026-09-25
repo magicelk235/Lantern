@@ -5,7 +5,7 @@ import Foundation
 /// `send` never blocks the daemon: it encodes the frame on the caller's thread and appends it to the connection's
 /// outbound FIFO. Frames reach the client in the order `send` calls were made (for concurrent callers, in the order
 /// their calls took the queue). A client that falls more than the server's `maxBacklogBytes` behind is disconnected
-/// and its queued frames are dropped; it recovers by reconnecting and resubscribing with `since`.
+/// and its queued frames are dropped; it recovers by reconnecting and re-attaching (`pty.attach` repaints the screen).
 public final class IDEConnection: Sendable, Hashable, Identifiable {
     public let id = UUID()
     let channel: FrameChannel
@@ -46,8 +46,8 @@ public final class IDEConnection: Sendable, Hashable, Identifiable {
     public var backlogBytes: Int { channel.backlogBytes }
 
     /// Suspends until at most `limit` bytes are queued for this client, the connection closes, or the calling task is
-    /// cancelled. Bulk producers (journal replay) pace themselves with this instead of tripping the slow-consumer
-    /// cutoff that protects the daemon from clients that stopped reading.
+    /// cancelled. Bulk producers pace themselves with this instead of tripping the slow-consumer cutoff that protects
+    /// the daemon from clients that stopped reading.
     public func waitForBacklog(atMost limit: Int) async {
         await channel.waitForBacklog(atMost: limit)
     }

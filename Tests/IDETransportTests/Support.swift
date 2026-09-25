@@ -221,11 +221,11 @@ enum Echo: DaemonMethod {
     typealias Result = Int
 }
 
-/// Pushes `count` journal events for `sessionKey` with seq 1...count.
-enum EmitEvents: DaemonMethod {
-    static let name = "test.emitEvents"
+/// Pushes `count` PTY output frames for `ptyId` whose data is their sequence number 1...count as decimal text.
+enum EmitOutput: DaemonMethod {
+    static let name = "test.emitOutput"
     struct Params: Codable, Sendable {
-        var sessionKey: SessionKey
+        var ptyId: PTYID
         var count: Int
     }
     typealias Result = Empty

@@ -11,7 +11,7 @@ extension AppSupportPaths {
         } catch CocoaError.fileNoSuchFile {
             // First run.
         }
-        for directory in [run, journalDir, ptySnapshots, hotExit] {
+        for directory in [run, ptySnapshots, hotExit] {
             try StorageIO.createPrivateDirectory(directory)
         }
     }

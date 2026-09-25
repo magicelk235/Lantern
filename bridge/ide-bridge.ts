@@ -4,18 +4,20 @@
  * One file, two modes, chosen at load from the environment:
  *
  *   daemon mode  OMP_IDE_BRIDGE_SOCK, OMP_IDE_SESSION_KEY, OMP_IDE_BRIDGE_TOKEN and OMP_IDE_DAEMON_PID are set and this
- *                process's parent is that daemon: ompd spawned this omp with `-e <APP_SUPPORT>/bridge/ide-bridge.ts`.
- *                Anything this omp spawns inherits the variables (Bun keeps passing the launch environment to children
- *                even after `delete process.env.X`), so a nested `omp -c` in a bash tool fails the parent check and
- *                runs in lock mode. At the main session's `session_start` the bridge dials ompd's bridge socket and
- *                sends `hello` without waiting for the verdict: omp answers no RPC command until `session_start`
- *                handlers return, and ompd may register this process's pid only after its first RPC round trip. After
- *                `welcome` it answers requests and pushes agent-tree events. A process the daemon rejects gets
- *                lock-mode treatment for its session file.
+ *                process's parent is that daemon: ompd spawned this omp's interactive TUI on a PTY with
+ *                `-e <APP_SUPPORT>/bridge/ide-bridge.ts`. Anything this omp spawns inherits the variables (Bun keeps
+ *                passing the launch environment to children even after `delete process.env.X`), so a nested `omp` in a
+ *                bash tool fails the parent check and runs in lock mode. At the main session's `session_start` the
+ *                bridge dials ompd's bridge socket and sends `hello` without waiting for the verdict (ompd registers
+ *                this process's pid right after spawning it; a hello that beats it is held until then). After
+ *                `welcome` it answers requests and pushes activity, title and agent-tree events. A process the daemon
+ *                rejects gets lock-mode treatment for its session file.
  *   lock mode    otherwise; installed as <agentDir>/extensions/omp-ide-bridge.ts so every omp loads it. Refuses to
  *                open a session file the daemon owns: SIGKILL at load (argv --resume/-r/--session), SIGKILL at
  *                `session_start`, `{cancel: true}` from `session_before_switch`. SIGKILL is the only exit that neither
  *                omp's load guard blocks nor appends `session_exit` to the owned JSONL.
+ * Both modes veto `session_before_switch` into a daemon-owned file, so a session TUI's `/resume` cannot open another
+ * IDE session's file.
  *
  * Ownership: ompd holds flock(LOCK_EX) on $APP_SUPPORT/run/owned-sessions/<sha256(canonical sessionFile)>.lock for
  * every session it owns; APP_SUPPORT = $OMPD_HOME or ~/Library/Application Support/omp-ide. The bridge probes it with
@@ -23,19 +25,29 @@
  *
  * Wire: JSON lines over the unix socket.
  *   bridge -> ompd  {t:"hello", v:1, sessionKey, token, pid, ompVersion, capabilities, session:{id, file, onDisk,
- *                    leafId, cwd, artifactsDir}}                                      first frame, exactly once
+ *                    leafId, cwd, artifactsDir, title}}                               first frame, exactly once
  *                   {t:"res", id, ok:true, result} | {t:"res", id, ok:false, error}  one per req
  *                   {t:"evt", seq, ts, agentId, kind, data}                           only after welcome
  *                   {t:"gap", ts, from, to, dropped}                                  evts from..to were dropped
  *   ompd -> bridge  {t:"welcome", v} | {t:"reject", reason}                           verdict on hello
  *                   {t:"req", id, method, params}
- * evt kinds: registry:registered|status_changed|metadata_changed|removed (data = agent row), before_subagent_spawn,
- * session_start, session_shutdown, session_switch (per agent instance), bridge:error. `agentId` is the agent the event
- * is about (registry rows: the row; before_subagent_spawn: the spawning parent). `seq` is per process and gap-free
- * except where a `gap` frame says otherwise.
+ * evt kinds: activity {state:"busy"|"idle"} (the main agent started a run / finished it with no background job left),
+ * title {title} (the session name changed), registry:registered|status_changed|metadata_changed|removed (data = agent
+ * row), before_subagent_spawn, session_start, session_shutdown, session_switch (per agent instance; data.session is the
+ * session info), bridge:error. `agentId` is the agent the event is about (registry rows: the row;
+ * before_subagent_spawn: the spawning parent). `seq` is per process and gap-free except where a `gap` frame says
+ * otherwise.
  *
- * Internal omp subpaths (registry/agent-lifecycle, registry/persisted-agents, modes/agent-hub-runtime) are imported
- * dynamically: a missing module turns the matching capability off instead of failing the extension load.
+ * Graceful stop (`session.shutdown`): the reply goes out first, then the main AgentSession is disposed —
+ * what the TUI's own /exit does: `session_exit {kind:"normal"}` with the pending tool calls, the turn aborted,
+ * subagents, kernels and tool processes torn down — and the process exits 0 through omp's postmortem `quit`.
+ * `ctx.shutdown()` is not used: in the TUI it waits until the session is idle with no background work.
+ * At the main agent's first run the bridge writes the lazily created session file (`ensureOnDisk`), so a TUI that dies
+ * during its first turn can be resumed.
+ *
+ * Internal omp subpaths (registry/agent-lifecycle, registry/persisted-agents, modes/agent-hub-runtime) and
+ * @oh-my-pi/pi-utils are imported dynamically: a missing module turns the matching capability off instead of failing
+ * the extension load.
  */
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import * as ompModule from "@oh-my-pi/pi-coding-agent";
@@ -61,6 +73,8 @@ interface SessionManagerLike {
 	ensureOnDisk(): Promise<void>;
 	flush(): Promise<void>;
 	appendCustomEntry(customType: string, data: unknown): string;
+	getSessionName?(): string | undefined;
+	onSessionNameChanged?(listener: () => void): () => void;
 }
 
 interface AgentSessionLike {
@@ -68,6 +82,7 @@ interface AgentSessionLike {
 	isStreaming?: boolean;
 	prompt(text: string, options?: { streamingBehavior?: "steer" | "followUp" }): Promise<unknown>;
 	abort(options?: { reason?: string }): Promise<void>;
+	dispose(): Promise<void>;
 }
 
 interface AgentRefLike {
@@ -110,7 +125,8 @@ interface OmpRootLike {
 /** Handler ctx. The public type narrows `sessionManager` to read-only; at runtime it is the live manager. */
 interface CtxLike {
 	sessionManager: SessionManagerLike;
-	getAsyncJobSnapshot?(): unknown;
+	getAsyncJobSnapshot?(): { running?: unknown[] } | null;
+	hasPendingMessages?(): boolean;
 	ui?: { notify?(message: string, type?: "info" | "warning" | "error"): void };
 }
 
@@ -118,6 +134,8 @@ interface Internals {
 	AgentLifecycleManager?: { global(): AgentLifecycleLike };
 	ensurePersistedRoster?: (registry: AgentRegistryLike, rootSessionFile?: string) => Promise<string | undefined>;
 	createAgentHubRuntime?: () => { irc: IrcBusLike };
+	/** omp's postmortem `quit(code)`: runs the remaining cleanups, then exits (what the TUI's /exit ends with). */
+	quit?: (code: number) => Promise<void>;
 	errors: Record<string, string>;
 }
 
@@ -133,6 +151,8 @@ const WIRE_VERSION = 1;
 const MAX_BACKLOG_BYTES = 1 << 20;
 /** `evt`s produced between `hello` and the daemon's verdict are held back; beyond this they become a `gap`. */
 const MAX_QUEUED_BEFORE_WELCOME = 1024;
+/** While background jobs outlive the main agent's run, how often the bridge checks whether the session went idle. */
+const SETTLE_RECHECK_MS = 1000;
 const MAX_INBOUND_CHARS = 16 << 20;
 const MAX_STRING = 16_384;
 const MAX_ARRAY = 5_000;
@@ -181,22 +201,47 @@ const DAEMON = daemonEnv();
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Duplicate-load guard. A daemon-spawned omp usually loads this file twice: the lock-mode copy from the agent's
-// extensions dir (auto-discovered, loaded first) and ompd's copy via `-e` (loaded last). The factory is re-bound, not
-// re-imported, for child and revived sessions, so one evaluation serves the whole process. The last evaluation wins
-// (ompd's `-e` copy over a possibly stale global copy) unless the owner already dialed the daemon; handlers of a
-// superseded evaluation stay registered but do nothing.
+// extensions dir and ompd's copy via `-e`. The factory is re-bound, not re-imported, for child and revived sessions, so
+// one evaluation serves the whole process: the newest `BRIDGE_REVISION`, the last evaluation among equals, and nobody
+// takes over once the owner dialed the daemon. Handlers of a superseded evaluation stay registered but do nothing.
+// Evaluation order is not guaranteed, and copies older than the revision field (RPC-era installs) overwrite the slot
+// unconditionally when they evaluate; an accessor ignores such writes, so a stale global copy never wins over ompd's.
 // ---------------------------------------------------------------------------------------------------------------------
+
+/** Bumped whenever the daemon-mode behavior changes (2: TUI sessions: shutdown, activity, title). */
+const BRIDGE_REVISION = 2;
 
 interface GuardSlot {
 	/** The evaluation of this file that serves the process. */
 	owner: string;
 	/** The owner dialed the daemon; later evaluations no longer take over. */
 	connected: boolean;
+	/** Absent in copies from before revisions (treated as 0). */
+	revision?: number;
 }
 
 const GUARD = Symbol.for("omp-ide.bridge");
 const guardSlots = globalThis as unknown as Record<symbol, GuardSlot | undefined>;
-if (!guardSlots[GUARD]?.connected) guardSlots[GUARD] = { owner: EVAL_ID, connected: false };
+
+function claimGuard(): void {
+	const current = guardSlots[GUARD];
+	if (current?.connected || (current?.revision ?? 0) > BRIDGE_REVISION) return;
+	let slot: GuardSlot = { owner: EVAL_ID, connected: false, revision: BRIDGE_REVISION };
+	try {
+		Object.defineProperty(globalThis, GUARD, {
+			configurable: true,
+			enumerable: false,
+			get: () => slot,
+			set: (next: GuardSlot | undefined) => {
+				if (next && !slot.connected && (next.revision ?? 0) >= BRIDGE_REVISION) slot = next;
+			},
+		});
+	} catch {
+		guardSlots[GUARD] = slot;
+	}
+}
+
+claimGuard();
 
 function owns(): boolean {
 	return guardSlots[GUARD]?.owner === EVAL_ID;
@@ -402,11 +447,18 @@ const S = {
 	/** Dropped `evt` seqs not yet reported; nothing is sent past a pending gap. */
 	gap: undefined as { from: number; to: number } | undefined,
 	registryUnsub: undefined as (() => void) | undefined,
+	titleUnsub: undefined as (() => void) | undefined,
+	/** Last `activity` state pushed; the session starts idle (the TUI waits for input). */
+	activity: "idle" as "busy" | "idle",
+	/** Re-checks for the end of background work after the main agent's run ended. */
+	settleTimer: undefined as Timer | undefined,
+	shuttingDown: false,
 	internals: undefined as Promise<Internals> | undefined,
 };
 
-// Dynamic on purpose: these internal subpaths exist in omp 18.3.1 but are not a public API. A static import of a
-// missing module would fail the whole extension load (lock mode included); a dynamic one only turns a capability off.
+// Dynamic on purpose: these internal subpaths (and @oh-my-pi/pi-utils) are served to extensions by omp 18.3.1 but are not
+// a public API. A static import of a missing module would fail the whole extension load (lock mode included); a dynamic
+// one only turns a capability off.
 function loadInternals(): Promise<Internals> {
 	S.internals ??= (async () => {
 		const out: Internals = { errors: {} };
@@ -433,6 +485,14 @@ function loadInternals(): Promise<Internals> {
 			} else out.errors.agentHubRuntime = "createAgentHubRuntime export missing";
 		} catch (e) {
 			out.errors.agentHubRuntime = errText(e);
+		}
+		try {
+			const mod = (await import("@oh-my-pi/pi-utils")) as AnyRecord;
+			const postmortem = mod.postmortem as AnyRecord | undefined;
+			if (typeof postmortem?.quit === "function") out.quit = postmortem.quit as Internals["quit"];
+			else out.errors.postmortem = "postmortem.quit export missing";
+		} catch (e) {
+			out.errors.postmortem = errText(e);
 		}
 		return out;
 	})();
@@ -461,6 +521,11 @@ function mainCtx(): CtxLike {
 	return ctx;
 }
 
+/** The main agent's live AgentSession (the same session the TUI runs). */
+function mainSession(): AgentSessionLike | undefined {
+	return attempt(() => registryOrUndefined()?.get(MAIN_AGENT_ID)?.session ?? undefined, undefined);
+}
+
 function sessionInfo(ctx: CtxLike): AnyRecord {
 	const sm = ctx.sessionManager;
 	return {
@@ -470,6 +535,7 @@ function sessionInfo(ctx: CtxLike): AnyRecord {
 		leafId: attempt(() => sm.getLeafId(), undefined) ?? null,
 		cwd: attempt(() => sm.getCwd(), null),
 		artifactsDir: attempt(() => sm.getArtifactsDir(), undefined) ?? null,
+		title: attempt(() => sm.getSessionName?.(), undefined) ?? null,
 	};
 }
 
@@ -531,6 +597,9 @@ async function probeCapabilities(ctx: CtxLike): Promise<Record<string, boolean>>
 		"agent.message": rows && internals.createAgentHubRuntime !== undefined,
 		introspect: true,
 		"events.registry": rows && fn(reg, "onChange"),
+		"events.activity": true,
+		"events.title": fn(sm, "onSessionNameChanged") && fn(sm, "getSessionName"),
+		"session.shutdown": fn(mainSession(), "dispose"),
 	};
 }
 
@@ -594,12 +663,17 @@ function endConnection(next: "rejected" | "closed"): void {
 	S.phase = next;
 	S.queued = [];
 	S.gap = undefined;
-	try {
-		S.registryUnsub?.();
-	} catch {
-		// Registry already torn down.
+	for (const unsubscribe of [S.registryUnsub, S.titleUnsub]) {
+		try {
+			unsubscribe?.();
+		} catch {
+			// Host object already torn down.
+		}
 	}
 	S.registryUnsub = undefined;
+	S.titleUnsub = undefined;
+	clearTimeout(S.settleTimer);
+	S.settleTimer = undefined;
 	const sock = S.sock;
 	S.sock = undefined;
 	try {
@@ -669,6 +743,52 @@ function subscribeRegistry(): void {
 	} catch (e) {
 		log(`registry subscription failed: ${errText(e)}`);
 	}
+}
+
+/** `title` pushes whenever omp renames the main session (auto-title after the first turn, /name, …). */
+function subscribeTitle(ctx: CtxLike): void {
+	attempt(() => S.titleUnsub?.(), undefined);
+	S.titleUnsub = undefined;
+	const sm = ctx.sessionManager;
+	if (typeof sm.onSessionNameChanged !== "function") return;
+	try {
+		S.titleUnsub = sm.onSessionNameChanged(() => {
+			try {
+				if (!owns()) return;
+				emit(MAIN_AGENT_ID, "title", { title: attempt(() => sm.getSessionName?.(), undefined) ?? null });
+			} catch (e) {
+				log(`title event dropped: ${errText(e)}`);
+			}
+		});
+	} catch (e) {
+		log(`session name subscription failed: ${errText(e)}`);
+	}
+}
+
+function setActivity(state: "busy" | "idle"): void {
+	clearTimeout(S.settleTimer);
+	S.settleTimer = undefined;
+	if (S.activity === state) return;
+	S.activity = state;
+	emit(MAIN_AGENT_ID, "activity", { state });
+}
+
+/** The main agent's run ended (`agent_end`, where `isIdle()` still reads false): idle once no background job is running
+ *  and nothing is queued, else checked again shortly (a finished job normally starts a new run first). */
+function settleCheck(ctx: CtxLike): void {
+	const running = attempt(() => ctx.getAsyncJobSnapshot?.()?.running?.length ?? 0, 0);
+	const queued = attempt(() => ctx.hasPendingMessages?.() === true, false);
+	if (running === 0 && !queued) return setActivity("idle");
+	clearTimeout(S.settleTimer);
+	S.settleTimer = setTimeout(() => {
+		S.settleTimer = undefined;
+		try {
+			if (S.activity === "busy" && (S.phase === "connecting" || S.phase === "accepted")) settleCheck(ctx);
+		} catch (e) {
+			log(`settle check failed: ${errText(e)}`);
+		}
+	}, SETTLE_RECHECK_MS);
+	S.settleTimer.unref?.();
 }
 
 /** Dials the daemon and sends `hello`; events queue from here until the verdict. */
@@ -768,12 +888,28 @@ async function handleRequest(msg: AnyRecord): Promise<void> {
 	}
 }
 
+/** Runs once the `session.shutdown` reply is queued. Never throws: the process exits either way. */
+async function shutdownProcess(session: AgentSessionLike): Promise<void> {
+	try {
+		await session.dispose();
+	} catch (e) {
+		log(`dispose failed during session.shutdown: ${errText(e)}`);
+	}
+	try {
+		const { quit } = await loadInternals();
+		if (quit) await quit(0);
+	} catch (e) {
+		log(`postmortem quit failed: ${errText(e)}`);
+	}
+	process.exit(0);
+}
+
 const METHODS: Record<string, (params: AnyRecord) => Promise<unknown>> = {
 	async "session.info"() {
 		return sessionInfo(mainCtx());
 	},
 
-	/** Crosses omp's lazy file-creation gate; ompd calls it before the first prompt, then takes the ownership lock. */
+	/** Crosses omp's lazy file-creation gate (the file otherwise appears with the first assistant reply). */
 	async "session.ensureOnDisk"() {
 		const ctx = mainCtx();
 		await ctx.sessionManager.ensureOnDisk();
@@ -785,6 +921,18 @@ const METHODS: Record<string, (params: AnyRecord) => Promise<unknown>> = {
 		const ctx = mainCtx();
 		await ctx.sessionManager.flush();
 		return sessionInfo(ctx);
+	},
+
+	/** Graceful stop: answers, then disposes the main session and exits 0 like the TUI's own /exit. */
+	async "session.shutdown"() {
+		const session = mainSession();
+		if (typeof session?.dispose !== "function") throw new Error("the main session cannot be disposed from the bridge");
+		if (!S.shuttingDown) {
+			S.shuttingDown = true;
+			// Next macrotask: `handleRequest` writes this reply first; dispose ends the daemon connection.
+			setTimeout(() => void shutdownProcess(session), 0);
+		}
+		return { accepted: true };
 	},
 
 	/** The process-global agent tree: every depth, idle/parked/aborted rows, `parentId`. */
@@ -889,6 +1037,22 @@ const METHODS: Record<string, (params: AnyRecord) => Promise<unknown>> = {
 // Session hooks
 // ---------------------------------------------------------------------------------------------------------------------
 
+/** Refuses a switch (`/resume`, `/new` onto an existing file, …) into a session file the daemon owns. */
+function vetoOwnedSwitch(event: unknown, rawCtx: unknown): { cancel: true } | undefined {
+	try {
+		const target = isRecord(event) && typeof event.targetSessionFile === "string" ? event.targetSessionFile : undefined;
+		if (!isDaemonOwned(target)) return undefined;
+		try {
+			(rawCtx as CtxLike).ui?.notify?.(`${target} is open in omp IDE; open it from the IDE instead.`, "error");
+		} catch {
+			// Headless: the veto alone is enough.
+		}
+		return { cancel: true };
+	} catch {
+		return undefined;
+	}
+}
+
 function registerLockMode(on: On): void {
 	on("session_start", async (_event, rawCtx) => {
 		if (!owns()) return;
@@ -899,21 +1063,7 @@ function registerLockMode(on: On): void {
 			// Never break a session the daemon does not own.
 		}
 	});
-	on("session_before_switch", async (event, rawCtx) => {
-		if (!owns()) return undefined;
-		try {
-			const target = isRecord(event) && typeof event.targetSessionFile === "string" ? event.targetSessionFile : undefined;
-			if (!isDaemonOwned(target)) return undefined;
-			try {
-				(rawCtx as CtxLike).ui?.notify?.(`${target} is open in omp IDE; open it from the IDE instead.`, "error");
-			} catch {
-				// Headless: the veto alone is enough.
-			}
-			return { cancel: true };
-		} catch {
-			return undefined;
-		}
-	});
+	on("session_before_switch", async (event, rawCtx) => (owns() ? vetoOwnedSwitch(event, rawCtx) : undefined));
 }
 
 function registerDaemonMode(on: On, daemon: DaemonEnv): void {
@@ -933,11 +1083,12 @@ function registerDaemonMode(on: On, daemon: DaemonEnv): void {
 					log(`main session restarted after the daemon connection ended (${S.phase}); not reconnecting`);
 					return;
 				}
-				// Not awaited: omp answers no RPC command until session_start handlers return (see header).
+				// Not awaited: omp's startup waits for session_start handlers; the hello does not need the verdict.
 				connectDaemon(daemon, ctx).catch((e: unknown) => {
 					log(`daemon connection failed: ${errText(e)}`);
 					endConnection("closed");
 				});
+				subscribeTitle(ctx);
 				emit(inst.agentId, "session_start", { isMain: true, session: sessionInfo(ctx) });
 				return;
 			}
@@ -952,6 +1103,7 @@ function registerDaemonMode(on: On, daemon: DaemonEnv): void {
 		try {
 			const ctx = rawCtx as CtxLike;
 			inst.ctx = ctx;
+			if (inst.isMain) subscribeTitle(ctx);
 			const ev = isRecord(event) ? event : {};
 			emit(inst.agentId, "session_switch", {
 				isMain: inst.isMain,
@@ -961,6 +1113,32 @@ function registerDaemonMode(on: On, daemon: DaemonEnv): void {
 			});
 		} catch (e) {
 			log(`session_switch: ${errText(e)}`);
+		}
+	});
+
+	// Another IDE session's file (every file the daemon owns other than this session's own) is never opened here.
+	on("session_before_switch", async (event, rawCtx) => (owns() ? vetoOwnedSwitch(event, rawCtx) : undefined));
+
+	// Busy/idle of the session = the main agent's runs; child sessions fire these into their own instances.
+	on("agent_start", async (_event, rawCtx) => {
+		if (!owns() || inst !== S.main) return;
+		try {
+			setActivity("busy");
+			// omp creates the session file lazily, with the first assistant reply.
+			// Written now (the prompt included), a TUI that dies during its first turn is resumed instead of started over.
+			const sm = (rawCtx as CtxLike).sessionManager;
+			if (!attempt(() => sm.isSessionOnDisk(), true)) await sm.ensureOnDisk();
+		} catch (e) {
+			log(`agent_start: ${errText(e)}`);
+		}
+	});
+
+	on("agent_end", async (_event, rawCtx) => {
+		if (!owns() || inst !== S.main) return;
+		try {
+			settleCheck(rawCtx as CtxLike);
+		} catch (e) {
+			log(`agent_end: ${errText(e)}`);
 		}
 	});
 

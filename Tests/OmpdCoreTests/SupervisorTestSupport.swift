@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import IDEProtocol
 import os
@@ -7,18 +8,18 @@ import Testing
 
 // MARK: - Fake omp
 
-/// A `/bin/sh` stand-in for `omp --mode rpc-ui` that speaks the ready/response protocol. Everything it does is driven
-/// by and recorded in files of its directory (passed as `$FAKE_OMP_DIR`):
-/// - `argv`: each invocation's arguments, one line per spawn.
-/// - `stdin`: every line it received.
-/// - `events`: `eof` once stdin closed.
-/// - `prompt`: frames printed after acknowledging a `prompt` (`__ID__` = the prompt's id); default: one complete turn.
-/// - `answered`: frames printed after an `extension_ui_response`/`host_tool_result` (`__ID__` = its id,
-///   `__PROMPT__` = the last prompt's id).
-/// - `session.jsonl`: the session file `get_state` reports (the `--resume` file instead, when given); created on the
-///   first prompt; on stdin EOF a `session_exit {kind:"normal"}` entry is appended, as omp does.
-/// `$FAKE_OMP_EOF=ignore` keeps it alive after EOF (a straggler); `$FAKE_OMP_EOF_DELAY` delays its exit. The command
-/// `crash` makes it exit 3 without answering; `fail` is answered with a failure response.
+/// A `/bin/sh` stand-in for omp's TUI, run on a session PTY. Everything it does is recorded in files of its directory
+/// (passed as `$FAKE_OMP_DIR`):
+/// - `argv`: each invocation's arguments, one line per spawn; `env.<pid>`: each spawn's environment.
+/// - `session.<pid>`: the session file that spawn serves (its `--resume` file, else a new `session-<pid>.jsonl`), created
+///   on start the way the bridge's first-run ensureOnDisk would.
+/// - `input`: every line typed into its terminal; `events`: `graceful` (SIGUSR1, what `ScriptedBridge` sends for
+///   `session.shutdown`) or `hup`.
+/// Typed `exit` quits normally (as omp's `/exit`), `crash` exits 3; anything else is echoed as `echo:<line>`. A graceful
+/// stop or a normal quit appends `session_exit {kind:"normal"}` to the session file, SIGHUP one with kind `signal` and
+/// exit 129 (omp's postmortem). `$FAKE_OMP_HUP=ignore` ignores SIGHUP; a `crash-at-start` file in its directory
+/// makes it exit 3 before doing anything. Its signal handling is in place before `session.<pid>` exists (which is what
+/// the scripted hello waits for), so a stop right after the hello is handled like omp handles it.
 struct FakeOmp: Sendable {
     let directory: URL
     let executable: String
@@ -27,52 +28,37 @@ struct FakeOmp: Sendable {
         #!/bin/sh
         if [ "$1" = "--version" ]; then echo "omp/18.3.1"; exit 0; fi
         dir="$FAKE_OMP_DIR"
-        session="$dir/session.jsonl"
+        session="$dir/session-$$.jsonl"
         previous=""
         for argument in "$@"; do
           if [ "$previous" = "--resume" ]; then session="$argument"; fi
           previous="$argument"
         done
-        printf '%s\n' "$*" >> "$dir/argv"
-        printf '{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1],"maxFrameBytes":1048576}\n'
-        emit() {
-          if [ -f "$1" ]; then sed "s/__ID__/$2/g; s/__PROMPT__/$3/g" "$1"; fi
+        record_exit() {
+          ts=$(perl -MTime::HiRes=time -MPOSIX=strftime -e 'my $t = time; printf "%s.%03dZ", strftime("%Y-%m-%dT%H:%M:%S", gmtime($t)), int(($t - int($t)) * 1000)')
+          printf '{"type":"custom","customType":"session_exit","data":{"reason":"%s","kind":"%s","recordedAt":"%s"}}\n' "$1" "$2" "$ts" >> "$session"
         }
-        last_prompt=""
-        while IFS= read -r line; do
-          printf '%s\n' "$line" >> "$dir/stdin"
-          id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-          type=$(printf '%s' "$line" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')
-          case "$type" in
-            get_state)
-              printf '{"id":"%s","type":"response","command":"get_state","success":true,"data":{"sessionFile":"%s","sessionId":"fake-session","isStreaming":false,"isSettled":true,"hasPendingAsyncWork":false}}\n' "$id" "$session" ;;
-            get_entries)
-              printf '{"id":"%s","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"session","id":"root"}],"leafId":"root"}}\n' "$id" ;;
-            prompt)
-              last_prompt="$id"
-              : >> "$session"
-              printf '{"id":"%s","type":"response","command":"prompt","success":true}\n' "$id"
-              if [ -f "$dir/prompt" ]; then
-                emit "$dir/prompt" "$id" "$id"
-              else
-                printf '{"type":"agent_start"}\n{"type":"message_update","messageId":"m-%s","assistantMessageEvent":{"type":"text_delta","delta":"hi"}}\n{"type":"agent_end","messages":[],"isTerminal":true,"yielded":true}\n{"type":"prompt_result","id":"%s","agentInvoked":true,"status":"completed","sessionSettled":true}\n{"type":"session_settled"}\n' "$id" "$id"
-              fi ;;
-            extension_ui_response|host_tool_result)
-              emit "$dir/answered" "$id" "$last_prompt" ;;
-            fail)
-              printf '{"id":"%s","type":"response","command":"fail","success":false,"error":"scripted failure","code":"E_FAKE"}\n' "$id" ;;
-            crash)
-              exit 3 ;;
-            *)
-              printf '{"id":"%s","type":"response","command":"%s","success":true}\n' "$id" "$type" ;;
+        trap 'printf "graceful\n" >> "$dir/events"; record_exit dispose normal; exit 0' USR1
+        if [ "$FAKE_OMP_HUP" = ignore ]; then
+          trap '' HUP
+        else
+          trap 'printf "hup\n" >> "$dir/events"; record_exit sighup signal; exit 129' HUP
+        fi
+        printf '%s\n' "$*" >> "$dir/argv"
+        env > "$dir/env.$$"
+        if [ -f "$dir/crash-at-start" ]; then exit 3; fi
+        : >> "$session"
+        printf '%s' "$session" > "$dir/.session.$$" && mv "$dir/.session.$$" "$dir/session.$$"
+        printf 'fake omp %s\n' "$$"
+        while :; do
+          if ! IFS= read -r line; then sleep 1; continue; fi
+          printf '%s\n' "$line" >> "$dir/input"
+          case "$line" in
+            exit) record_exit dispose normal; exit 0 ;;
+            crash) exit 3 ;;
+            *) printf 'echo:%s\n' "$line" ;;
           esac
         done
-        printf 'eof\n' >> "$dir/events"
-        if [ "$FAKE_OMP_EOF" = ignore ]; then exec sleep 30; fi
-        if [ -n "$FAKE_OMP_EOF_DELAY" ]; then sleep "$FAKE_OMP_EOF_DELAY"; fi
-        ts=$(perl -MTime::HiRes=time -MPOSIX=strftime -e 'my $t = time; printf "%s.%03dZ", strftime("%Y-%m-%dT%H:%M:%S", gmtime($t)), int(($t - int($t)) * 1000)')
-        printf '{"type":"custom","customType":"session_exit","data":{"reason":"dispose","kind":"normal","recordedAt":"%s"}}\n' "$ts" >> "$session"
-        exit 0
         """#
 
     init(in root: URL) throws {
@@ -84,15 +70,14 @@ struct FakeOmp: Sendable {
         executable = file.path(percentEncoded: false)
     }
 
+    /// The daemon environment omp starts from in these tests.
     var environment: [String: String] {
-        var environment = ProcessInfo.processInfo.environment
+        var environment = ProcessInfo.processInfo.environment.filter { !$0.key.hasPrefix("OMP_IDE_") && !$0.key.hasPrefix("FAKE_OMP") }
         var path = directory.path(percentEncoded: false)
         if path.hasSuffix("/") { path.removeLast() }
         environment["FAKE_OMP_DIR"] = path
         return environment
     }
-
-    var sessionFile: String { directory.appending(path: "session.jsonl").path(percentEncoded: false) }
 
     func file(_ name: String) -> URL { directory.appending(path: name, directoryHint: .notDirectory) }
 
@@ -101,34 +86,48 @@ struct FakeOmp: Sendable {
         return text.split(separator: "\n").map(String.init)
     }
 
-    /// Received stdin lines, decoded.
-    var received: [JSONValue] {
-        lines("stdin").compactMap { try? JSONDecoder().decode(JSONValue.self, from: Data($0.utf8)) }
+    /// Environment of the spawn with `pid`.
+    func environment(of pid: Int32) -> [String: String] {
+        Dictionary(lines("env.\(pid)").compactMap { line in
+            line.firstIndex(of: "=").map { (String(line[..<$0]), String(line[line.index(after: $0)...])) }
+        }, uniquingKeysWith: { _, last in last })
     }
 
-    func script(_ name: String, _ frames: [String]) throws {
-        try (frames.joined(separator: "\n") + "\n").write(to: file(name), atomically: true, encoding: .utf8)
+    /// The session file the spawn with `pid` serves, once it started.
+    func sessionFile(of pid: Int32) -> String? {
+        (try? String(contentsOf: file("session.\(pid)"), encoding: .utf8)).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// `session_exit` kinds recorded in `path`.
+    static func sessionExits(_ path: String) -> [String] {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").compactMap { line in
+            guard let entry = try? JSONDecoder().decode(JSONValue.self, from: Data(line.utf8)),
+                  entry["customType"] == "session_exit" else { return nil }
+            return entry["data"]?["kind"]?.stringValue
+        }
     }
 }
 
 // MARK: - Scripted bridge and locks
 
-/// Scripted `SessionBridgeLink`: the `hello` arrives only when `connects` (else the wait fails like a timeout, at
-/// once); calls are recorded and may run a hook; events are pushed by the test.
+/// Scripted `SessionBridgeLink` for the fake omp: the `hello` arrives once the spawn registered by `setExpectedPID`
+/// started (only when `connects`; else the wait fails at once like a timeout) and names the session file that spawn
+/// serves. `session.shutdown` (advertised when `shutdown`) makes the fake exit like omp's dispose. Calls are recorded;
+/// events are pushed by the test.
 actor ScriptedBridge: SessionBridgeLink {
     private let connects: Bool
+    private let shutdown: Bool
+    private let omp: FakeOmp
     private var pids: [SessionKey: Int32] = [:]
     private var streams: [SessionKey: (stream: AsyncStream<JSONValue>, sink: AsyncStream<JSONValue>.Continuation)] = [:]
     private(set) var calls: [String] = []
-    private var onCall: (@Sendable (String) -> Void)?
-    let sessionFile: String
 
-    init(connects: Bool, sessionFile: String = "/nonexistent/session.jsonl") {
+    init(omp: FakeOmp, connects: Bool, shutdown: Bool = true) {
+        self.omp = omp
         self.connects = connects
-        self.sessionFile = sessionFile
+        self.shutdown = shutdown
     }
-
-    func setOnCall(_ hook: @escaping @Sendable (String) -> Void) { onCall = hook }
 
     func expect(sessionKey: SessionKey) -> BridgeCredentials {
         streams.removeValue(forKey: sessionKey)?.sink.finish()
@@ -139,17 +138,23 @@ actor ScriptedBridge: SessionBridgeLink {
 
     func setExpectedPID(_ pid: Int32, for sessionKey: SessionKey) { pids[sessionKey] = pid }
 
-    func waitForHello(_ sessionKey: SessionKey, timeout: Duration) throws -> BridgeHello {
-        guard connects else { throw BridgeError.helloTimeout }
+    func waitForHello(_ sessionKey: SessionKey, timeout: Duration) async throws -> BridgeHello {
+        guard connects, let pid = pids[sessionKey] else { throw BridgeError.helloTimeout }
+        let omp = omp
+        let file = try await eventuallyValue("fake omp \(pid) to start", timeout: timeout) { omp.sessionFile(of: pid) }
         return BridgeHello(
-            sessionKey: sessionKey, pid: pids[sessionKey] ?? 0, ompVersion: "18.3.1",
-            capabilities: ["session.ensureOnDisk": true], sessionId: "fake-session", sessionFile: sessionFile,
-            onDisk: false, cwd: "/", artifactsDir: nil, raw: ["t": "hello"])
+            sessionKey: sessionKey, pid: pid, ompVersion: "18.3.1",
+            capabilities: ["session.info": true, "session.shutdown": shutdown, "events.activity": true, "events.title": true],
+            sessionId: "fake-session",
+            sessionFile: file, onDisk: true, cwd: "/", artifactsDir: nil, title: nil, raw: ["t": "hello"])
     }
 
-    func call(_ sessionKey: SessionKey, method: String, params: JSONValue, timeout: Duration) -> JSONValue {
+    func call(_ sessionKey: SessionKey, method: String, params: JSONValue, timeout: Duration) throws -> JSONValue {
         calls.append(method)
-        onCall?(method)
+        if method == "session.shutdown", let pid = pids[sessionKey] {
+            kill(pid, SIGUSR1)
+            return ["accepted": true]
+        }
         return [:]
     }
 
@@ -157,8 +162,9 @@ actor ScriptedBridge: SessionBridgeLink {
         streams[sessionKey]?.stream ?? AsyncStream { $0.finish() }
     }
 
-    func push(_ event: JSONValue, to sessionKey: SessionKey) {
-        streams[sessionKey]?.sink.yield(event)
+    /// Delivers an `evt` push the way the bridge sends it.
+    func push(_ kind: String, _ data: JSONValue, to sessionKey: SessionKey, agentId: String = "Main") {
+        streams[sessionKey]?.sink.yield(["t": "evt", "seq": 1, "ts": 0, "agentId": .string(agentId), "kind": .string(kind), "data": data])
     }
 
     func forget(_ sessionKey: SessionKey) {
@@ -234,64 +240,97 @@ final class ShortTempDir: Sendable {
     }
 }
 
-/// One supervisor over the fake omp, with its own manifest and journal directory.
+/// One supervisor over the fake omp, with its own PTY pool and manifest.
 struct SupervisorFixture {
     let temp: ShortTempDir
     let omp: FakeOmp
+    let pool: PTYPool
     let manifest: ManifestPublisher
     let bridge: ScriptedBridge
     let locks: FakeLocks
-    let readOnly = ReadOnlyMode()
-    /// Notices the supervisor sent out of band (`SupervisorContext.notify`).
+    /// Notices the supervisor sent (`SupervisorContext.notify`).
     let notices = Box<[DaemonNotice]>([])
+    let persistenceFailures = Box<[String]>([])
+    /// Manifest and PTY-list changes in publication order (what the daemon broadcasts as `sessions` and `ptys`).
+    let published = Box<[Published]>([])
     let workspace: String
     let key: SessionKey = "session-1"
     let supervisor: SessionSupervisor
 
     init(
-        bridgeConnects: Bool = false, locks: FakeLocks = FakeLocks(), timings: SupervisorTimings = .fastTests,
+        bridgeConnects: Bool = true, shutdownCapable: Bool = true, locks: FakeLocks = FakeLocks(),
+        timings: SupervisorTimings = .fastTests, environment extra: [String: String] = [:],
         entry configure: (inout SessionManifestEntry) -> Void = { _ in }
     ) async throws {
         temp = try ShortTempDir()
         omp = try FakeOmp(in: temp.url)
         workspace = try temp.directory("workspace")
-        bridge = ScriptedBridge(connects: bridgeConnects, sessionFile: omp.sessionFile)
+        pool = PTYPool(snapshotDirectory: temp.url.appending(path: "pty"), snapshotInterval: .seconds(3600))
+        bridge = ScriptedBridge(omp: omp, connects: bridgeConnects, shutdown: shutdownCapable)
         self.locks = locks
         manifest = ManifestPublisher(store: ManifestStore(url: temp.url.appending(path: "sessions.json")))
         var entry = SessionManifestEntry(
             sessionKey: key, workspace: workspace,
-            launch: LaunchSpec(ompPath: omp.executable, ompVersion: "18.3.1", sessionDir: temp.url.appending(path: "omp-sessions").path(percentEncoded: false)),
+            launch: LaunchSpec(
+                ompPath: omp.executable, ompVersion: "18.3.1", approvalMode: "yolo", model: "anthropic/claude-haiku-4-5",
+                extraArgs: ["--thinking", "off"], env: ["OMP_PROFILE": "work"],
+                sessionDir: temp.url.appending(path: "omp-sessions").path(percentEncoded: false)),
             createdAt: Date())
         configure(&entry)
         let seeded = entry
         try await manifest.update { $0.sessions = [seeded] }
+        let published = published
+        let key = key
+        manifest.setSink { list in
+            guard let entry = list.sessions.first(where: { $0.sessionKey == key }) else { return }
+            published.mutate { $0.append(.sessions(ptyId: entry.ptyId, status: entry.status)) }
+        }
+        await pool.setChangeHandler { list in published.mutate { $0.append(.ptys(list.map(\.ptyId))) } }
         let notices = notices
+        let persistenceFailures = persistenceFailures
         let context = SupervisorContext(
-            manifest: manifest, journalDirectory: temp.url.appending(path: "journal"), bridge: bridge, locks: locks,
-            bridgeExtension: "/fake/ide-bridge.ts", baseEnvironment: omp.environment, timings: timings,
-            readOnly: readOnly, journalFailed: { _, _ in }, notify: { notice in notices.mutate { $0.append(notice) } })
-        supervisor = try SessionSupervisor(entry: seeded, context: context)
+            manifest: manifest, ptys: pool, bridge: bridge, locks: locks, bridgeExtension: "/fake/ide-bridge.ts",
+            baseEnvironment: omp.environment.merging(extra) { $1 }, timings: timings,
+            persistenceFailed: { error in persistenceFailures.mutate { $0.append("\(error)") } },
+            notify: { notice in notices.mutate { $0.append(notice) } })
+        supervisor = SessionSupervisor(entry: seeded, context: context)
     }
 
     var entry: SessionManifestEntry {
         get async throws { try #require(await manifest.entry(key)) }
     }
 
-    func records() async throws -> [JournalRecord] {
-        try #require(try await supervisor.journal.records(after: 0))
+    func waitForStatus(_ status: SessionStatus, timeout: Duration = .seconds(10)) async throws {
+        try await eventually("status \(status.rawValue)", timeout: timeout) { await manifest.entry(key)?.status == status }
     }
 
-    func daemonEvents() async throws -> [DaemonEvent] {
-        try await records().filter { $0.kind == .daemon }.compactMap { try? $0.payload.decode(DaemonEvent.self) }
+    /// The session's current PTY.
+    func pty() async throws -> PTYInfo {
+        let id = try #require(try await entry.ptyId)
+        return try #require(await pool.info(id))
     }
 
-    func ompFrames() async throws -> [JSONValue] {
-        try await records().filter { $0.kind == .omp }.map(\.payload)
+    /// Types `line` (and Return) into the session's TUI.
+    func type(_ line: String) async throws {
+        try await pool.write(try await pty().ptyId, Data((line + "\n").utf8))
+    }
+
+    /// Stops what is still running (every test ends here, also on failure paths that return early).
+    func finish() async {
+        await supervisor.stop(.daemonShutdown)
+        try? await pool.shutdown()
     }
 }
 
+enum Published: Sendable, Equatable {
+    case sessions(ptyId: PTYID?, status: SessionStatus)
+    case ptys([PTYID])
+}
+
 extension SupervisorTimings {
-    static let fastTests = SupervisorTimings(ready: .seconds(10), hello: .milliseconds(200), bridgeCall: .seconds(5), stop: .seconds(5), healthCheck: .seconds(2))
+    static let fastTests = SupervisorTimings(
+        hello: .seconds(5), bridgeCall: .seconds(5), stop: .seconds(3), hangup: .seconds(1), healthCheck: .seconds(2),
+        respawnWindow: .seconds(60), maxRespawns: 3, resumeQuietPeriod: .milliseconds(50))
 }
 
 // MARK: - Waiting
@@ -313,17 +352,14 @@ func eventually(
     throw Timeout(what: what)
 }
 
-/// Runs `body`, failing with `Timeout` instead of hanging the suite.
-func within<T: Sendable>(_ what: String, timeout: Duration = .seconds(10), _ body: @escaping @Sendable () async throws -> T) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask { try await body() }
-        group.addTask {
-            try await Task.sleep(for: timeout)
-            throw Timeout(what: what)
-        }
-        defer { group.cancelAll() }
-        return try await group.next()!
+/// Polls until `value` returns non-nil.
+func eventuallyValue<T: Sendable>(_ what: String, timeout: Duration = .seconds(10), _ value: @Sendable () async throws -> T?) async throws -> T {
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+        if let found = try await value() { return found }
+        try await Task.sleep(for: .milliseconds(20))
     }
+    throw Timeout(what: what)
 }
 
 /// A value shared between test code and callbacks.
@@ -341,16 +377,17 @@ final class Box<Value: Sendable>: Sendable {
     }
 }
 
-/// Records the order of events seen by different components.
-final class Order: Sendable {
-    private let state = Box<[String]>([])
-    func note(_ value: String) { state.mutate { $0.append(value) } }
-    var values: [String] { state.value }
-}
-
-/// What the fake omp owning `sessionFile` (its `session.jsonl`) recorded in `name` so far.
-func fakeOmpLines(nextTo sessionFile: String, _ name: String) -> [String] {
-    let url = URL(filePath: sessionFile).deletingLastPathComponent().appending(path: name)
-    guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
-    return text.split(separator: "\n").map(String.init)
+/// Text of a serialized screen replayed into a fresh terminal: logical lines, soft wraps joined.
+func screenLines(_ attach: PTYAttach.Result) -> [String] {
+    let mirror = TerminalMirror(cols: attach.info.cols, rows: attach.info.rows)
+    mirror.feed([UInt8](attach.screen))
+    var lines: [String] = []
+    for (row, text) in bufferText(mirror.terminal).enumerated() {
+        if row > 0, mirror.terminal.bufferLine(atRow: row)!.isWrapped {
+            lines[lines.count - 1] += text
+        } else {
+            lines.append(text)
+        }
+    }
+    return lines
 }

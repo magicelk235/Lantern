@@ -5,7 +5,7 @@ import Testing
 
 @testable import OmpdCore
 
-/// A `Daemon` over the fake omp, serving a real socket under a short /tmp home.
+/// A `Daemon` over the fake omp TUI, serving a real socket under a short /tmp home.
 struct DaemonFixture {
     let temp: ShortTempDir
     let paths: AppSupportPaths
@@ -16,24 +16,24 @@ struct DaemonFixture {
     let workspace: String
     let daemon: Daemon
 
-    init(bridgeConnects: Bool = false, timings: SupervisorTimings = .fastTests) async throws {
+    init() async throws {
         let temp = try ShortTempDir()
-        try await self.init(temp: temp, omp: try FakeOmp(in: temp.url), bridgeConnects: bridgeConnects, timings: timings)
+        try await self.init(temp: temp, omp: try FakeOmp(in: temp.url))
     }
 
-    private init(temp: ShortTempDir, omp: FakeOmp, bridgeConnects: Bool, timings: SupervisorTimings) async throws {
+    private init(temp: ShortTempDir, omp: FakeOmp) async throws {
         self.temp = temp
         self.omp = omp
         paths = AppSupportPaths(root: temp.url.appending(path: "home", directoryHint: .isDirectory))
         try paths.prepare()
         token = try paths.loadOrCreateToken()
         workspace = try temp.directory("workspace")
-        bridge = ScriptedBridge(connects: bridgeConnects, sessionFile: omp.sessionFile)
+        bridge = ScriptedBridge(omp: omp, connects: true)
         locks = FakeLocks()
         let configuration = Daemon.Configuration(
             paths: paths, ompExecutable: omp.executable, ompArguments: ["--thinking", "off"],
             sessionDirectory: temp.url.appending(path: "omp-sessions").path(percentEncoded: false),
-            bridgeExtension: "/fake/ide-bridge.ts", baseEnvironment: omp.environment, timings: timings,
+            bridgeExtension: "/fake/ide-bridge.ts", baseEnvironment: omp.environment, timings: .fastTests,
             wakeHealthCheckDelay: .zero)
         daemon = Daemon(
             configuration: configuration, token: token, bridge: bridge, locks: locks,
@@ -43,7 +43,7 @@ struct DaemonFixture {
 
     /// A second daemon on the same `$APP_SUPPORT` and fake omp, as after a daemon restart.
     func restarted() async throws -> DaemonFixture {
-        try await DaemonFixture(temp: temp, omp: omp, bridgeConnects: false, timings: .fastTests)
+        try await DaemonFixture(temp: temp, omp: omp)
     }
 
     func client() async throws -> Connected {
@@ -53,7 +53,7 @@ struct DaemonFixture {
     }
 
     func createSession(_ connected: Connected) async throws -> SessionManifestEntry {
-        try await connected.client.call(SessionCreate.self, .init(workspace: workspace))
+        try await connected.client.call(SessionCreate.self, .init(workspace: workspace, cols: 100, rows: 30))
     }
 
     /// The manifest as written on disk.
@@ -85,30 +85,20 @@ final class Connected: Sendable {
 
     var pushes: [ServerFrame] { log.value }
 
-    func events(_ key: SessionKey) -> [JournalRecord] {
-        pushes.compactMap { if case .event(let record) = $0, record.sessionKey == key { record } else { nil } }
+    func entry(_ key: SessionKey) async throws -> SessionManifestEntry {
+        try #require(try await client.call(ListSessions.self, Empty()).sessions.first { $0.sessionKey == key })
     }
 
-    func waitForEvent(_ key: SessionKey, _ what: String, where match: @escaping @Sendable (JournalRecord) -> Bool) async throws {
-        try await eventually(what) { self.events(key).contains(where: match) }
+    func waitForStatus(_ key: SessionKey, _ status: SessionStatus, timeout: Duration = .seconds(10)) async throws {
+        try await eventually("\(key) \(status.rawValue)", timeout: timeout) { try await self.entry(key).status == status }
     }
 
-    func waitForSeq(_ key: SessionKey, _ seq: Seq) async throws {
-        try await eventually("seq \(seq) of \(key)") { (self.events(key).last?.seq ?? 0) >= seq }
+    /// Output pushed for `ptyId` so far.
+    func output(_ ptyId: PTYID) -> String {
+        String(decoding: pushes.compactMap { if case .ptyOutput(let o) = $0, o.ptyId == ptyId { o.data } else { nil } }.joined(), as: UTF8.self)
     }
 
     func close() async {
         await client.close()
     }
-}
-
-extension JournalRecord {
-    var ompType: String? { kind == .omp ? payload["type"]?.stringValue : nil }
-    var daemonEvent: DaemonEvent? { kind == .daemon ? try? payload.decode(DaemonEvent.self) : nil }
-}
-
-/// Byte encoding of records, as the journal and the wire produce them.
-func recordBytes(_ records: [JournalRecord]) throws -> [Data] {
-    let encoder = IDECoding.encoder()
-    return try records.map { try encoder.encode($0) }
 }

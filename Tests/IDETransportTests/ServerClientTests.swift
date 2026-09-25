@@ -11,11 +11,10 @@ private enum MalformedPTYWrite: DaemonMethod {
     typealias Result = Empty
 }
 
-private func emitEventsRoute(_ handler: TestHandler) {
-    handler.router.on(EmitEvents.self) { params, connection in
+private func emitOutputRoute(_ handler: TestHandler) {
+    handler.router.on(EmitOutput.self) { params, connection in
         for seq in 1 ... params.count {
-            connection.send(.event(JournalRecord(
-                sessionKey: params.sessionKey, seq: Seq(seq), ts: testStartedAt, kind: .omp, payload: ["n": .number(Double(seq))])))
+            connection.send(.ptyOutput(PTYOutput(ptyId: params.ptyId, data: Data(String(seq).utf8))))
         }
         return Empty()
     }
@@ -147,38 +146,46 @@ struct ServerClientTests {
     @Test func typedMethodsRoundTripThroughTheRouter() async throws {
         let handler = TestHandler()
         let writes = Recorder<PTYWrite.Params>()
+        let sessionPTY = PTYInfo(
+            ptyId: "p1", cwd: "/tmp/ws2", command: ["/opt/homebrew/bin/omp"], cols: 132, rows: 43, pid: 4242, running: true,
+            sessionKey: "created")
         let status = DaemonStatus.Result(
             daemonVersion: "ompd-test", pid: 4242, startedAt: testStartedAt, readOnly: false, sessions: [manifestEntry("s1")],
-            ptys: [PTYInfo(ptyId: "p1", cwd: "/tmp", command: ["/bin/zsh", "-l"], cols: 80, rows: 24, pid: nil, running: true)])
+            ptys: [PTYInfo(ptyId: "t1", cwd: "/tmp", command: ["/bin/zsh", "-l"], cols: 80, rows: 24, pid: nil, running: true), sessionPTY])
+        let screen = Data([0x1B, 0x5B, 0x48, 0x00, 0xFF, 0x0A])
         handler.router.on(DaemonStatus.self) { _, _ in status }
         handler.router.on(SessionCreate.self) { params, _ in
             var entry = manifestEntry("created")
             entry.workspace = params.workspace
             entry.launch.approvalMode = params.approvalMode
             entry.launch.model = params.model
+            entry.ptyId = "p\(params.cols)x\(params.rows)"
             return entry
+        }
+        handler.router.on(PTYAttach.self) { params, _ in
+            PTYAttach.Result(info: sessionPTY, screen: params.ptyId == sessionPTY.ptyId ? screen : Data())
         }
         handler.router.on(PTYWrite.self) { params, _ in
             await writes.append(params)
             return Empty()
         }
-        handler.router.on(OmpCommand.self) { params, _ in ["echo": params.command, "sessionKey": .string(params.sessionKey)] }
 
         try await withServer(handler) { _, path in
             let client = try await connectedClient(path)
             #expect(try await client.call(DaemonStatus.self, Empty()) == status)
 
-            let created = try await client.call(SessionCreate.self, .init(workspace: "/tmp/ws2", approvalMode: "always-ask"))
+            let created = try await client.call(
+                SessionCreate.self, .init(workspace: "/tmp/ws2", approvalMode: "always-ask", cols: 132, rows: 43))
             #expect(created.workspace == "/tmp/ws2")
             #expect(created.launch.approvalMode == "always-ask")
             #expect(created.launch.model == nil)
+            #expect(created.ptyId == "p132x43")
+
+            #expect(try await client.call(PTYAttach.self, .init(ptyId: "p1")) == PTYAttach.Result(info: sessionPTY, screen: screen))
 
             let bytes = Data([0x00, 0xFF, 0x1B, 0x5B, 0x41, 0x0A])
             _ = try await client.call(PTYWrite.self, .init(ptyId: "p1", data: bytes))
             #expect(await writes.values == [PTYWrite.Params(ptyId: "p1", data: bytes)])
-
-            let command: JSONValue = ["type": "set_model", "provider": "anthropic", "extra": [1, 2.5, true, nil, "ü"]]
-            #expect(try await client.call(OmpCommand.self, .init(sessionKey: "s1", command: command)) == ["echo": command, "sessionKey": "s1"])
             await client.close()
         }
     }
@@ -213,16 +220,17 @@ struct ServerClientTests {
             try await Task.sleep(for: .milliseconds(params.delayMillis))
             return params.value
         }
-        handler.router.on(OmpCommand.self) { _, _ in
+        handler.router.on(SessionClose.self) { _, _ in
             await gate.wait()
-            return "slow passthrough done"
+            return Empty()
         }
         handler.router.on(PTYWrite.self) { _, _ in Empty() }
 
         try await withServer(handler) { _, path in
             let client = try await connectedClient(path)
-            let slow = Task { try await client.call(OmpCommand.self, .init(sessionKey: "s1", command: ["type": "compact"])) }
-            _ = try await within("pty.write behind a stuck omp passthrough") {
+            // A graceful session.close can take up to 15 s; it must not hold up anything else on the connection.
+            let slow = Task { try await client.call(SessionClose.self, .init(sessionKey: "s1")) }
+            _ = try await within("pty.write behind a slow session.close") {
                 try await client.call(PTYWrite.self, .init(ptyId: "p1", data: Data("x".utf8)))
             }
             try await withThrowingTaskGroup(of: (Int, Int).self) { group in
@@ -232,7 +240,7 @@ struct ServerClientTests {
                 for try await (sent, received) in group { #expect(sent == received) }
             }
             await gate.open()
-            #expect(try await slow.value == "slow passthrough done")
+            #expect(try await slow.value == Empty())
             await client.close()
         }
     }
@@ -242,17 +250,17 @@ struct ServerClientTests {
     @Test(arguments: [1, 4])
     func pushesArriveInSendOrder(senders: Int) async throws {
         let handler = TestHandler()
-        emitEventsRoute(handler)
+        emitOutputRoute(handler)
         let total = 10_000
         try await withServer(handler) { _, path in
             let client = try await connectedClient(path)
             let pushes = client.pushes
-            let collector = Task { () -> [SessionKey: [Seq]] in
-                var seqs: [SessionKey: [Seq]] = [:]
+            let collector = Task { () -> [PTYID: [Int]] in
+                var seqs: [PTYID: [Int]] = [:]
                 var count = 0
                 for await frame in pushes {
-                    guard case .event(let record) = frame else { continue }
-                    seqs[record.sessionKey, default: []].append(record.seq)
+                    guard case .ptyOutput(let output) = frame, let seq = Int(String(decoding: output.data, as: UTF8.self)) else { continue }
+                    seqs[output.ptyId, default: []].append(seq)
                     count += 1
                     if count == total { break }
                 }
@@ -261,14 +269,14 @@ struct ServerClientTests {
             // Senders run concurrently on the server (one request each); each must keep its own order.
             try await withThrowingTaskGroup(of: Void.self) { group in
                 for sender in 0 ..< senders {
-                    group.addTask { _ = try await client.call(EmitEvents.self, .init(sessionKey: "s\(sender)", count: total / senders)) }
+                    group.addTask { _ = try await client.call(EmitOutput.self, .init(ptyId: "p\(sender)", count: total / senders)) }
                 }
                 try await group.waitForAll()
             }
             let received = try await within("\(total) pushes") { await collector.value }
             #expect(received.count == senders)
             for sender in 0 ..< senders {
-                #expect(received["s\(sender)"] == Array(1 ... Seq(total / senders)))
+                #expect(received["p\(sender)"] == Array(1 ... total / senders))
             }
             await client.close()
         }
@@ -365,10 +373,10 @@ struct ServerClientTests {
         let handler = TestHandler()
         let gate = Gate()
         let (started, startedSink) = AsyncStream.makeStream(of: Void.self)
-        handler.router.on(OmpCommand.self) { _, _ in
+        handler.router.on(SessionClose.self) { _, _ in
             startedSink.yield()
             await gate.wait()
-            return nil
+            return Empty()
         }
         let path = tempSocketPath()
         let server = IDEServer(socketPath: path, token: testToken, daemonVersion: "ompd-test", startedAt: testStartedAt, handler: handler)
@@ -376,7 +384,7 @@ struct ServerClientTests {
         let client = try await connectedClient(path)
         let pushes = client.pushes
         let drained = Task { for await _ in pushes {} }
-        let pending = Task { try await client.call(OmpCommand.self, .init(sessionKey: "s1", command: ["type": "compact"])) }
+        let pending = Task { try await client.call(SessionClose.self, .init(sessionKey: "s1")) }
         try await within("the request to reach the handler") {
             for await _ in started { return }
         }
