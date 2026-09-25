@@ -10,15 +10,10 @@ private func manifestEntry(_ key: SessionKey) -> SessionManifestEntry {
         sessionFile: "/Users/me/.omp/agent/sessions/-src-\(key)/2026-09-25_\(key).jsonl",
         launch: LaunchSpec(ompPath: "/opt/homebrew/bin/omp", ompVersion: "18.3.1", approvalMode: "always-ask"),
         status: .busy,
-        lastSeq: 42,
-        lastSettledAt: Date(timeIntervalSince1970: 1_790_000_100.25),
+        ptyId: "pty-\(key)",
         createdAt: Date(timeIntervalSince1970: 1_790_000_000),
-        services: [NamedService(id: "web", mode: "session", command: "bun dev")],
-        pending: PendingRequests(uiRequests: [
-            HeldRequest(
-                frame: ["type": "extension_ui_request", "id": "7", "method": "select", "options": ["Approve", "Deny"]],
-                receivedAt: Date(timeIntervalSince1970: 1_790_000_050.5)),
-        ])
+        lastActiveAt: Date(timeIntervalSince1970: 1_790_000_100.25),
+        services: [NamedService(id: "web", mode: "session", command: "bun dev")]
     )
 }
 

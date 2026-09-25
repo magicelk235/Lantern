@@ -8,22 +8,22 @@ import Testing
         let dir = try StorageTempDir()
         let paths = AppSupportPaths(root: dir.url.appending(path: "omp-ide", directoryHint: .isDirectory))
         try paths.prepare()
-        for directory in [paths.root, paths.run, paths.journalDir, paths.ptySnapshots, paths.hotExit] {
+        for directory in [paths.root, paths.run, paths.ptySnapshots, paths.hotExit] {
             #expect(try dir.posixPermissions(of: directory) == 0o700, "\(directory.lastPathComponent)")
         }
 
         // Leftovers of the previous daemon run, plus user data that must survive it.
         try Data("stale".utf8).write(to: paths.socket)
-        let journal = paths.journalDir.appending(path: "s.jsonl")
-        try Data("{}\n".utf8).write(to: journal)
+        let snapshot = paths.ptySnapshots.appending(path: "p.json")
+        try Data("{}\n".utf8).write(to: snapshot)
         try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755], ofItemAtPath: paths.journalDir.path(percentEncoded: false)
+            [.posixPermissions: 0o755], ofItemAtPath: paths.ptySnapshots.path(percentEncoded: false)
         )
 
         try paths.prepare()
         #expect(!FileManager.default.fileExists(atPath: paths.socket.path(percentEncoded: false)))
-        #expect(try Data(contentsOf: journal) == Data("{}\n".utf8))
-        #expect(try dir.posixPermissions(of: paths.journalDir) == 0o700)
+        #expect(try Data(contentsOf: snapshot) == Data("{}\n".utf8))
+        #expect(try dir.posixPermissions(of: paths.ptySnapshots) == 0o700)
     }
 
     @Test func tokenIsPrivateAndStableUntilTheNextRun() throws {
