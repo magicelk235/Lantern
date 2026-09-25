@@ -29,6 +29,7 @@ final class AppState {
     var alert: AlertMessage?
 
     @ObservationIgnored private let persistence: StatePersistence
+    @ObservationIgnored private var started = false
     @ObservationIgnored private var sidebarWidth: Double?
     /// Last frame of the window outside full screen; applied to a window that attaches.
     @ObservationIgnored private var windowFrame: WindowFrame?
@@ -64,7 +65,11 @@ final class AppState {
         observeSystemPower()
     }
 
+    /// Registers the LaunchAgent and connects to ompd. Runs at launch even when no window opens (the main window may
+    /// have been closed when the app last quit); the window's `.task` calls it again, which is a no-op.
     func start() {
+        guard !started else { return }
+        started = true
         agent.registerIfNeeded()
         connection.start()
         if let reason = persistence.unavailableReason {

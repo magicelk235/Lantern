@@ -42,6 +42,10 @@ struct OmpIDEApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let app = AppState()
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        app.start()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         app.flushState()
         return .terminateNow
