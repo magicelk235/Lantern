@@ -4,11 +4,11 @@ import IDEProtocol
 import IDETransport
 import os
 
-/// ompd: owns every omp session (one `SessionSupervisor` per manifest entry), the PTY pool and the
-/// journals, and serves the IDE protocol on `$APP_SUPPORT/run/ompd.sock`.
+/// ompd: owns every omp session (one `SessionSupervisor` per manifest entry, each running omp's TUI on a
+/// session PTY) and every terminal (the PTY pool), and serves the IDE protocol on `$APP_SUPPORT/run/ompd.sock`.
 ///
-/// Lifecycle: `start()` (manifest, supervisors, socket) → `restore()` (Regime B2: resume every session the user did
-/// not close, restore terminals) → … → `shutdown()` (the graceful path).
+/// Lifecycle: `start()` (manifest, supervisors, socket) → `restore()` (Regime B2: terminals from their snapshots,
+/// every session the user did not close respawned with `--resume`) → … → `shutdown()` (the graceful path).
 public actor Daemon {
     public struct Configuration: Sendable {
         public var paths: AppSupportPaths
@@ -23,7 +23,7 @@ public actor Daemon {
         /// Environment every omp starts from.
         public var baseEnvironment: [String: String]
         public var timings: SupervisorTimings
-        /// Wake to the per-session `get_state` health check.
+        /// Wake to the per-session `session.info` health check.
         public var wakeHealthCheckDelay: Duration
 
         public init(
@@ -44,10 +44,6 @@ public actor Daemon {
 
     /// Environment variables pinned into a new session's `LaunchSpec.env` (omp storage root and profile).
     static let pinnedEnvironmentKeys = ["PI_CODING_AGENT_DIR", "OMP_PROFILE"]
-    /// omp commands that start agent work; refused in read-only mode because their output could not be journaled.
-    static let workCommands: Set<String> = ["prompt", "abort_and_prompt", "steer", "follow_up"]
-    /// Queued-but-unwritten bytes a journal replay lets build up for one client before pausing.
-    static let replayBacklogLimit = 8 << 20
 
     public nonisolated let configuration: Configuration
     public nonisolated let startedAt = Date()
@@ -62,7 +58,6 @@ public actor Daemon {
     private let broadcaster = Broadcaster()
     private var server: IDEServer?
     private var supervisors: [SessionKey: SessionSupervisor] = [:]
-    private var subscriptions: [UUID: [SessionKey: Task<Void, Never>]] = [:]
     private var shutdownTask: Task<Void, Never>?
 
     /// Nothing touches the disk or the socket before `start()`. `paths` must already be `prepare()`d.
@@ -81,15 +76,23 @@ public actor Daemon {
 
     // MARK: - Lifecycle
 
-    /// Loads the manifest, opens a supervisor (and journal) per session, and starts serving clients.
+    /// Loads the manifest (dropping the previous daemon's runtime state: no PTY and no omp survived it), creates a
+    /// supervisor per session, and starts serving clients.
     public func start() async throws {
         precondition(server == nil && shutdownTask == nil, "Daemon.start() called twice")
-        let loaded = try await manifest.store.load()
-        for entry in loaded.sessions where supervisors[entry.sessionKey] == nil {
-            supervisors[entry.sessionKey] = try SessionSupervisor(entry: entry, context: supervisorContext)
+        try await manifest.store.load()
+        try await manifest.update { manifest in
+            for index in manifest.sessions.indices {
+                manifest.sessions[index].ptyId = nil
+                if manifest.sessions[index].status != .closed { manifest.sessions[index].status = .interrupted }
+            }
+        }
+        for entry in await manifest.sessions where supervisors[entry.sessionKey] == nil {
+            supervisors[entry.sessionKey] = SessionSupervisor(entry: entry, context: supervisorContext)
         }
         let broadcaster = broadcaster
         manifest.setSink { broadcaster.send(.sessions($0)) }
+        await ptys.setChangeHandler { broadcaster.send(.ptys(PTYList.Result(ptys: $0))) }
         registerRoutes()
         let server = IDEServer(
             socketPath: configuration.paths.socket.path(percentEncoded: false), token: token, daemonVersion: ompdVersion,
@@ -100,13 +103,14 @@ public actor Daemon {
     }
 
     /// Regime B2: terminals come back from their snapshots, and every session the user did not close is
-    /// resumed (in parallel) — its omp cannot still be running, since omp dies with the daemon's pipes.
+    /// respawned (in parallel) with `--resume` in a new PTY that continues its last saved screen.
     public func restore() async {
         do {
             _ = try await ptys.restoreFromSnapshots()
         } catch {
             daemonLog.error("restoring terminals failed: \(String(describing: error), privacy: .public)")
         }
+        await ptys.discardSessionScreens(keeping: Set(supervisors.keys))
         let supervisors = Array(supervisors.values)
         await withTaskGroup(of: Void.self) { group in
             for supervisor in supervisors {
@@ -115,8 +119,8 @@ public actor Daemon {
         }
     }
 
-    /// The graceful path: terminal snapshots, manifest, then every omp stopped in parallel by stdin EOF
-    /// (stragglers killed after `timings.stop`), journals flushed and closed, socket closed. Idempotent; later
+    /// The graceful path: terminal snapshots, then every omp stopped in parallel through its bridge
+    /// (SIGHUP/SIGKILL for stragglers), then the PTYs snapshotted again and hung up, socket closed. Idempotent; later
     /// callers wait for the first.
     public func shutdown() async {
         if let shutdownTask { return await shutdownTask.value }
@@ -128,38 +132,37 @@ public actor Daemon {
     private func performShutdown() async {
         daemonLog.notice("shutting down")
         do {
-            try await ptys.shutdown()
+            try await ptys.snapshotAll()
         } catch {
             daemonLog.error("terminal snapshots failed: \(String(describing: error), privacy: .public)")
         }
         let supervisors = Array(supervisors.values)
-        for supervisor in supervisors { await supervisor.persistLastSeq() }
         await withTaskGroup(of: Void.self) { group in
             for supervisor in supervisors {
                 group.addTask { await supervisor.stop(.daemonShutdown) }
             }
         }
-        for supervisor in supervisors { await supervisor.closeJournal() }
+        do {
+            try await ptys.shutdown()
+        } catch {
+            daemonLog.error("final terminal snapshots failed: \(String(describing: error), privacy: .public)")
+        }
         await server?.stop()
         broadcaster.attach(nil)
         server = nil
         daemonLog.notice("shut down")
     }
 
-    /// System is about to sleep: make terminals, manifest and journals durable.
+    /// System is about to sleep: make the terminals durable (the manifest always is).
     public func prepareForSleep() async {
         do {
             try await ptys.snapshotAll()
         } catch {
             daemonLog.error("terminal snapshots before sleep failed: \(String(describing: error), privacy: .public)")
         }
-        for supervisor in supervisors.values {
-            await supervisor.persistLastSeq()
-            await supervisor.syncJournal()
-        }
     }
 
-    /// System woke: after `wakeHealthCheckDelay`, every live omp is health-checked with `get_state`.
+    /// System woke: after `wakeHealthCheckDelay`, every live omp is health-checked through its bridge.
     public func didWake() async {
         try? await Task.sleep(for: configuration.wakeHealthCheckDelay)
         guard shutdownTask == nil else { return }
@@ -177,27 +180,23 @@ public actor Daemon {
         let readOnly = readOnly
         let broadcaster = broadcaster
         return SupervisorContext(
-            manifest: manifest, journalDirectory: configuration.paths.journalDir, bridge: bridge, locks: locks,
-            bridgeExtension: configuration.bridgeExtension, baseEnvironment: configuration.baseEnvironment,
-            timings: configuration.timings, readOnly: readOnly,
-            journalFailed: { key, error in Self.enterReadOnly(readOnly, broadcaster, journalOf: key, failedWith: error) },
+            manifest: manifest, ptys: ptys, bridge: bridge, locks: locks, bridgeExtension: configuration.bridgeExtension,
+            baseEnvironment: configuration.baseEnvironment, timings: configuration.timings,
+            persistenceFailed: { error in Self.enterReadOnly(readOnly, broadcaster, failedWith: error) },
             notify: { broadcaster.send(.notice($0)) })
     }
 
-    /// A journal append failed (disk full, I/O error): read-only for the rest of this daemon's life.
-    nonisolated func journalFailed(_ key: SessionKey, _ error: any Error) {
-        Self.enterReadOnly(readOnly, broadcaster, journalOf: key, failedWith: error)
+    /// The manifest could not be written (disk full, I/O error): read-only for the rest of this daemon's life.
+    nonisolated func persistenceFailed(_ error: any Error) {
+        Self.enterReadOnly(readOnly, broadcaster, failedWith: error)
     }
 
-    private static func enterReadOnly(
-        _ readOnly: ReadOnlyMode, _ broadcaster: Broadcaster, journalOf key: SessionKey, failedWith error: any Error
-    ) {
+    private static func enterReadOnly(_ readOnly: ReadOnlyMode, _ broadcaster: Broadcaster, failedWith error: any Error) {
         guard readOnly.trip() else { return }
-        daemonLog.fault("journal of \(key, privacy: .public) failed (\(String(describing: error), privacy: .public)); read-only mode")
-        // Out of band: the journal cannot take it. Daemon-wide, so it names no session.
+        daemonLog.fault("the session manifest could not be written (\(String(describing: error), privacy: .public)); read-only mode")
         broadcaster.send(.notice(DaemonNotice(
             level: "error",
-            message: "The journal could not be written (\(error)). ompd is read-only: omp keeps running but its output is no longer recorded and new work is refused. Free disk space and restart ompd.",
+            message: "The session manifest could not be written (\(error)). ompd is read-only: running sessions and terminals keep going, but new sessions are refused because they could not be restored. Free disk space and restart ompd.",
             at: Date())))
     }
 
@@ -206,26 +205,21 @@ public actor Daemon {
         return supervisor
     }
 
-    /// Refuses work that needs the journal or a live daemon.
+    /// Refuses new sessions while shutting down or read-only.
     private func ensureAcceptingWork() throws {
         if shutdownTask != nil { throw DaemonError(.internal, "ompd is shutting down") }
-        if readOnly.isOn { throw DaemonError(.readOnly, "ompd is read-only: the journal could not be written (disk full?)") }
+        if readOnly.isOn { throw DaemonError(.readOnly, "ompd is read-only: the session manifest could not be written (disk full?)") }
     }
 
     /// Adds `entry` to the manifest with a new supervisor; undone if the manifest cannot be written.
     private func register(_ entry: SessionManifestEntry) async throws -> SessionSupervisor {
-        let supervisor: SessionSupervisor
-        do {
-            supervisor = try SessionSupervisor(entry: entry, context: supervisorContext)
-        } catch {
-            throw DaemonError(.internal, "cannot open the journal of \(entry.sessionKey): \(error)")
-        }
+        let supervisor = SessionSupervisor(entry: entry, context: supervisorContext)
         supervisors[entry.sessionKey] = supervisor
         do {
             try await manifest.update { $0.sessions.append(entry) }
         } catch {
             supervisors[entry.sessionKey] = nil
-            await supervisor.closeJournal()
+            persistenceFailed(error)
             throw DaemonError(.internal, "cannot write the session manifest: \(error)")
         }
         return supervisor
@@ -285,24 +279,30 @@ public actor Daemon {
         let entry = SessionManifestEntry(
             sessionKey: UUID().uuidString.lowercased(), workspace: workspace, launch: launch, createdAt: Date())
         let supervisor = try await register(entry)
-        try await supervisor.start(.fresh)
+        try await supervisor.start(.fresh, cols: params.cols, rows: params.rows)
         return await manifest.entry(entry.sessionKey) ?? entry
     }
 
+    /// Adopts an omp session file: resumed in a new session, or — when it is the file of a session whose omp is not
+    /// running (closed, given up) — in that same session.
     private func openSession(_ params: SessionOpen.Params) async throws -> SessionManifestEntry {
         try ensureAcceptingWork()
         let workspace = try Self.canonicalDirectory(params.workspace)
         guard params.sessionFile.hasPrefix("/"), let file = Self.canonicalFile(params.sessionFile) else {
             throw DaemonError(.badParams, "no such session file: \(params.sessionFile)")
         }
-        let owner = await manifest.sessions.first { entry in
-            !entry.closedByUser && entry.sessionFile.map { Self.canonicalFile($0) ?? $0 } == file
+        let existing = await manifest.sessions.first { entry in
+            entry.sessionFile.map { Self.canonicalFile($0) ?? $0 } == file
         }
-        if let owner {
-            throw DaemonError(.sessionBusy, "\(file) is already open as session \(owner.sessionKey)")
+        if let existing {
+            try await supervisor(existing.sessionKey).reopen(workspace: workspace, cols: params.cols, rows: params.rows)
+            guard let entry = await manifest.entry(existing.sessionKey) else {
+                throw DaemonError(.noSuchSession, "session \(existing.sessionKey) vanished")
+            }
+            return entry
         }
         let key = UUID().uuidString.lowercased()
-        // Ownership first: nothing is created for a file another omp owns.
+        // Ownership first: nothing is created for a file another omp IDE daemon owns.
         let lock = try locks.acquire(sessionFile: file, sessionId: nil, sessionKey: key)
         let supervisor: SessionSupervisor
         do {
@@ -316,92 +316,13 @@ public actor Daemon {
             throw error
         }
         await supervisor.adoptLock(lock, sessionFile: file)
-        try await supervisor.start(.resume)
+        try await supervisor.start(.resume, cols: params.cols, rows: params.rows)
         guard let entry = await manifest.entry(key) else { throw DaemonError(.noSuchSession, "session \(key) vanished") }
         return entry
     }
 
     private func closeSession(_ params: SessionClose.Params) async throws -> Empty {
         try await supervisor(params.sessionKey).stop(.user)
-        return Empty()
-    }
-
-    private func snapshot(_ params: SessionSnapshot.Params) async throws -> SessionSnapshot.Result {
-        let snapshot = try await supervisor(params.sessionKey).snapshot()
-        guard let entry = await manifest.entry(params.sessionKey) else {
-            throw DaemonError(.noSuchSession, "no such session: \(params.sessionKey)")
-        }
-        return SessionSnapshot.Result(entry: entry, state: snapshot.state, entries: snapshot.entries, lastSeq: snapshot.lastSeq)
-    }
-
-    private func ompCommand(_ params: OmpCommand.Params) async throws -> JSONValue {
-        let supervisor = try supervisor(params.sessionKey)
-        if let type = params.command["type"]?.stringValue, Self.workCommands.contains(type) { try ensureAcceptingWork() }
-        return try await supervisor.command(params.command)
-    }
-
-    private func respond(_ params: UIRespond.Params) async throws -> Empty {
-        try await supervisor(params.sessionKey).respond(requestId: params.requestId, response: params.response)
-        return Empty()
-    }
-
-    // MARK: - Subscriptions
-
-    /// Replays the journal after `since` and then streams it live, in one gap- and duplicate-free sequence (the
-    /// journal takes replay and live registration in one step). An unknown `since` (beyond the journal) gets a
-    /// `resync` first and continues from the journal's end. One subscription per (connection, session): a new one
-    /// replaces the old, which stops sending before the new one starts.
-    private func subscribe(_ params: Subscribe.Params, _ connection: IDEConnection) async throws -> Subscribe.Result {
-        let key = params.sessionKey
-        let journal = try supervisor(key).journal
-        var resync: Resync?
-        var subscription: (replay: [JournalRecord], live: AsyncStream<JournalRecord>)?
-        do {
-            subscription = try await journal.subscribe(after: params.since)
-            if subscription == nil {
-                let lastSeq = await journal.lastSeq
-                resync = Resync(sessionKey: key, lastSeq: lastSeq)
-                subscription = try await journal.subscribe(after: lastSeq)
-            }
-        } catch StorageError.journalClosed {
-            throw DaemonError(.internal, "ompd is shutting down")
-        } catch {
-            throw DaemonError(.internal, "journal of \(key) unreadable: \(error)")
-        }
-        guard let subscription else {
-            throw DaemonError(.internal, "journal of \(key) moved backwards")
-        }
-        let (replay, live) = subscription
-        let resyncFrame = resync
-        let previous = subscriptions[connection.id]?[key]
-        previous?.cancel()
-        subscriptions[connection.id, default: [:]][key] = Task.detached {
-            await previous?.value
-            await Self.stream(resync: resyncFrame, replay: replay, live: live, to: connection)
-        }
-        return Subscribe.Result(replayedThrough: replay.last?.seq ?? resyncFrame?.lastSeq ?? params.since)
-    }
-
-    private static func stream(
-        resync: Resync?, replay: [JournalRecord], live: AsyncStream<JournalRecord>, to connection: IDEConnection
-    ) async {
-        guard !Task.isCancelled else { return }
-        if let resync { connection.send(.resync(resync)) }
-        for record in replay {
-            // Paced so a long replay never trips the slow-consumer cutoff meant for clients that stopped reading.
-            await connection.waitForBacklog(atMost: replayBacklogLimit)
-            guard !Task.isCancelled else { return }
-            connection.send(.event(record))
-        }
-        for await record in live {
-            connection.send(.event(record))
-        }
-    }
-
-    private func unsubscribe(_ params: Unsubscribe.Params, _ connection: IDEConnection) async -> Empty {
-        let task = subscriptions[connection.id]?.removeValue(forKey: params.sessionKey)
-        task?.cancel()
-        await task?.value
         return Empty()
     }
 
@@ -422,21 +343,6 @@ public actor Daemon {
         }
         router.on(SessionClose.self) { [weak self] params, _ in
             try await Self.alive(self).closeSession(params)
-        }
-        router.on(Subscribe.self) { [weak self] params, connection in
-            try await Self.alive(self).subscribe(params, connection)
-        }
-        router.on(Unsubscribe.self) { [weak self] params, connection in
-            try await Self.alive(self).unsubscribe(params, connection)
-        }
-        router.on(SessionSnapshot.self) { [weak self] params, _ in
-            try await Self.alive(self).snapshot(params)
-        }
-        router.on(OmpCommand.self) { [weak self] params, _ in
-            try await Self.alive(self).ompCommand(params)
-        }
-        router.on(UIRespond.self) { [weak self] params, _ in
-            try await Self.alive(self).respond(params)
         }
         router.on(PTYOpen.self) { [weak self] params, _ in
             try await Self.alive(self).ptys.open(params)
@@ -460,7 +366,7 @@ public actor Daemon {
             return Empty()
         }
         router.on(PTYClose.self) { [weak self] params, _ in
-            try await Self.alive(self).ptys.close(params.ptyId)
+            try await Self.alive(self).ptys.close(params.ptyId, refusingSessions: true)
             return Empty()
         }
         router.on(PTYList.self) { [weak self] _, _ in
@@ -484,7 +390,6 @@ extension Daemon: IDERequestHandler {
     }
 
     public func connectionClosed(_ connection: IDEConnection) async {
-        for task in (subscriptions.removeValue(forKey: connection.id) ?? [:]).values { task.cancel() }
         await ptys.detachAll(subscriber: connection.id)
     }
 }

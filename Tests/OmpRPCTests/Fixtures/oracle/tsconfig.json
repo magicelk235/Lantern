@@ -1,6 +1,0 @@
-{
-  "compilerOptions": {
-    "baseUrl": ".",
-    "paths": { "@oh-my-pi/pi-utils": ["./reference/pi-utils.ts"] }
-  }
-}
