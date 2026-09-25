@@ -15,8 +15,8 @@ import Testing
 /// - `prompt`: frames printed after acknowledging a `prompt` (`__ID__` = the prompt's id); default: one complete turn.
 /// - `answered`: frames printed after an `extension_ui_response`/`host_tool_result` (`__ID__` = its id,
 ///   `__PROMPT__` = the last prompt's id).
-/// - `session.jsonl`: the session file `get_state` reports; created on the first prompt; on stdin EOF a
-///   `session_exit {kind:"normal"}` entry is appended, as omp does.
+/// - `session.jsonl`: the session file `get_state` reports (the `--resume` file instead, when given); created on the
+///   first prompt; on stdin EOF a `session_exit {kind:"normal"}` entry is appended, as omp does.
 /// `$FAKE_OMP_EOF=ignore` keeps it alive after EOF (a straggler); `$FAKE_OMP_EOF_DELAY` delays its exit. The command
 /// `crash` makes it exit 3 without answering; `fail` is answered with a failure response.
 struct FakeOmp: Sendable {
@@ -28,6 +28,11 @@ struct FakeOmp: Sendable {
         if [ "$1" = "--version" ]; then echo "omp/18.3.1"; exit 0; fi
         dir="$FAKE_OMP_DIR"
         session="$dir/session.jsonl"
+        previous=""
+        for argument in "$@"; do
+          if [ "$previous" = "--resume" ]; then session="$argument"; fi
+          previous="$argument"
+        done
         printf '%s\n' "$*" >> "$dir/argv"
         printf '{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1],"maxFrameBytes":1048576}\n'
         emit() {
