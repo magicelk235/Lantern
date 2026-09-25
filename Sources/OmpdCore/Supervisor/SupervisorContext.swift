@@ -67,6 +67,8 @@ public struct SupervisorContext: Sendable {
     /// Environment every omp starts from (the daemon's own), before `LaunchSpec.env` and the bridge credentials.
     public var baseEnvironment: [String: String]
     public var timings: SupervisorTimings
+    /// Whether ompd wants the sessions paused (no omp IDE window connected).
+    public var pauseDemand: PauseDemand
     /// A manifest write failed (disk full, I/O error).
     public var persistenceFailed: @Sendable (any Error) -> Void
     /// Delivers a notice to every connected client (`ServerFrame.notice`).
@@ -75,8 +77,8 @@ public struct SupervisorContext: Sendable {
     public init(
         manifest: ManifestPublisher, ptys: PTYPool, bridge: any SessionBridgeLink, locks: any SessionLockProvider,
         bridgeExtension: String?, baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
-        timings: SupervisorTimings = SupervisorTimings(), persistenceFailed: @escaping @Sendable (any Error) -> Void,
-        notify: @escaping @Sendable (DaemonNotice) -> Void
+        timings: SupervisorTimings = SupervisorTimings(), pauseDemand: PauseDemand = PauseDemand(),
+        persistenceFailed: @escaping @Sendable (any Error) -> Void, notify: @escaping @Sendable (DaemonNotice) -> Void
     ) {
         self.manifest = manifest
         self.ptys = ptys
@@ -85,6 +87,7 @@ public struct SupervisorContext: Sendable {
         self.bridgeExtension = bridgeExtension
         self.baseEnvironment = baseEnvironment
         self.timings = timings
+        self.pauseDemand = pauseDemand
         self.persistenceFailed = persistenceFailed
         self.notify = notify
     }

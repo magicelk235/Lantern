@@ -1,7 +1,8 @@
 import Foundation
 
-/// Daemon <-> UI protocol version. Bump on any incompatible change to this module.
-public let ideProtocolVersion = 3
+/// Daemon <-> UI protocol version. Bump on any incompatible change to this module (4: `SessionStatus.paused`, which a
+/// v3 client cannot decode; `Hello.clientKind`).
+public let ideProtocolVersion = 4
 
 /// Wire framing: each frame is a 4-byte big-endian length followed by that many bytes of
 /// UTF-8 JSON encoding exactly one `ClientFrame` or `ServerFrame`. Max frame 64 MiB.
@@ -44,11 +45,32 @@ public struct Hello: Sendable, Equatable, Codable {
     public var clientVersion: String
     /// Contents of `$APP_SUPPORT/run/token` (0600).
     public var token: String
-    public init(protocolVersion: Int = ideProtocolVersion, clientVersion: String, token: String) {
+    /// What connects. ompd pauses every session while no `app` client is connected.
+    public var clientKind: ClientKind
+
+    public init(protocolVersion: Int = ideProtocolVersion, clientVersion: String, token: String, clientKind: ClientKind = .app) {
         self.protocolVersion = protocolVersion
         self.clientVersion = clientVersion
         self.token = token
+        self.clientKind = clientKind
     }
+
+    private enum CodingKeys: String, CodingKey { case protocolVersion, clientVersion, token, clientKind }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        protocolVersion = try c.decode(Int.self, forKey: .protocolVersion)
+        clientVersion = try c.decode(String.self, forKey: .clientVersion)
+        token = try c.decode(String.self, forKey: .token)
+        clientKind = try c.decodeIfPresent(ClientKind.self, forKey: .clientKind) ?? .app
+    }
+}
+
+public enum ClientKind: String, Sendable, Codable {
+    /// An omp IDE window (the app). A hello without `clientKind` is one.
+    case app
+    /// A command-line client such as `ompd status`: not a window, so it does not keep the sessions running.
+    case cli
 }
 
 /// JSON-RPC style request. `method` is a `DaemonMethod.name`; `params` its encoded `Params`.

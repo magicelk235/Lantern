@@ -25,18 +25,19 @@
  *
  * Wire: JSON lines over the unix socket.
  *   bridge -> ompd  {t:"hello", v:1, sessionKey, token, pid, ompVersion, capabilities, session:{id, file, onDisk,
- *                    leafId, cwd, artifactsDir, title}}                               first frame, exactly once
+ *                    leafId, cwd, artifactsDir, title, paused, pausedBy}}             first frame, exactly once
  *                   {t:"res", id, ok:true, result} | {t:"res", id, ok:false, error}  one per req
  *                   {t:"evt", seq, ts, agentId, kind, data}                           only after welcome
  *                   {t:"gap", ts, from, to, dropped}                                  evts from..to were dropped
  *   ompd -> bridge  {t:"welcome", v} | {t:"reject", reason}                           verdict on hello
  *                   {t:"req", id, method, params}
  * evt kinds: activity {state:"busy"|"idle"} (the main agent started a run / finished it with no background job left),
- * title {title} (the session name changed), registry:registered|status_changed|metadata_changed|removed (data = agent
- * row), before_subagent_spawn, session_start, session_shutdown, session_switch (per agent instance; data.session is the
- * session info), bridge:error. `agentId` is the agent the event is about (registry rows: the row;
- * before_subagent_spawn: the spawning parent). `seq` is per process and gap-free except where a `gap` frame says
- * otherwise.
+ * title {title} (the session name changed), pause {paused, by:"daemon"|"user"} (omp's pause gate closed or opened:
+ * `session.pause`/`session.resume`, or the user's /pause and its pause screen), registry:registered|status_changed|
+ * metadata_changed|removed (data = agent row), before_subagent_spawn, session_start, session_shutdown, session_switch
+ * (per agent instance; data.session is the session info), bridge:error. `agentId` is the agent the event is about
+ * (registry rows: the row; before_subagent_spawn: the spawning parent). `seq` is per process and gap-free except where a
+ * `gap` frame says otherwise.
  *
  * Graceful stop (`session.shutdown`): the reply goes out first, then the main AgentSession is disposed —
  * what the TUI's own /exit does: `session_exit {kind:"normal"}` with the pending tool calls, the turn aborted,
@@ -45,9 +46,15 @@
  * At the main agent's first run the bridge writes the lazily created session file (`ensureOnDisk`), so a TUI that dies
  * during its first turn can be resumed.
  *
- * Internal omp subpaths (registry/agent-lifecycle, registry/persisted-agents, modes/agent-hub-runtime) and
- * @oh-my-pi/pi-utils are imported dynamically: a missing module turns the matching capability off instead of failing
- * the extension load.
+ * Pause: `session.pause` runs the TUI's own /pause handler (`slash-commands/builtin-registry`) against the
+ * TUI instance, so omp's process-global `agentPauseGate` closes and omp's pause screen opens: the main agent, in-process
+ * subagents and the advisor hold before their next model call or tool execution; nothing in flight is aborted. The
+ * user's draft is kept. `session.resume` dismisses that screen the way a key press does (the handler hides it, returns
+ * focus and opens the gate). The daemon pauses sessions while no omp IDE window is connected.
+ *
+ * Internal omp subpaths (registry/agent-lifecycle, registry/persisted-agents, modes/agent-hub-runtime,
+ * slash-commands/builtin-registry), @oh-my-pi/pi-agent-core and @oh-my-pi/pi-utils are imported dynamically: a missing
+ * module turns the matching capability off instead of failing the extension load.
  */
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import * as ompModule from "@oh-my-pi/pi-coding-agent";
@@ -127,7 +134,39 @@ interface CtxLike {
 	sessionManager: SessionManagerLike;
 	getAsyncJobSnapshot?(): { running?: unknown[] } | null;
 	hasPendingMessages?(): boolean;
-	ui?: { notify?(message: string, type?: "info" | "warning" | "error"): void };
+	ui?: {
+		notify?(message: string, type?: "info" | "warning" | "error"): void;
+		/** `content` may be a factory `(tui, theme) => Component`, which the TUI calls with its `TUI` instance. */
+		setWidget?(key: string, content: unknown, options?: unknown): void;
+	};
+}
+
+/** `@oh-my-pi/pi-agent-core` `agentPauseGate` (packages/agent/src/pause.ts): the process-global gate behind the TUI's
+ *  /pause. The agent loop of every in-process agent (main, subagents, advisor) awaits it before each model call and
+ *  before each tool execution; `onChange` listeners run synchronously inside `pause()`/`resume()`. */
+interface PauseGateLike {
+	readonly paused: boolean;
+	pause(): boolean;
+	resume(): number | undefined;
+	onChange(listener: (paused: boolean) => void): () => void;
+}
+
+/** The TUI (`@oh-my-pi/pi-tui`) instance of interactive mode: overlays are the entries of `overlayStack`. */
+interface TuiLike {
+	overlayStack: Array<{ component?: unknown }>;
+	showOverlay(component: unknown, options?: unknown): unknown;
+}
+
+/** A built-in slash command as the TUI dispatches it: `handleTui(parsed, {ctx: <interactive mode>})`. */
+interface BuiltinSlashCommandLike {
+	handleTui?(command: { name: string; args: string; text: string }, runtime: { ctx: unknown }): Promise<unknown>;
+}
+
+/** omp's pause screen overlay (packages/tui/src/overlays/pause-screen.ts): Esc, Enter, Space or Ctrl+C resolve it, and
+ *  the /pause handler then hides it and releases the gate. */
+interface PauseScreenLike {
+	handleInput(data: string): void;
+	render(width: number): string[];
 }
 
 interface Internals {
@@ -136,6 +175,9 @@ interface Internals {
 	createAgentHubRuntime?: () => { irc: IrcBusLike };
 	/** omp's postmortem `quit(code)`: runs the remaining cleanups, then exits (what the TUI's /exit ends with). */
 	quit?: (code: number) => Promise<void>;
+	pauseGate?: PauseGateLike;
+	/** The TUI's built-in `/pause`: engages the gate and shows omp's pause screen until it is dismissed. */
+	pauseCommand?: BuiltinSlashCommandLike;
 	errors: Record<string, string>;
 }
 
@@ -208,8 +250,8 @@ const DAEMON = daemonEnv();
 // unconditionally when they evaluate; an accessor ignores such writes, so a stale global copy never wins over ompd's.
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** Bumped whenever the daemon-mode behavior changes (2: TUI sessions: shutdown, activity, title). */
-const BRIDGE_REVISION = 2;
+/** Bumped whenever the daemon-mode behavior changes (2: TUI sessions: shutdown, activity, title; 3: pause). */
+const BRIDGE_REVISION = 3;
 
 interface GuardSlot {
 	/** The evaluation of this file that serves the process. */
@@ -454,11 +496,25 @@ const S = {
 	settleTimer: undefined as Timer | undefined,
 	shuttingDown: false,
 	internals: undefined as Promise<Internals> | undefined,
+	/** omp's pause gate, once the internals loaded. */
+	gate: undefined as PauseGateLike | undefined,
+	/** Who engaged the pause gate while it is closed: this bridge for the daemon (`session.pause`) or the user (the TUI's
+	 *  /pause, or anything else in the process). */
+	pausedBy: undefined as PausedBy | undefined,
+	/** Set while this bridge itself flips the gate, so the synchronous `onChange` attributes the flip to the daemon. */
+	gateFlip: undefined as { paused: boolean } | undefined,
+	gateUnsub: undefined as (() => void) | undefined,
+	/** The pause screen the daemon's `session.pause` opened. */
+	pauseScreen: undefined as PauseScreenLike | undefined,
+	/** Interactive mode's TUI instance, captured through a widget factory. */
+	tui: undefined as TuiLike | undefined,
 };
 
-// Dynamic on purpose: these internal subpaths (and @oh-my-pi/pi-utils) are served to extensions by omp 18.3.1 but are not
-// a public API. A static import of a missing module would fail the whole extension load (lock mode included); a dynamic
-// one only turns a capability off.
+type PausedBy = "daemon" | "user";
+
+// Dynamic on purpose: these internal subpaths (and @oh-my-pi/pi-utils, @oh-my-pi/pi-agent-core) are served to extensions
+// by omp 18.3.1 but are not a public API. A static import of a missing module would fail the whole extension load (lock
+// mode included); a dynamic one only turns a capability off.
 function loadInternals(): Promise<Internals> {
 	S.internals ??= (async () => {
 		const out: Internals = { errors: {} };
@@ -493,6 +549,24 @@ function loadInternals(): Promise<Internals> {
 			else out.errors.postmortem = "postmortem.quit export missing";
 		} catch (e) {
 			out.errors.postmortem = errText(e);
+		}
+		try {
+			const mod = (await import("@oh-my-pi/pi-agent-core")) as AnyRecord;
+			const gate = mod.agentPauseGate as Partial<PauseGateLike> | undefined;
+			if (typeof gate?.pause === "function" && typeof gate.resume === "function" && typeof gate.onChange === "function") {
+				out.pauseGate = gate as PauseGateLike;
+			} else out.errors.pauseGate = "agentPauseGate export missing";
+		} catch (e) {
+			out.errors.pauseGate = errText(e);
+		}
+		try {
+			const mod = (await import("@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry")) as AnyRecord;
+			const lookup = mod.lookupBuiltinSlashCommand as ((name: string) => BuiltinSlashCommandLike | undefined) | undefined;
+			const command = typeof lookup === "function" ? lookup("pause") : undefined;
+			if (typeof command?.handleTui === "function") out.pauseCommand = command;
+			else out.errors.pauseCommand = "the built-in /pause command is missing";
+		} catch (e) {
+			out.errors.pauseCommand = errText(e);
 		}
 		return out;
 	})();
@@ -536,6 +610,7 @@ function sessionInfo(ctx: CtxLike): AnyRecord {
 		cwd: attempt(() => sm.getCwd(), null),
 		artifactsDir: attempt(() => sm.getArtifactsDir(), undefined) ?? null,
 		title: attempt(() => sm.getSessionName?.(), undefined) ?? null,
+		...pauseState(),
 	};
 }
 
@@ -600,6 +675,7 @@ async function probeCapabilities(ctx: CtxLike): Promise<Record<string, boolean>>
 		"events.activity": true,
 		"events.title": fn(sm, "onSessionNameChanged") && fn(sm, "getSessionName"),
 		"session.shutdown": fn(mainSession(), "dispose"),
+		"session.pause": internals.pauseGate !== undefined,
 	};
 }
 
@@ -663,7 +739,7 @@ function endConnection(next: "rejected" | "closed"): void {
 	S.phase = next;
 	S.queued = [];
 	S.gap = undefined;
-	for (const unsubscribe of [S.registryUnsub, S.titleUnsub]) {
+	for (const unsubscribe of [S.registryUnsub, S.titleUnsub, S.gateUnsub]) {
 		try {
 			unsubscribe?.();
 		} catch {
@@ -672,6 +748,7 @@ function endConnection(next: "rejected" | "closed"): void {
 	}
 	S.registryUnsub = undefined;
 	S.titleUnsub = undefined;
+	S.gateUnsub = undefined;
 	clearTimeout(S.settleTimer);
 	S.settleTimer = undefined;
 	const sock = S.sock;
@@ -804,7 +881,9 @@ async function connectDaemon(daemon: DaemonEnv, ctx: CtxLike): Promise<void> {
 		log(`capability probe failed: ${errText(e)}`);
 		capabilities = {};
 	}
+	const { pauseGate } = await loadInternals();
 	if (S.phase !== "connecting") return;
+	if (pauseGate) subscribePause(pauseGate);
 	let sock: net.Socket;
 	try {
 		sock = net.createConnection({ path: daemon.sock });
@@ -865,6 +944,147 @@ async function connectDaemon(daemon: DaemonEnv, ctx: CtxLike): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Pause: omp's /pause gate, engaged for the daemon while no omp IDE window is connected
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** A key the pause screen always reads as "resume" (Esc can be rebound to `app.interrupt`; Enter cannot). */
+const PAUSE_SCREEN_RESUME_KEY = "\r";
+const TUI_PROBE_WIDGET = "omp-ide.bridge.tui-probe";
+
+function pauseState(): { paused: boolean; pausedBy: PausedBy | null } {
+	const paused = attempt(() => S.gate?.paused === true, false);
+	return { paused, pausedBy: paused ? (S.pausedBy ?? "user") : null };
+}
+
+/** Follows the gate: every flip (the daemon's, the user's /pause, the pause screen dismissed) is pushed as `pause`. */
+function subscribePause(gate: PauseGateLike): void {
+	S.gate = gate;
+	if (S.gateUnsub) return;
+	try {
+		S.gateUnsub = gate.onChange((paused) => {
+			try {
+				if (!owns()) return;
+				const by: PausedBy = S.gateFlip?.paused === paused ? "daemon" : "user";
+				S.pausedBy = paused ? by : undefined;
+				if (!paused) S.pauseScreen = undefined;
+				emit(MAIN_AGENT_ID, "pause", { paused, by });
+			} catch (e) {
+				log(`pause event dropped: ${errText(e)}`);
+			}
+		});
+	} catch (e) {
+		log(`pause gate subscription failed: ${errText(e)}`);
+	}
+}
+
+/** Interactive mode's TUI instance. Widget factories are called with it, synchronously: a factory widget is added and
+ *  removed again before anything renders. Undefined without a TUI (print/RPC modes ignore factory widgets). */
+function tuiInstance(): TuiLike | undefined {
+	if (S.tui) return S.tui;
+	const ui = attempt(() => S.main?.ctx?.ui, undefined);
+	if (typeof ui?.setWidget !== "function") return undefined;
+	let captured: unknown;
+	try {
+		ui.setWidget(TUI_PROBE_WIDGET, (tui: unknown) => {
+			captured = tui;
+			return { render: () => [], invalidate: () => {} };
+		});
+	} catch (e) {
+		log(`TUI probe failed: ${errText(e)}`);
+	}
+	if (captured === undefined) return undefined;
+	attempt(() => ui.setWidget?.(TUI_PROBE_WIDGET, undefined), undefined);
+	const tui = captured as Partial<TuiLike>;
+	if (Array.isArray(tui.overlayStack) && typeof tui.showOverlay === "function") S.tui = tui as TuiLike;
+	return S.tui;
+}
+
+function overlays(): unknown[] {
+	return attempt(() => (S.tui?.overlayStack ?? []).map((entry) => entry.component), []);
+}
+
+/** omp's pause screen, if one is open: the one `session.pause` opened, else one the user's /pause opened. */
+function openPauseScreen(): PauseScreenLike | undefined {
+	const open = overlays();
+	if (S.pauseScreen !== undefined && open.includes(S.pauseScreen)) return S.pauseScreen;
+	return open.findLast((component): component is PauseScreenLike => {
+		const c = component as Partial<PauseScreenLike> & { run?: unknown } | undefined;
+		if (typeof c?.handleInput !== "function" || typeof c.render !== "function" || typeof c.run !== "function") return false;
+		return attempt(() => c.render?.(80).join("\n").includes("P A U S E D") === true, false);
+	});
+}
+
+/** What the /pause handler uses of interactive mode, backed by the real TUI. Unlike the user's /pause (which clears the
+ *  "/pause" they typed), the daemon's leaves the editor draft alone; "Resumed after …" goes to the status line either way. */
+function pauseScreenHost(tui: TuiLike): AnyRecord {
+	return {
+		ui: tui,
+		editor: { setText: () => {} },
+		showStatus: (message: string) => attempt(() => S.main?.ctx?.ui?.notify?.(message, "info"), undefined),
+		get sessionName() {
+			return attempt(() => S.main?.ctx?.sessionManager.getSessionName?.(), undefined);
+		},
+	};
+}
+
+async function pauseGateOrThrow(): Promise<{ gate: PauseGateLike; internals: Internals }> {
+	const internals = await loadInternals();
+	const gate = internals.pauseGate;
+	if (!gate) throw new Error(`omp's pause gate is unavailable: ${internals.errors.pauseGate}`);
+	subscribePause(gate);
+	return { gate, internals };
+}
+
+/** `session.pause`: omp's own /pause (gate and pause screen); the gate alone where there is no TUI. */
+async function pauseForDaemon(): Promise<AnyRecord> {
+	const { gate, internals } = await pauseGateOrThrow();
+	const tui = tuiInstance();
+	if (gate.paused) return { ...pauseState(), changed: false, screen: openPauseScreen() !== undefined };
+	S.gateFlip = { paused: true };
+	try {
+		if (tui && internals.pauseCommand?.handleTui) {
+			const before = overlays();
+			// Runs synchronously up to the open screen (gate closed, overlay shown and focused); settles on dismissal.
+			internals.pauseCommand
+				.handleTui({ name: "pause", args: "", text: "/pause" }, { ctx: pauseScreenHost(tui) })
+				.catch((e: unknown) => log(`pause screen failed: ${errText(e)}`));
+			S.pauseScreen = overlays().find((component) => !before.includes(component)) as PauseScreenLike | undefined;
+		}
+		if (!gate.paused) gate.pause();
+	} finally {
+		S.gateFlip = undefined;
+	}
+	return { ...pauseState(), changed: true, screen: openPauseScreen() !== undefined };
+}
+
+/** `session.resume`: dismisses the pause screen the way a key press does (the /pause handler hides it, gives focus back
+ *  and releases the gate); the gate alone when no screen is open. */
+async function resumeForDaemon(ifPausedBy: PausedBy | undefined): Promise<AnyRecord> {
+	const { gate } = await pauseGateOrThrow();
+	tuiInstance();
+	if (!gate.paused || (ifPausedBy !== undefined && pauseState().pausedBy !== ifPausedBy)) {
+		return { ...pauseState(), changed: false, screen: openPauseScreen() !== undefined };
+	}
+	const screen = openPauseScreen();
+	S.gateFlip = { paused: false };
+	try {
+		if (screen) {
+			screen.handleInput(PAUSE_SCREEN_RESUME_KEY);
+			// The handler resumes in a microtask chain; a macrotask later it is done.
+			const { promise, resolve } = Promise.withResolvers<void>();
+			setTimeout(resolve, 0);
+			await promise;
+		}
+		if (gate.paused) gate.resume();
+	} finally {
+		S.gateFlip = undefined;
+	}
+	const stale = openPauseScreen() !== undefined;
+	if (stale) log("the pause screen did not close on resume; the agents run again behind it");
+	return { ...pauseState(), changed: true, screen: stale };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Requests
 // ---------------------------------------------------------------------------------------------------------------------
 
@@ -921,6 +1141,22 @@ const METHODS: Record<string, (params: AnyRecord) => Promise<unknown>> = {
 		const ctx = mainCtx();
 		await ctx.sessionManager.flush();
 		return sessionInfo(ctx);
+	},
+
+	/** Every agent of this omp (main, subagents, advisor) holds at its next step, as with the TUI's /pause, whose pause
+	 *  screen opens too; idempotent (a pause the user engaged stays theirs). Result: `{paused, pausedBy, changed, screen}`. */
+	async "session.pause"() {
+		return await pauseForDaemon();
+	},
+
+	/** Releases the pause and dismisses the pause screen; idempotent. `ifPausedBy` ("daemon" | "user") leaves a pause the
+	 *  other party engaged in place (`changed: false`). */
+	async "session.resume"(params) {
+		const ifPausedBy = params.ifPausedBy;
+		if (ifPausedBy !== undefined && ifPausedBy !== "daemon" && ifPausedBy !== "user") {
+			throw new Error('params.ifPausedBy must be "daemon" or "user"');
+		}
+		return await resumeForDaemon(ifPausedBy);
 	},
 
 	/** Graceful stop: answers, then disposes the main session and exits 0 like the TUI's own /exit. */

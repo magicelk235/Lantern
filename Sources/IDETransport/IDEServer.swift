@@ -14,9 +14,17 @@ public protocol IDERequestHandler: Sendable {
     /// previous response first. When the connection closes, in-flight calls are cancelled and their responses dropped.
     func handle(_ request: Request, from connection: IDEConnection) async -> Response
 
+    /// Called once per connection right after its `welcome` was queued, with the client's `hello`, before any of its
+    /// requests is handled. Keep it short: the connection's requests wait for it.
+    func connectionOpened(_ connection: IDEConnection, hello: Hello) async
+
     /// Called exactly once per connection that received its `welcome`, after the socket closed and every `handle`
     /// call for that connection has returned.
     func connectionClosed(_ connection: IDEConnection) async
+}
+
+extension IDERequestHandler {
+    public func connectionOpened(_ connection: IDEConnection, hello: Hello) async {}
 }
 
 /// Unix-domain-socket listener for the daemon.
@@ -249,6 +257,7 @@ public final class IDEServer: Sendable {
         guard beginWelcome(connection) else { return }
         let welcome = Welcome(daemonVersion: daemonVersion, daemonStartedAt: startedAt, sessions: await handler.sessionsForWelcome())
         guard open(connection, welcome: welcome) else { return }
+        await handler.connectionOpened(connection, hello: hello)
 
         await withDiscardingTaskGroup { group in
             while let frame = await inbound.next() {

@@ -12,6 +12,7 @@ public actor IDEClient {
     private let socketPath: String
     private let token: String
     private let clientVersion: String
+    private let clientKind: ClientKind
     private let inbox: ClientInbox
     private var channel: FrameChannel?
     private var phase: Phase = .idle
@@ -19,13 +20,15 @@ public actor IDEClient {
 
     private enum Phase { case idle, connecting, connected, closed }
 
-    public init(socketPath: String, token: String, clientVersion: String) {
+    /// `clientKind`: an omp IDE window (`app`, keeps the sessions running) or a command-line client (`cli`).
+    public init(socketPath: String, token: String, clientVersion: String, clientKind: ClientKind = .app) {
         let (pushes, sink) = AsyncStream.makeStream(of: ServerFrame.self)
         self.pushes = pushes
         inbox = ClientInbox(pushes: sink)
         self.socketPath = socketPath
         self.token = token
         self.clientVersion = clientVersion
+        self.clientKind = clientKind
     }
 
     deinit {
@@ -40,7 +43,7 @@ public actor IDEClient {
             throw IDETransportError.invalidState(phase == .closed ? "IDEClient is closed" : "connect() already called")
         }
         try UnixSocket.validate(socketPath)
-        let hello = try FrameCodec.encode(ClientFrame.hello(Hello(clientVersion: clientVersion, token: token)))
+        let hello = try FrameCodec.encode(ClientFrame.hello(Hello(clientVersion: clientVersion, token: token, clientKind: clientKind)))
         phase = .connecting
         let channel = FrameChannel(
             connection: NWConnection(to: .unix(path: socketPath), using: .unixStream()),

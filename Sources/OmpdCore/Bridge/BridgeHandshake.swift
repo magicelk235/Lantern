@@ -45,6 +45,8 @@ public struct BridgeHello: Sendable, Equatable {
     public let artifactsDir: String?
     /// The session's name when the bridge said hello (a resumed session keeps its title); nil when unnamed.
     public let title: String?
+    /// Who holds omp's pause gate closed when the bridge said hello; nil while it is open (and from older bridges).
+    public let pausedBy: PauseOwner?
     /// The hello frame without `token`.
     public let raw: JSONValue
 }
@@ -75,10 +77,13 @@ extension BridgeHello {
         else { throw Malformed(description: "session {id, file, onDisk, cwd} missing") }
         var raw = frame
         raw["token"] = nil
+        let pausedBy = PauseOwner(paused: session["paused"]?.boolValue == true, by: session["pausedBy"]?.stringValue)
         self.init(
             sessionKey: sessionKey, pid: pid, ompVersion: ompVersion,
             capabilities: capabilities.compactMapValues(\.boolValue), sessionId: sessionId, sessionFile: sessionFile,
             onDisk: onDisk, cwd: cwd, artifactsDir: session["artifactsDir"]?.stringValue,
-            title: session["title"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }, raw: .object(raw))
+            title: session["title"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 },
+            pausedBy: pausedBy,
+            raw: .object(raw))
     }
 }

@@ -5,9 +5,9 @@ import os
 
 /// Owns one IDE session (`SessionKey`): the omp TUI currently serving it, running on a session PTY of the daemon's
 /// pool. It spawns omp from the manifest's `LaunchSpec`, follows the ide-bridge inside it (identity,
-/// busy/idle, title, session switches) into the manifest, holds the session file's ownership lock, respawns omp with
-/// `--resume` when it dies, and stops it the graceful way (bridge `session.shutdown`), never with a signal
-/// first.
+/// busy/idle, title, session switches, pause) into the manifest, holds the session file's ownership lock, respawns omp
+/// with `--resume` when it dies, pauses omp's agents while the daemon wants them paused, and stops it the
+/// graceful way (bridge `session.shutdown`), never with a signal first.
 public actor SessionSupervisor {
     public nonisolated let sessionKey: SessionKey
 
@@ -47,6 +47,15 @@ public actor SessionSupervisor {
     private var stopRequested = false
     /// When automatic respawns happened (crash-loop guard).
     private var respawns: [ContinuousClock.Instant] = []
+
+    // omp's pause gate
+    /// Who holds the gate closed, as the bridge last reported it; nil while it is open.
+    private var pausedBy: PauseOwner?
+    /// The main agent's activity (`busy`/`idle`) underneath a pause: the status once the pause ends.
+    private var activity: SessionStatus = .idle
+    /// A `syncPause` pass runs; `pauseRecheck` makes it look at the demand once more when its bridge call returns.
+    private var pauseSyncing = false
+    private var pauseRecheck = false
 
     // Ownership
     private var lock: (any SessionLockHandle)?
@@ -193,6 +202,9 @@ public actor SessionSupervisor {
         ptyId = info.ptyId
         spawnedAt = Date()
         stopping = nil
+        // A new omp starts with its pause gate open and its main agent waiting for input.
+        pausedBy = nil
+        activity = .idle
         if let pid = info.pid { await context.bridge.setExpectedPID(pid, for: sessionKey) }
         await updateEntry { $0.ptyId = info.ptyId }
         // Only now that the entry points to the new PTY does the old one go away (clients follow `ptyId`).
@@ -267,6 +279,7 @@ public actor SessionSupervisor {
         bridgeTask?.cancel()
         bridgeTask = nil
         bridgeHello = nil
+        pausedBy = nil
         await context.bridge.forget(sessionKey)
     }
 
@@ -358,11 +371,16 @@ public actor SessionSupervisor {
         }
         guard generation == self.generation, pid != nil else { return }
         bridgeHello = hello
+        pausedBy = hello.pausedBy
         if hello.capabilities["events.activity"] != true {
             notify("warning", "An older copy of the ide-bridge serves this omp (no activity or title events); the session's status and title will not update until it is restarted with the current omp IDE.")
+        } else if hello.capabilities["session.pause"] != true {
+            notify("warning", "This omp cannot be paused through the ide-bridge; its agents keep working while omp IDE is closed.")
         }
         await adopt(sessionFile: hello.sessionFile, sessionId: hello.sessionId, title: hello.title, replacingTitle: false)
         await becomeIdleIfStarting()
+        // An omp spawned while no omp IDE window is connected is paused right away.
+        Task { await self.syncPause() }
         for await event in await context.bridge.events(sessionKey) {
             guard generation == self.generation else { return }
             await handle(bridgeEvent: event)
@@ -374,14 +392,20 @@ public actor SessionSupervisor {
         let data = event["data"]
         switch kind {
         case "activity":
-            guard let state = data?["state"]?.stringValue, [.busy, .idle, .starting, .resuming].contains(status) else { return }
-            let new: SessionStatus = state == "busy" ? .busy : .idle
+            guard let state = data?["state"]?.stringValue, [.busy, .idle, .paused, .starting, .resuming].contains(status) else {
+                return
+            }
+            activity = state == "busy" ? .busy : .idle
+            let new: SessionStatus = pausedBy == nil ? activity : .paused
             let now = Date()
             status = new
             await updateEntry { entry in
                 entry.status = new
                 entry.lastActiveAt = now
             }
+        case "pause":
+            guard let paused = data?["paused"]?.boolValue else { return }
+            await notePause(PauseOwner(paused: paused, by: data?["by"]?.stringValue))
         case "title":
             guard let title = data?["title"]?.stringValue, !title.isEmpty else { return }
             await updateEntry { $0.title = title }
@@ -413,7 +437,55 @@ public actor SessionSupervisor {
     }
 
     private func becomeIdleIfStarting() async {
-        if status == .starting || status == .resuming { await setStatus(.idle) }
+        if status == .starting || status == .resuming { await setStatus(pausedBy == nil ? .idle : .paused) }
+    }
+
+    // MARK: - Pause
+
+    /// Brings omp's pause gate in line with the daemon's demand: closed while no omp IDE window is connected, and a pause
+    /// ompd engaged released once one is. A pause the user engaged is left alone either way. Concurrent calls coalesce
+    /// into one more pass. A no-op until the bridge's hello (which applies the demand) or when the bridge cannot pause.
+    public func syncPause() async {
+        if pauseSyncing {
+            pauseRecheck = true
+            return
+        }
+        pauseSyncing = true
+        defer { pauseSyncing = false }
+        repeat {
+            pauseRecheck = false
+            await syncPauseOnce()
+        } while pauseRecheck
+    }
+
+    private func syncPauseOnce() async {
+        guard pid != nil, stopping == nil, !stopRequested, bridgeHello?.capabilities["session.pause"] == true else { return }
+        let pause = context.pauseDemand.isOn
+        // Pausing: not while anyone's pause holds. Resuming: only ompd's own pause.
+        guard pause ? pausedBy == nil : pausedBy == .daemon else { return }
+        let generation = generation
+        do {
+            let result = try await context.bridge.call(
+                sessionKey, method: pause ? "session.pause" : "session.resume",
+                params: pause ? [:] : ["ifPausedBy": .string(PauseOwner.daemon.rawValue)], timeout: context.timings.bridgeCall)
+            guard generation == self.generation else { return }
+            await notePause(PauseOwner(paused: result["paused"]?.boolValue == true, by: result["pausedBy"]?.stringValue))
+        } catch {
+            guard generation == self.generation, pid != nil, stopping == nil else { return }
+            notify(
+                "warning",
+                pause
+                    ? "omp's agents could not be paused while omp IDE is closed (\(error)); they keep working."
+                    : "omp's agents could not be resumed (\(error)); dismiss omp's pause screen in the session to resume them.")
+        }
+    }
+
+    /// The gate is closed by `owner`, or open (nil): the status is `paused`, else the main agent's activity.
+    private func notePause(_ owner: PauseOwner?) async {
+        pausedBy = owner
+        guard [.busy, .idle, .paused].contains(status) else { return }
+        let new: SessionStatus = owner == nil ? activity : .paused
+        if new != status { await setStatus(new) }
     }
 
     // MARK: - Ownership

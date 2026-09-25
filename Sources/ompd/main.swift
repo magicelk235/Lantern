@@ -50,7 +50,9 @@ func status(json: Bool) async throws {
     else {
         fail("ompd is not running (no token at \(paths.token.path(percentEncoded: false)))")
     }
-    let client = IDEClient(socketPath: paths.socket.path(percentEncoded: false), token: token, clientVersion: "ompd-cli \(ompdVersion)")
+    // A cli client: asking for the status must not resume sessions ompd paused because no omp IDE window is open.
+    let client = IDEClient(
+        socketPath: paths.socket.path(percentEncoded: false), token: token, clientVersion: "ompd-cli \(ompdVersion)", clientKind: .cli)
     do {
         _ = try await client.connect()
     } catch {

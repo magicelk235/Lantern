@@ -170,7 +170,7 @@ private struct Sandbox {
 private let requiredCapabilities = [
     "session.info", "session.ensureOnDisk", "session.flush", "entry.append", "jobs.snapshot", "agents.snapshot",
     "agents.loadPersisted", "agent.revive", "agent.park", "agent.kill", "agent.prompt", "agent.message", "introspect",
-    "events.registry",
+    "events.registry", "session.pause",
 ]
 
 /// Real `omp --mode rpc --no-ui -e <staged ide-bridge.ts>`; no model call is made. Skipped when omp is not installed.
@@ -242,6 +242,47 @@ struct BridgeOmpIntegrationTests {
             #expect(events.compactMap { $0["seq"]?.intValue } == Array(1..<(events.count + 1)))
             #expect(!child.stderrText.contains("ide-bridge"), "\(child.stderrText)")
             await #expect(throws: BridgeError.disconnected) { try await server.call("itest", method: "session.info") }
+        } catch {
+            await server.stop()
+            throw error
+        }
+        await server.stop()
+    }
+
+    /// omp's pause gate through the bridge. Without a TUI (RPC mode) there is no pause screen: the gate alone.
+    @Test func pauseClosesOmpsGateAndEveryFlipIsPushed() async throws {
+        let omp = try #require(ompExecutable)
+        let sandbox = try Sandbox()
+        let server = BridgeServer(socketPath: bridgeSocketPath())
+        try await server.start()
+        let credentials = await server.expect(sessionKey: "pause")
+        let child = try sandbox.spawn(omp, adding: credentials.environment)
+        defer { child.killIfRunning() }
+        do {
+            await server.setExpectedPID(child.pid, for: "pause")
+            let hello = try await server.waitForHello("pause", timeout: .seconds(60))
+            #expect(hello.pausedBy == nil)
+
+            let paused = try await server.call("pause", method: "session.pause")
+            #expect(paused == ["paused": true, "pausedBy": "daemon", "changed": true, "screen": false])
+            let info = try await server.call("pause", method: "session.info")
+            #expect(info["paused"] == true && info["pausedBy"] == "daemon")
+            #expect(try await server.call("pause", method: "session.pause")["changed"] == false)
+            // A guard naming someone else leaves ompd's pause in place.
+            let guarded = try await server.call("pause", method: "session.resume", params: ["ifPausedBy": "user"])
+            #expect(guarded == ["paused": true, "pausedBy": "daemon", "changed": false, "screen": false])
+            let resumed = try await server.call("pause", method: "session.resume", params: ["ifPausedBy": "daemon"])
+            #expect(resumed == ["paused": false, "pausedBy": .null, "changed": true, "screen": false])
+            #expect(try await server.call("pause", method: "session.resume")["changed"] == false)
+            await #expect(throws: BridgeError.self) {
+                try await server.call("pause", method: "session.resume", params: ["ifPausedBy": "robot"])
+            }
+
+            child.closeStdin()
+            #expect(try await child.waitForExit().status == 0)
+            let flips = try await bridgeCollect(server.events("pause")).filter { $0["kind"] == "pause" }
+            #expect(flips.compactMap { $0["data"] } == [["paused": true, "by": "daemon"], ["paused": false, "by": "daemon"]])
+            #expect(flips.allSatisfy { $0["agentId"] == "Main" })
         } catch {
             await server.stop()
             throw error

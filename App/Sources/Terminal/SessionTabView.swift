@@ -112,7 +112,7 @@ struct SessionNotice {
             self.init("Resuming…", "ompd is starting omp again with this conversation.", "arrow.clockwise", .secondary, inProgress: true)
         case .starting:
             self.init("Starting omp…", "", "terminal", .secondary, inProgress: true)
-        case .busy, .idle:
+        case .busy, .idle, .paused:
             // omp runs; its TUI is not on screen (yet).
             switch session.terminal?.phase {
             case .failed(let message):
@@ -206,6 +206,7 @@ extension SessionStatus {
         case .resuming: "resuming"
         case .closed: "closed"
         case .needsAttention: "attention"
+        case .paused: "paused"
         }
     }
 
@@ -219,6 +220,7 @@ extension SessionStatus {
         case .resuming: "omp is resuming the session"
         case .closed: "Closed: omp is not running for this session"
         case .needsAttention: "omp kept stopping; ompd gave up resuming it"
+        case .paused: "Paused: the agents hold at their next step until you dismiss omp's pause screen"
         }
     }
 
@@ -230,6 +232,7 @@ extension SessionStatus {
         case .idle: .green
         case .interrupted: .orange
         case .needsAttention: .red
+        case .paused: .yellow
         case .closed, .starting, .busy, .resuming: .secondary
         }
     }

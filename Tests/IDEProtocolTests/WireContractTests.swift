@@ -34,8 +34,20 @@ private let terminal = PTYInfo(ptyId: "t1", cwd: "/Users/me", command: ["/bin/zs
 @Suite struct ClientFrameContractTests {
     @Test func helloIsTheExactWireShape() throws {
         let hello = ClientFrame.hello(Hello(protocolVersion: 2, clientVersion: "0.1 (7)", token: "abc"))
-        #expect(try encode(hello) == #"{"clientVersion":"0.1 (7)","protocolVersion":2,"token":"abc","type":"hello"}"#)
+        #expect(try encode(hello) == #"{"clientKind":"app","clientVersion":"0.1 (7)","protocolVersion":2,"token":"abc","type":"hello"}"#)
         #expect(try wire(hello).decoded == hello)
+        let cli = ClientFrame.hello(Hello(clientVersion: "ompd-cli", token: "abc", clientKind: .cli))
+        #expect(try wire(cli).json["clientKind"] == "cli")
+        #expect(try wire(cli).decoded == cli)
+    }
+
+    /// Only omp IDE windows keep the sessions running; a client that does not say what it is counts as one.
+    @Test func aHelloWithoutAClientKindIsAnAppWindow() throws {
+        let frame = try decode(ClientFrame.self, #"{"type":"hello","protocolVersion":4,"clientVersion":"0.1","token":"abc"}"#)
+        #expect(frame == .hello(Hello(protocolVersion: 4, clientVersion: "0.1", token: "abc", clientKind: .app)))
+        #expect(throws: DecodingError.self) {
+            try decode(ClientFrame.self, #"{"type":"hello","protocolVersion":4,"clientVersion":"0.1","token":"abc","clientKind":"robot"}"#)
+        }
     }
 
     @Test func requestIsTheExactWireShape() throws {
@@ -110,8 +122,8 @@ private let terminal = PTYInfo(ptyId: "t1", cwd: "/Users/me", command: ["/bin/zs
     }
 
     @Test func statusesUseTheirWireNames() throws {
-        let statuses: [SessionStatus] = [.starting, .busy, .idle, .interrupted, .resuming, .closed, .needsAttention]
-        #expect(try encode(statuses) == #"["starting","busy","idle","interrupted","resuming","closed","needs_attention"]"#)
+        let statuses: [SessionStatus] = [.starting, .busy, .idle, .interrupted, .resuming, .closed, .needsAttention, .paused]
+        #expect(try encode(statuses) == #"["starting","busy","idle","interrupted","resuming","closed","needs_attention","paused"]"#)
     }
 }
 

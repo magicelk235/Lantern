@@ -5,7 +5,8 @@ import Testing
 
 @testable import OmpdCore
 
-/// A `Daemon` over the fake omp TUI, serving a real socket under a short /tmp home.
+/// A `Daemon` over the fake omp TUI, serving a real socket under a short /tmp home. `pausable: false` stands for an omp
+/// whose bridge cannot pause; `pauseGrace` is the daemon's `detachedPauseGrace`.
 struct DaemonFixture {
     let temp: ShortTempDir
     let paths: AppSupportPaths
@@ -15,26 +16,30 @@ struct DaemonFixture {
     let token: String
     let workspace: String
     let daemon: Daemon
+    private let pausable: Bool
+    private let pauseGrace: Duration
 
-    init() async throws {
+    init(pausable: Bool = true, pauseGrace: Duration = .seconds(3)) async throws {
         let temp = try ShortTempDir()
-        try await self.init(temp: temp, omp: try FakeOmp(in: temp.url))
+        try await self.init(temp: temp, omp: try FakeOmp(in: temp.url), pausable: pausable, pauseGrace: pauseGrace)
     }
 
-    private init(temp: ShortTempDir, omp: FakeOmp) async throws {
+    private init(temp: ShortTempDir, omp: FakeOmp, pausable: Bool, pauseGrace: Duration) async throws {
         self.temp = temp
         self.omp = omp
+        self.pausable = pausable
+        self.pauseGrace = pauseGrace
         paths = AppSupportPaths(root: temp.url.appending(path: "home", directoryHint: .isDirectory))
         try paths.prepare()
         token = try paths.loadOrCreateToken()
         workspace = try temp.directory("workspace")
-        bridge = ScriptedBridge(omp: omp, connects: true)
+        bridge = ScriptedBridge(omp: omp, connects: true, pausable: pausable)
         locks = FakeLocks()
         let configuration = Daemon.Configuration(
             paths: paths, ompExecutable: omp.executable, ompArguments: ["--thinking", "off"],
             sessionDirectory: temp.url.appending(path: "omp-sessions").path(percentEncoded: false),
             bridgeExtension: "/fake/ide-bridge.ts", baseEnvironment: omp.environment, timings: .fastTests,
-            wakeHealthCheckDelay: .zero)
+            wakeHealthCheckDelay: .zero, detachedPauseGrace: pauseGrace)
         daemon = Daemon(
             configuration: configuration, token: token, bridge: bridge, locks: locks,
             ptys: PTYPool(snapshotDirectory: paths.ptySnapshots))
@@ -43,11 +48,13 @@ struct DaemonFixture {
 
     /// A second daemon on the same `$APP_SUPPORT` and fake omp, as after a daemon restart.
     func restarted() async throws -> DaemonFixture {
-        try await DaemonFixture(temp: temp, omp: omp)
+        try await DaemonFixture(temp: temp, omp: omp, pausable: pausable, pauseGrace: pauseGrace)
     }
 
-    func client() async throws -> Connected {
-        let client = IDEClient(socketPath: paths.socket.path(percentEncoded: false), token: token, clientVersion: "daemon-tests")
+    /// An omp IDE window (`app`), or a command-line client like `ompd status` (`cli`).
+    func client(_ kind: ClientKind = .app) async throws -> Connected {
+        let client = IDEClient(
+            socketPath: paths.socket.path(percentEncoded: false), token: token, clientVersion: "daemon-tests", clientKind: kind)
         let welcome = try await client.connect()
         return Connected(client: client, welcome: welcome)
     }

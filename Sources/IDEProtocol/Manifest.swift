@@ -95,6 +95,9 @@ public enum SessionStatus: String, Sendable, Codable {
     case closed
     /// Cannot be resumed without user action (e.g. workspace folder missing).
     case needsAttention = "needs_attention"
+    /// omp runs, its agents held by omp's pause gate (`/pause`): by ompd while no omp IDE window is connected, or by
+    /// the user, whose pause outlasts reconnects until they dismiss omp's pause screen.
+    case paused
 }
 
 /// Durable, relaunchable copy of an omp named service. omp's broker prunes its

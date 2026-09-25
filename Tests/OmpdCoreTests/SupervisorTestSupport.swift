@@ -113,26 +113,35 @@ struct FakeOmp: Sendable {
 
 /// Scripted `SessionBridgeLink` for the fake omp: the `hello` arrives once the spawn registered by `setExpectedPID`
 /// started (only when `connects`; else the wait fails at once like a timeout) and names the session file that spawn
-/// serves. `session.shutdown` (advertised when `shutdown`) makes the fake exit like omp's dispose. Calls are recorded;
-/// events are pushed by the test.
+/// serves. `session.shutdown` (advertised when `shutdown`) makes the fake exit like omp's dispose. Unless `pausable` is
+/// off it plays omp's pause gate like the ide-bridge: `session.pause`/`session.resume` flip it and push `pause` events,
+/// and `userPause`/`userResume` are the user's /pause and pause screen. Calls are recorded; other events are pushed by
+/// the test.
 actor ScriptedBridge: SessionBridgeLink {
     private let connects: Bool
     private let shutdown: Bool
+    private let pausable: Bool
     private let omp: FakeOmp
     private var pids: [SessionKey: Int32] = [:]
     private var streams: [SessionKey: (stream: AsyncStream<JSONValue>, sink: AsyncStream<JSONValue>.Continuation)] = [:]
+    /// Who holds each spawn's pause gate closed.
+    private var paused: [SessionKey: PauseOwner] = [:]
     private(set) var calls: [String] = []
+    /// `calls` with the session each went to.
+    private(set) var sessionCalls: [(sessionKey: SessionKey, method: String)] = []
 
-    init(omp: FakeOmp, connects: Bool, shutdown: Bool = true) {
+    init(omp: FakeOmp, connects: Bool, shutdown: Bool = true, pausable: Bool = true) {
         self.omp = omp
         self.connects = connects
         self.shutdown = shutdown
+        self.pausable = pausable
     }
 
     func expect(sessionKey: SessionKey) -> BridgeCredentials {
         streams.removeValue(forKey: sessionKey)?.sink.finish()
         let (stream, sink) = AsyncStream.makeStream(of: JSONValue.self)
         streams[sessionKey] = (stream, sink)
+        paused[sessionKey] = nil
         return BridgeCredentials(socketPath: "/fake/bridge.sock", sessionKey: sessionKey, token: String(repeating: "0", count: 64), daemonPID: getpid())
     }
 
@@ -144,18 +153,57 @@ actor ScriptedBridge: SessionBridgeLink {
         let file = try await eventuallyValue("fake omp \(pid) to start", timeout: timeout) { omp.sessionFile(of: pid) }
         return BridgeHello(
             sessionKey: sessionKey, pid: pid, ompVersion: "18.3.1",
-            capabilities: ["session.info": true, "session.shutdown": shutdown, "events.activity": true, "events.title": true],
+            capabilities: [
+                "session.info": true, "session.shutdown": shutdown, "events.activity": true, "events.title": true,
+                "session.pause": pausable,
+            ],
             sessionId: "fake-session",
-            sessionFile: file, onDisk: true, cwd: "/", artifactsDir: nil, title: nil, raw: ["t": "hello"])
+            sessionFile: file, onDisk: true, cwd: "/", artifactsDir: nil, title: nil, pausedBy: nil, raw: ["t": "hello"])
     }
 
     func call(_ sessionKey: SessionKey, method: String, params: JSONValue, timeout: Duration) throws -> JSONValue {
         calls.append(method)
-        if method == "session.shutdown", let pid = pids[sessionKey] {
+        sessionCalls.append((sessionKey, method))
+        switch method {
+        case "session.shutdown":
+            guard let pid = pids[sessionKey] else { return [:] }
             kill(pid, SIGUSR1)
             return ["accepted": true]
+        case "session.pause" where pausable:
+            let changed = paused[sessionKey] == nil
+            if changed { setGate(sessionKey, .daemon) }
+            return pauseResult(sessionKey, changed: changed)
+        case "session.resume" where pausable:
+            let guardOwner = params["ifPausedBy"]?.stringValue.flatMap(PauseOwner.init(rawValue:))
+            let changed = paused[sessionKey] != nil && (guardOwner == nil || paused[sessionKey] == guardOwner)
+            if changed { setGate(sessionKey, nil) }
+            return pauseResult(sessionKey, changed: changed)
+        default:
+            return [:]
         }
-        return [:]
+    }
+
+    /// The user's /pause in the session's TUI.
+    func userPause(_ sessionKey: SessionKey) {
+        if paused[sessionKey] == nil { setGate(sessionKey, .user) }
+    }
+
+    /// The user dismissed omp's pause screen.
+    func userResume(_ sessionKey: SessionKey) {
+        if paused[sessionKey] != nil { setGate(sessionKey, nil, by: .user) }
+    }
+
+    func pausedBy(_ sessionKey: SessionKey) -> PauseOwner? { paused[sessionKey] }
+
+    /// Closes (`owner`) or opens (nil) the gate and pushes `pause {paused, by}` as the bridge's gate listener does.
+    private func setGate(_ sessionKey: SessionKey, _ owner: PauseOwner?, by opener: PauseOwner = .daemon) {
+        paused[sessionKey] = owner
+        push("pause", ["paused": .bool(owner != nil), "by": .string((owner ?? opener).rawValue)], to: sessionKey)
+    }
+
+    private func pauseResult(_ sessionKey: SessionKey, changed: Bool) -> JSONValue {
+        ["paused": .bool(paused[sessionKey] != nil), "pausedBy": paused[sessionKey].map { .string($0.rawValue) } ?? .null,
+         "changed": .bool(changed), "screen": .bool(paused[sessionKey] != nil)]
     }
 
     func events(_ sessionKey: SessionKey) -> AsyncStream<JSONValue> {
@@ -170,6 +218,7 @@ actor ScriptedBridge: SessionBridgeLink {
     func forget(_ sessionKey: SessionKey) {
         streams.removeValue(forKey: sessionKey)?.sink.finish()
         pids[sessionKey] = nil
+        paused[sessionKey] = nil
     }
 }
 

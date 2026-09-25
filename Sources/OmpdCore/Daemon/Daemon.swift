@@ -6,6 +6,7 @@ import os
 
 /// ompd: owns every omp session (one `SessionSupervisor` per manifest entry, each running omp's TUI on a
 /// session PTY) and every terminal (the PTY pool), and serves the IDE protocol on `$APP_SUPPORT/run/ompd.sock`.
+/// While no omp IDE window is connected, every session is paused.
 ///
 /// Lifecycle: `start()` (manifest, supervisors, socket) → `restore()` (Regime B2: terminals from their snapshots,
 /// every session the user did not close respawned with `--resume`) → … → `shutdown()` (the graceful path).
@@ -25,11 +26,15 @@ public actor Daemon {
         public var timings: SupervisorTimings
         /// Wake to the per-session `session.info` health check.
         public var wakeHealthCheckDelay: Duration
+        /// How long no omp IDE window must be connected (after the last one disconnected, or after `start()`) before
+        /// every session is paused: an app relaunch or a reconnect blip within it pauses nothing.
+        public var detachedPauseGrace: Duration
 
         public init(
             paths: AppSupportPaths, ompExecutable: String? = nil, ompArguments: [String] = [], sessionDirectory: String? = nil,
             bridgeExtension: String? = nil, baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
-            timings: SupervisorTimings = SupervisorTimings(), wakeHealthCheckDelay: Duration = .seconds(10)
+            timings: SupervisorTimings = SupervisorTimings(), wakeHealthCheckDelay: Duration = .seconds(10),
+            detachedPauseGrace: Duration = .seconds(3)
         ) {
             self.paths = paths
             self.ompExecutable = ompExecutable
@@ -39,6 +44,7 @@ public actor Daemon {
             self.baseEnvironment = baseEnvironment
             self.timings = timings
             self.wakeHealthCheckDelay = wakeHealthCheckDelay
+            self.detachedPauseGrace = detachedPauseGrace
         }
     }
 
@@ -56,9 +62,15 @@ public actor Daemon {
     private let locks: any SessionLockProvider
     private let readOnly = ReadOnlyMode()
     private let broadcaster = Broadcaster()
+    private let pauseDemand = PauseDemand()
     private var server: IDEServer?
     private var supervisors: [SessionKey: SessionSupervisor] = [:]
     private var shutdownTask: Task<Void, Never>?
+    /// Connected omp IDE windows (`ClientKind.app`); `ompd status` and other cli clients do not count.
+    private var appConnections: Set<UUID> = []
+    /// Sleeps out `detachedPauseGrace` once no window is connected, then pauses every session; a grace that was cancelled
+    /// or superseded (its `id` no longer here) does nothing.
+    private var detachedPause: (id: UUID, task: Task<Void, Never>)?
 
     /// Nothing touches the disk or the socket before `start()`. `paths` must already be `prepare()`d.
     public init(
@@ -77,7 +89,8 @@ public actor Daemon {
     // MARK: - Lifecycle
 
     /// Loads the manifest (dropping the previous daemon's runtime state: no PTY and no omp survived it), creates a
-    /// supervisor per session, and starts serving clients.
+    /// supervisor per session, and starts serving clients. No window is connected yet: unless one connects within
+    /// `detachedPauseGrace`, the sessions are paused.
     public func start() async throws {
         precondition(server == nil && shutdownTask == nil, "Daemon.start() called twice")
         try await manifest.store.load()
@@ -100,6 +113,7 @@ public actor Daemon {
         try await server.start()
         self.server = server
         broadcaster.attach(server)
+        if appConnections.isEmpty { scheduleDetachedPause() }
     }
 
     /// Regime B2: terminals come back from their snapshots, and every session the user did not close is
@@ -131,6 +145,8 @@ public actor Daemon {
 
     private func performShutdown() async {
         daemonLog.notice("shutting down")
+        detachedPause?.task.cancel()
+        detachedPause = nil
         do {
             try await ptys.snapshotAll()
         } catch {
@@ -181,7 +197,7 @@ public actor Daemon {
         let broadcaster = broadcaster
         return SupervisorContext(
             manifest: manifest, ptys: ptys, bridge: bridge, locks: locks, bridgeExtension: configuration.bridgeExtension,
-            baseEnvironment: configuration.baseEnvironment, timings: configuration.timings,
+            baseEnvironment: configuration.baseEnvironment, timings: configuration.timings, pauseDemand: pauseDemand,
             persistenceFailed: { error in Self.enterReadOnly(readOnly, broadcaster, failedWith: error) },
             notify: { broadcaster.send(.notice($0)) })
     }
@@ -378,6 +394,47 @@ public actor Daemon {
         guard let daemon else { throw DaemonError(.internal, "ompd is shutting down") }
         return daemon
     }
+
+    // MARK: - Paused while no window is connected
+
+    private func appConnected(_ id: UUID) {
+        appConnections.insert(id)
+        detachedPause?.task.cancel()
+        detachedPause = nil
+        guard pauseDemand.set(false) else { return }
+        daemonLog.notice("an omp IDE window connected; resuming the sessions ompd paused")
+        syncPauses()
+    }
+
+    private func appDisconnected(_ id: UUID) {
+        guard appConnections.remove(id) != nil, appConnections.isEmpty, shutdownTask == nil else { return }
+        scheduleDetachedPause()
+    }
+
+    private func scheduleDetachedPause() {
+        detachedPause?.task.cancel()
+        let id = UUID()
+        let grace = configuration.detachedPauseGrace
+        detachedPause = (id, Task { [weak self] in
+            try? await Task.sleep(for: grace)
+            await self?.pauseDetached(id)
+        })
+    }
+
+    private func pauseDetached(_ id: UUID) {
+        guard detachedPause?.id == id else { return } // cancelled or superseded meanwhile
+        detachedPause = nil
+        guard appConnections.isEmpty, shutdownTask == nil, pauseDemand.set(true) else { return }
+        daemonLog.notice("no omp IDE window for \(self.configuration.detachedPauseGrace, privacy: .public); pausing every session")
+        syncPauses()
+    }
+
+    /// Every supervisor applies the demand on its own; a slow bridge holds up only its own session.
+    private func syncPauses() {
+        for supervisor in supervisors.values {
+            Task { await supervisor.syncPause() }
+        }
+    }
 }
 
 extension Daemon: IDERequestHandler {
@@ -389,7 +446,12 @@ extension Daemon: IDERequestHandler {
         await router.route(request, from: connection)
     }
 
+    public func connectionOpened(_ connection: IDEConnection, hello: Hello) async {
+        if hello.clientKind == .app { appConnected(connection.id) }
+    }
+
     public func connectionClosed(_ connection: IDEConnection) async {
+        appDisconnected(connection.id)
         await ptys.detachAll(subscriber: connection.id)
     }
 }
