@@ -10,10 +10,12 @@ let package = Package(
         .library(name: "IDETransport", targets: ["IDETransport"]),
         .library(name: "OmpdCore", targets: ["OmpdCore"]),
         .library(name: "IDEModel", targets: ["IDEModel"]),
+        .library(name: "IDEState", targets: ["IDEState"]),
         .executable(name: "ompd", targets: ["ompd"]),
     ],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.2.0"),
+        .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
     ],
     targets: [
         // omp `--mode rpc|rpc-ui` client: JSONL framing, v2 rpc_chunk reassembly, typed commands/events, process transport.
@@ -30,12 +32,16 @@ let package = Package(
         .executableTarget(name: "ompd", dependencies: ["OmpdCore", "IDETransport"]),
         // App-side state (no AppKit/SwiftUI): daemon connection, per-session sync, transcript reducer.
         .target(name: "IDEModel", dependencies: ["IDETransport"]),
+        // App-owned persistent state (no AppKit/SwiftUI): windows, tabs, per-session UI and hot-exit dirty buffers in
+        // `state.sqlite`.
+        .target(name: "IDEState", dependencies: ["IDEProtocol", .product(name: "GRDB", package: "GRDB.swift")]),
 
         .testTarget(name: "OmpRPCTests", dependencies: ["OmpRPC"], exclude: ["Fixtures"]),
         .testTarget(name: "IDEProtocolTests", dependencies: ["IDEProtocol"]),
         .testTarget(name: "IDETransportTests", dependencies: ["IDETransport"]),
         .testTarget(name: "OmpdCoreTests", dependencies: ["OmpdCore"]),
         .testTarget(name: "IDEModelTests", dependencies: ["IDEModel"], resources: [.copy("Fixtures")]),
+        .testTarget(name: "IDEStateTests", dependencies: ["IDEState", .product(name: "GRDB", package: "GRDB.swift")]),
     ],
     swiftLanguageModes: [.v6]
 )

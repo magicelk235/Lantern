@@ -35,6 +35,8 @@ targets:
     dependencies:
       - package: OmpIDE
         product: IDEModel
+      - package: OmpIDE
+        product: IDEState
       # The daemon ships inside the app so SMAppService can register it.
       - target: ompd
         embed: true

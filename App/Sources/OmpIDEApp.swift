@@ -4,11 +4,14 @@ import SwiftUI
 
 @main
 struct OmpIDEApp: App {
-    @State private var app = AppState()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+
+    private var app: AppState { delegate.app }
 
     var body: some Scene {
-        Window("omp IDE", id: "main") {
+        Window("omp IDE", id: AppState.mainWindowID) {
             ContentView(app: app)
+                .background(WindowAccessor { app.attach($0) })
                 .task { app.start() }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                     // The user may have just allowed the agent in System Settings › Login Items.
@@ -30,53 +33,42 @@ struct OmpIDEApp: App {
     }
 }
 
-/// App-wide state: the daemon link, the agent registration and what the window shows.
-@MainActor @Observable
-final class AppState {
-    let connection = DaemonConnection(
-        clientVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev")
-    let agent = DaemonAgent()
-    /// The session shown in the detail pane; always opened (subscribed) before it is selected.
-    private(set) var selection: SessionKey?
-    var alert: AlertMessage?
+/// Owns the app state so quitting can save it first.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let app = AppState()
 
-    struct AlertMessage: Identifiable {
-        let id = UUID()
-        let title: String
-        let message: String
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        app.flushState()
+        return .terminateNow
     }
 
-    func start() {
-        agent.registerIfNeeded()
-        connection.start()
+    func applicationWillTerminate(_ notification: Notification) {
+        app.flushState()
     }
+}
 
-    func select(_ sessionKey: SessionKey?) {
-        if let sessionKey { connection.open(sessionKey) }
-        selection = sessionKey
-    }
+/// Hands the `NSWindow` hosting the view to `onAttach` whenever the view moves into a window.
+struct WindowAccessor: NSViewRepresentable {
+    let onAttach: @MainActor (NSWindow) -> Void
 
-    /// Picks a workspace folder and asks ompd to start omp there with the default approval mode.
-    func newSession() {
-        guard let folder = WorkspacePicker.choose() else { return }
-        let mode = UserDefaults.standard.string(forKey: AppSettings.defaultApprovalModeKey).flatMap(ApprovalMode.init(rawValue:))
-        Task {
-            do {
-                let entry = try await connection.createSession(workspace: folder, approvalMode: mode)
-                select(entry.sessionKey)
-            } catch {
-                alert = AlertMessage(title: "Could not start a session", message: error.userMessage)
-            }
+    func makeNSView(context: Context) -> NSView { AttachingView(onAttach: onAttach) }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class AttachingView: NSView {
+        let onAttach: @MainActor (NSWindow) -> Void
+
+        init(onAttach: @escaping @MainActor (NSWindow) -> Void) {
+            self.onAttach = onAttach
+            super.init(frame: .zero)
         }
-    }
 
-    func close(_ sessionKey: SessionKey) {
-        Task {
-            do {
-                try await connection.closeSession(sessionKey)
-            } catch {
-                alert = AlertMessage(title: "Could not close the session", message: error.userMessage)
-            }
+        required init?(coder: NSCoder) { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window { onAttach(window) }
         }
     }
 }

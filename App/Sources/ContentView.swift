@@ -1,19 +1,28 @@
 import IDEModel
+import IDEState
 import SwiftUI
 
 struct ContentView: View {
     @Bindable var app: AppState
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $app.columnVisibility) {
             SidebarView(app: app)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 270, max: 420)
+                .onGeometryChange(for: Double.self) { $0.size.width } action: { app.sidebarWidthChanged($0) }
+                // Outermost: the split view reads the column width from the column's root view.
+                .navigationSplitViewColumnWidth(min: 220, ideal: app.initialSidebarWidth, max: 420)
         } detail: {
             VStack(spacing: 0) {
                 StatusBanners(connection: app.connection, agent: app.agent)
-                if let key = app.selection, let model = app.connection.openSessions[key] {
-                    SessionDetailView(model: model, onClose: { app.close(key) })
-                        .id(key)
+                if let strip = app.tabs.selectedStrip {
+                    TabStrip(app: app, strip: strip)
+                }
+                if let key = app.selectedSession, let model = app.connection.openSessions[key] {
+                    SessionDetailView(
+                        model: model, savedUI: app.savedUI(for: key),
+                        onScrollAnchorChange: { app.scrollAnchorChanged($0, in: model) }, onClose: { app.close(key) }
+                    )
+                    .id(key)
                 } else {
                     ContentUnavailableView {
                         Label("No Session", systemImage: "bubble.left.and.text.bubble.right")
@@ -48,7 +57,7 @@ struct SidebarView: View {
     @Bindable var app: AppState
 
     var body: some View {
-        List(selection: Binding(get: { app.selection }, set: { app.select($0) })) {
+        List(selection: Binding(get: { app.selectedSession }, set: { key in if let key { app.showSession(key) } })) {
             ForEach(app.connection.workspaces) { workspace in
                 Section {
                     ForEach(workspace.sessions, id: \.sessionKey) { entry in

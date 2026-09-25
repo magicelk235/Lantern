@@ -1,13 +1,17 @@
 import IDEModel
+import IDEState
 import SwiftUI
 
 struct SessionDetailView: View {
     let model: SessionViewModel
+    /// The session's UI when it was last on screen, in this run or the previous one.
+    let savedUI: SessionUIState?
+    let onScrollAnchorChange: (String?) -> Void
     let onClose: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            TranscriptView(model: model)
+            TranscriptView(model: model, savedUI: savedUI, onAnchorChange: onScrollAnchorChange)
             Divider()
             ComposerView(model: model)
         }
@@ -52,33 +56,83 @@ struct SyncIndicator: View {
 
 /// The session's transcript. While the end marker is the row at the bottom edge, new output keeps the view pinned to
 /// the bottom; scrolling up anchors an older row instead (output then grows out of view), scrolling back down re-pins.
+///
+/// The anchor row is reported whenever it changes and restored when the view comes back: at once if the row is there,
+/// else when the journal replay after a relaunch brings it. Once the replay passed the seq the anchor was saved at
+/// without bringing it (the transcript was rebuilt differently), the view stays pinned to the bottom.
 struct TranscriptView: View {
     let model: SessionViewModel
+    let onAnchorChange: (String?) -> Void
     @State private var bottomRow: String? = TranscriptView.end
+    /// The saved anchor, until it is restored or given up.
+    @State private var pending: PendingAnchor?
+    /// Leading items already searched for the pending anchor (items are only ever appended).
+    @State private var searched = 0
     private static let end = "transcript-end"
 
+    private struct PendingAnchor {
+        let row: String
+        /// The replay has brought everything that was on screen once `lastSeq` reaches this.
+        let bySeq: Seq
+    }
+
+    init(model: SessionViewModel, savedUI: SessionUIState?, onAnchorChange: @escaping (String?) -> Void) {
+        self.model = model
+        self.onAnchorChange = onAnchorChange
+        _pending = State(initialValue: savedUI.flatMap { ui in ui.scrollAnchor.map { PendingAnchor(row: $0, bySeq: ui.lastSeq) } })
+    }
+
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
-                ForEach(model.items) { item in
-                    TranscriptRow(item: item, model: model)
-                        .opacity(item.isLost ? 0.45 : 1)
-                        .help(item.isLost ? "omp never saved this output; it is not part of the model's context" : "")
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(model.items) { item in
+                        TranscriptRow(item: item, model: model)
+                            .opacity(item.isLost ? 0.45 : 1)
+                            .help(item.isLost ? "omp never saved this output; it is not part of the model's context" : "")
+                    }
+                    Color.clear
+                        .frame(height: 1)
+                        .id(Self.end)
                 }
-                Color.clear
-                    .frame(height: 1)
-                    .id(Self.end)
+                .scrollTargetLayout()
+                .padding(.horizontal, 24)
+                .padding(.vertical, 16)
+                .frame(maxWidth: 900, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
-            .scrollTargetLayout()
-            .padding(.horizontal, 24)
-            .padding(.vertical, 16)
-            .frame(maxWidth: 900, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            .scrollPosition(id: $bottomRow, anchor: .bottom)
+            // Resizing the window keeps the top edge where it was; a pinned transcript goes back to its end once the
+            // new size is laid out (a scroll requested during that layout is dropped).
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in
+                guard bottomRow == Self.end else { return }
+                Task { @MainActor in proxy.scrollTo(Self.end, anchor: .bottom) }
+            }
+            .overlay {
+                if model.items.isEmpty { emptyState }
+            }
+            .onAppear(perform: restoreAnchor)
+            .onChange(of: model.lastSeq) { restoreAnchor() }
+            .onChange(of: bottomRow) { _, row in
+                // Scrolling before the saved row came back wins over restoring it.
+                pending = nil
+                onAnchorChange(row == Self.end ? nil : row)
+            }
         }
-        .scrollPosition(id: $bottomRow, anchor: .bottom)
-        .overlay {
-            if model.items.isEmpty { emptyState }
+    }
+
+    private func restoreAnchor() {
+        guard let pending else { return }
+        let items = model.items
+        if searched > items.count { searched = 0 } // rebuilt from a snapshot
+        if items[searched...].contains(where: { $0.id == pending.row }) {
+            self.pending = nil
+            // Next turn: a position set while the rows are first laid out is dropped.
+            Task { @MainActor in bottomRow = pending.row }
+        } else if model.lastSeq >= pending.bySeq {
+            self.pending = nil
         }
+        searched = items.count
     }
 
     @ViewBuilder private var emptyState: some View {
