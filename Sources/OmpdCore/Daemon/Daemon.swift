@@ -180,18 +180,27 @@ public actor Daemon {
             manifest: manifest, journalDirectory: configuration.paths.journalDir, bridge: bridge, locks: locks,
             bridgeExtension: configuration.bridgeExtension, baseEnvironment: configuration.baseEnvironment,
             timings: configuration.timings, readOnly: readOnly,
-            journalFailed: { key, error in
-                guard readOnly.trip() else { return }
-                daemonLog.fault("journal of \(key, privacy: .public) failed (\(String(describing: error), privacy: .public)); read-only mode")
-                // Out of band (seq 0): the journal cannot take it. Clients apply only seqs above what they hold, so
-                // this is a banner hint, never a record.
-                let notice = DaemonEvent.notice(
-                    level: "error",
-                    message: "The journal could not be written (\(error)). ompd is read-only: omp keeps running but its output is no longer recorded and new work is refused. Free disk space and restart ompd.")
-                if let payload = try? JSONValue(encoding: notice) {
-                    broadcaster.send(.event(JournalRecord(sessionKey: key, seq: 0, ts: Date(), kind: .daemon, payload: payload)))
-                }
-            })
+            journalFailed: { key, error in Self.enterReadOnly(readOnly, broadcaster, journalOf: key, failedWith: error) })
+    }
+
+    /// A journal append failed (disk full, I/O error): read-only for the rest of this daemon's life.
+    nonisolated func journalFailed(_ key: SessionKey, _ error: any Error) {
+        Self.enterReadOnly(readOnly, broadcaster, journalOf: key, failedWith: error)
+    }
+
+    private static func enterReadOnly(
+        _ readOnly: ReadOnlyMode, _ broadcaster: Broadcaster, journalOf key: SessionKey, failedWith error: any Error
+    ) {
+        guard readOnly.trip() else { return }
+        daemonLog.fault("journal of \(key, privacy: .public) failed (\(String(describing: error), privacy: .public)); read-only mode")
+        // Out of band (seq 0): the journal cannot take it. Clients apply only seqs above what they hold, so this is a
+        // banner hint for every connected client, never a journal record.
+        let notice = DaemonEvent.notice(
+            level: "error",
+            message: "The journal could not be written (\(error)). ompd is read-only: omp keeps running but its output is no longer recorded and new work is refused. Free disk space and restart ompd.")
+        if let payload = try? JSONValue(encoding: notice) {
+            broadcaster.send(.event(JournalRecord(sessionKey: key, seq: 0, ts: Date(), kind: .daemon, payload: payload)))
+        }
     }
 
     private func supervisor(_ key: SessionKey) throws -> SessionSupervisor {

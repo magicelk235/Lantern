@@ -267,6 +267,54 @@ import Testing
         await fixture.daemon.shutdown()
     }
 
+    @Test func journalFailureMakesTheDaemonReadOnly() async throws {
+        let fixture = try await DaemonFixture()
+        let connected = try await fixture.client()
+        let client = connected.client
+        let key = try await fixture.createSession(connected).sessionKey
+        fixture.daemon.journalFailed(key, StorageError.system(operation: "write", path: "/journal", code: ENOSPC))
+
+        #expect(try await client.call(DaemonStatus.self, Empty()).readOnly)
+        try await eventually("read-only notice pushed to every client") {
+            connected.pushes.contains {
+                guard case .event(let record) = $0, record.seq == 0, case .notice("error", let message)? = record.daemonEvent else { return false }
+                return record.sessionKey == key && message.contains("read-only")
+            }
+        }
+        let refusedPrompt = await #expect(throws: DaemonError.self) {
+            try await client.call(OmpCommand.self, .init(sessionKey: key, command: ["type": "prompt", "message": "x"]))
+        }
+        #expect(refusedPrompt?.code == .readOnly)
+        let refusedCreate = await #expect(throws: DaemonError.self) { try await fixture.createSession(connected) }
+        #expect(refusedCreate?.code == .readOnly)
+        // Reads and control still work: omp keeps being drained and answering.
+        #expect(try await client.call(OmpCommand.self, .init(sessionKey: key, command: ["type": "get_state"]))["sessionId"] == "fake-session")
+        #expect(!fixture.omp.received.contains { $0["type"] == "prompt" })
+        await connected.close()
+        await fixture.daemon.shutdown()
+    }
+
+    @Test func sleepPersistsTheManifestAndWakeHealthChecksEverySession() async throws {
+        let fixture = try await DaemonFixture()
+        let connected = try await fixture.client()
+        let key = try await fixture.createSession(connected).sessionKey
+        _ = try await connected.client.call(Subscribe.self, .init(sessionKey: key, since: 0))
+        _ = try await connected.client.call(OmpCommand.self, .init(sessionKey: key, command: ["type": "prompt", "message": "hi"]))
+        try await connected.waitForEvent(key, "settled") { $0.ompType == "session_settled" }
+
+        await fixture.daemon.prepareForSleep()
+        let lastSeq = try #require(connected.events(key).last?.seq)
+        #expect(try fixture.manifestOnDisk().sessions.first { $0.sessionKey == key }?.lastSeq == lastSeq)
+
+        await fixture.daemon.didWake()
+        try await connected.waitForEvent(key, "health check notice") {
+            guard case .notice("info", let message)? = $0.daemonEvent else { return false }
+            return message.hasPrefix("Wake health check: omp answered get_state") && message.contains("settled: yes")
+        }
+        await connected.close()
+        await fixture.daemon.shutdown()
+    }
+
     @Test func badRequestsAreRefused() async throws {
         let fixture = try await DaemonFixture()
         let connected = try await fixture.client()
