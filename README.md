@@ -1,21 +1,20 @@
 # omp IDE
 
-Native macOS IDE for [omp](https://github.com/can1357/oh-my-pi) (Swift 6, SwiftUI + AppKit, macOS 14+). The app is a thin client; the `ompd` daemon (a LaunchAgent) owns every omp process, terminal and a replayable event journal, so quitting the app never stops the agents.
+Native macOS IDE for [omp](https://github.com/can1357/oh-my-pi) (Swift 6, SwiftUI + AppKit, macOS 14+). Each session is omp's own TUI running in a terminal tab; the `ompd` daemon (a LaunchAgent) owns every omp TUI and terminal in its own PTYs and mirrors their screens, so quitting the app never stops the agents and reopening shows exactly what was there.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `Sources/OmpRPC` | omp `--mode rpc/rpc-ui` client: JSONL framing, v2 `rpc_chunk` reassembly, `OmpProcess` |
 | `Sources/IDEProtocol` | daemon ↔ app wire contract and `$APP_SUPPORT` layout |
 | `Sources/IDETransport` | length-prefixed frames over a unix socket (`IDEServer`, `IDEClient`, `IDERouter`) |
-| `Sources/OmpdCore` | daemon: journal, manifest, session supervisor, PTY pool, ide-bridge server, power observers |
+| `Sources/OmpdCore` | daemon: manifest, session supervisor (omp TUIs in PTYs, respawn with `--resume`), PTY pool with headless screen mirrors, ide-bridge server + ownership lock, power observers |
 | `Sources/ompd` | `ompd run \| status [--json] \| --version` |
 | `Sources/IDEModel` | app-side models: daemon connection, session TUIs that follow omp from PTY to PTY (`SessionTerminal`), terminal models (PTY attach, serial input, push-driven PTY registry) |
 | `Sources/IDEEditorModel` | editor logic without AppKit: text file read/atomic save, content-hash buffer state machine (dirty, revert, external change, hot-exit restore), line diff, navigator listing, FSEvents watcher |
 | `bridge/ide-bridge.ts` | omp extension loaded into every daemon-owned omp (agent registry, revive, ownership lock) |
 | `App/` | XcodeGen spec + SwiftUI sources for `omp IDE.app` (embeds `ompd` and its LaunchAgent plist) |
-| `scripts/` | `dev-launchagent.sh` (dev LaunchAgent), `acceptance.sh` (Phase 1 acceptance with real omp) |
+| `scripts/` | `dev-launchagent.sh` (dev LaunchAgent), `acceptance.sh` (TUI-session acceptance with real omp) |
 
 ## Build
 
@@ -24,7 +23,7 @@ The checkout lives in an iCloud-synced folder, where build products pick up exte
 ```sh
 xcodebuild -downloadComponent MetalToolchain   # once; SwiftTerm compiles Metal shaders
 swift build && swift test                      # package + tests
-./scripts/acceptance.sh                         # Phase 1 acceptance (real omp, spends a few haiku calls)
+./scripts/acceptance.sh                         # acceptance with real omp (spends a few haiku calls)
 
 cd App && xcodegen generate --spec project.yml
 xcodebuild -project OmpIDE.xcodeproj -scheme "omp IDE" -configuration Debug \
@@ -47,10 +46,10 @@ With `OMPD_HOME` set, the app does not register the production LaunchAgent (`com
 
 | Phase | State |
 |---|---|
-| 1 ompd core | done. `scripts/acceptance.sh`: after a reconnect with `since`, the replayed stream matches an always-connected client byte for byte; `launchctl kickstart -k` mid-run resumes the session (`session_exit` normal, `--resume`) |
-| 2 App shell | done for Regime A: ⌘Q during a 3-level nested subagent run with a running terminal and a dirty editor, then relaunch, restores everything and the agents never notice. Regime B2 (real logout/reboot) not yet exercised |
+| 1 ompd core | done (rebuilt for TUI sessions). `scripts/acceptance.sh`: a prompt typed into the session TUI runs a nested task while a client detaches and reattaches; `launchctl kickstart -k` mid-run respawns the session with `--resume` in a new PTY that continues the old screen |
+| 2 App shell | done for Regime A: session tabs are omp's TUI; ⌘Q mid-tool, relaunch → the tab reattaches and shows the finished run; editor/terminal tabs and unsaved edits restore. Regime B2 (real logout/reboot) not yet exercised |
 | 3 Regime B (continuation policy, service relaunch) | not started |
 | 4 Agent supervision UX (agent tree, jobs, director, session picker) | not started |
-| 5 Hardening (upgrades, journal compaction, disk pressure) | not started |
+| 5 Hardening (upgrades, disk pressure) | not started |
 
 Known gaps: production `SMAppService` registration hasn't run with a Developer ID build.
