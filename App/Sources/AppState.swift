@@ -15,8 +15,10 @@ final class AppState {
     let agent = DaemonAgent()
     /// Open files and the file navigators.
     let editors: Editors
-    /// Detail-area tabs, one strip per workspace. The selected tab is what the detail area shows; when it is a
-    /// session, the sidebar highlights it.
+    /// Terminals: PTYs in ompd, shown as `.terminal` tabs.
+    let terminals: TerminalsController
+    /// Detail-area tabs, one strip per workspace. The selected tab is what the detail area shows and what the sidebar
+    /// highlights.
     private(set) var tabs: TabLayout
     /// `.detailOnly` while the user hid the sidebar.
     var columnVisibility: NavigationSplitViewVisibility {
@@ -44,6 +46,7 @@ final class AppState {
         let restored = persistence.restoredWindow
         editors = Editors(persistence: persistence)
         tabs = restored?.tabs ?? TabLayout()
+        terminals = TerminalsController(registry: connection.terminals)
         columnVisibility = restored?.sidebarVisible == false ? .detailOnly : .all
         initialSidebarWidth = restored?.sidebarWidth ?? 270
         sidebarWidth = restored?.sidebarWidth
@@ -52,6 +55,11 @@ final class AppState {
         // start; nothing is sent to omp.
         for sessionKey in tabs.tabs.compactMap(\.sessionKey) { openSession(sessionKey) }
         restoreEditors()
+        // Terminal tabs re-attach once shown; those whose PTY ompd no longer lists close.
+        for strip in tabs.strips {
+            for ptyId in strip.tabs.compactMap(\.ptyId) { terminals.adopt(ptyId, workspace: strip.workspace) }
+        }
+        connection.terminals.onGone = { [weak self] ptyId in self?.terminalGone(ptyId) }
         observeSystemPower()
     }
 
@@ -86,11 +94,12 @@ final class AppState {
         saveWindow()
     }
 
-    /// Closes the tab only: the session keeps running (Close Session is what stops omp). An editor with unsaved edits
-    /// asks to save them first.
+    /// Closes the tab only: the session or terminal keeps running (Close Session / Close Terminal stop them). An
+    /// editor with unsaved edits asks to save them first.
     func closeTab(_ tab: TabKind) {
         guard let path = tab.editorPath else {
             tabs.close(tab)
+            if let ptyId = tab.ptyId { terminals.release(ptyId) }
             saveWindow()
             return
         }
@@ -98,6 +107,20 @@ final class AppState {
             guard await editors.closeIfConfirmed(path, window: window) else { return }
             tabs.close(tab)
             saveWindow()
+        }
+    }
+
+    /// Shows `tab`, opening it first if needed (sidebar selection).
+    func showTab(_ tab: TabKind) {
+        switch tab {
+        case .session(let sessionKey): showSession(sessionKey)
+        case .terminal(let ptyId): showTerminal(ptyId)
+        case .editor(let path):
+            if tabs.contains(tab) {
+                selectTab(tab)
+            } else if let workspace = editors.workspace(containing: path) {
+                openEditor(path, in: workspace)
+            }
         }
     }
 
@@ -191,6 +214,75 @@ final class AppState {
             ui.draft = model.draft
             ui.lastSeq = max(ui.lastSeq, model.lastSeq)
         }
+    }
+
+    // MARK: - Terminals
+
+    /// Opens the login shell on a new PTY in `workspace` (default: the workspace on screen, else the home folder), in a
+    /// new tab of that workspace's strip.
+    func newTerminal(in workspace: String? = nil) {
+        let workspace = workspace ?? tabs.selectedStrip?.workspace ?? NSHomeDirectory()
+        Task {
+            do {
+                let ptyId = try await terminals.open(in: workspace)
+                tabs.open(.terminal(ptyId), in: workspace)
+                saveWindow()
+            } catch {
+                alert = AlertMessage(title: "Could not open a terminal", message: error.userMessage)
+            }
+        }
+    }
+
+    /// Shows the terminal of `ptyId` in its tab, opening one in its workspace's strip first if needed.
+    func showTerminal(_ ptyId: PTYID) {
+        if tabs.contains(.terminal(ptyId)) {
+            tabs.select(.terminal(ptyId))
+        } else {
+            guard let info = connection.terminals.info(ptyId) else { return }
+            let workspace = terminals.workspace(of: info, among: knownWorkspaces)
+            terminals.adopt(ptyId, workspace: workspace)
+            tabs.open(.terminal(ptyId), in: workspace)
+        }
+        saveWindow()
+    }
+
+    /// Ends the PTY and everything running on it; its tab closes.
+    func closeTerminal(_ ptyId: PTYID) {
+        Task {
+            do {
+                try await terminals.close(ptyId)
+            } catch {
+                alert = AlertMessage(title: "Could not close the terminal", message: error.userMessage)
+            }
+        }
+    }
+
+    /// Runs an exited terminal's program again, on a new PTY in the same tab.
+    func restartTerminal(_ ptyId: PTYID) {
+        Task {
+            do {
+                let restarted = try await terminals.restart(ptyId)
+                terminals.release(ptyId)
+                tabs.replace(.terminal(ptyId), with: .terminal(restarted))
+                saveWindow()
+                try await terminals.close(ptyId)
+            } catch {
+                alert = AlertMessage(title: "Could not restart the terminal", message: error.userMessage)
+            }
+        }
+    }
+
+    /// Workspaces the sidebar knows: those with sessions and those with tabs.
+    var knownWorkspaces: [String] {
+        connection.workspaces.map(\.path) + tabs.strips.map(\.workspace)
+    }
+
+    /// ompd no longer has the PTY: its tab goes.
+    private func terminalGone(_ ptyId: PTYID) {
+        terminals.forget(ptyId)
+        guard tabs.contains(.terminal(ptyId)) else { return }
+        tabs.close(.terminal(ptyId))
+        saveWindow()
     }
 
     // MARK: - Window

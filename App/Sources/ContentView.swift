@@ -23,6 +23,9 @@ struct ContentView: View {
                         onScrollAnchorChange: { app.scrollAnchorChanged($0, in: model) }, onClose: { app.close(key) }
                     )
                     .id(key)
+                } else if let ptyId = app.tabs.selection?.ptyId {
+                    TerminalDetailView(app: app, ptyId: ptyId)
+                        .id(ptyId)
                 } else if let path = app.tabs.selection?.editorPath, let document = app.editors.document(for: path) {
                     EditorView(app: app, document: document)
                         .id(path)
@@ -49,6 +52,15 @@ struct ContentView: View {
                 .help("Start omp in a workspace folder")
                 .disabled(!app.connection.isConnected)
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    app.newTerminal()
+                } label: {
+                    Label("New Terminal", systemImage: "terminal")
+                }
+                .help("Open a terminal in the workspace on screen (⌃`)")
+                .disabled(!app.connection.isConnected)
+            }
         }
         .alert(item: $app.alert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message))
@@ -60,6 +72,8 @@ struct SidebarView: View {
     @Bindable var app: AppState
 
     var body: some View {
+        let terminals = app.terminals.byWorkspace(among: app.knownWorkspaces)
+        let sessionWorkspaces = Set(app.connection.workspaces.map(\.path))
         List(selection: Binding(get: { app.sidebarSelection }, set: { app.selectInSidebar($0) })) {
             ForEach(app.connection.workspaces) { workspace in
                 Section {
@@ -72,17 +86,30 @@ struct SidebarView: View {
                                     .disabled(entry.closedByUser || entry.status == .closed)
                             }
                     }
+                    TerminalRows(app: app, terminals: terminals[workspace.path] ?? [])
                     WorkspaceFiles(app: app, workspace: workspace.path)
                 } header: {
                     Label(workspace.name, systemImage: "folder")
                         .help(workspace.path)
+                        .contextMenu {
+                            Button("New Terminal Here") { app.newTerminal(in: workspace.path) }
+                                .disabled(!app.connection.isConnected)
+                        }
+                }
+            }
+            ForEach(terminals.keys.filter { !sessionWorkspaces.contains($0) }.sorted(), id: \.self) { path in
+                Section {
+                    TerminalRows(app: app, terminals: terminals[path] ?? [])
+                    WorkspaceFiles(app: app, workspace: path)
+                } header: {
+                    TerminalWorkspaceHeader(app: app, path: path)
                 }
             }
         }
         .listStyle(.sidebar)
         .fileNavigatorActions(app)
         .overlay {
-            if app.connection.sessions.isEmpty, app.connection.isConnected {
+            if app.connection.sessions.isEmpty, app.connection.terminals.ptys.isEmpty, app.connection.isConnected {
                 ContentUnavailableView("No Sessions", systemImage: "tray", description: Text("⌘N starts one."))
             }
         }

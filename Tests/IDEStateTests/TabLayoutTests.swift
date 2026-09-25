@@ -54,15 +54,32 @@ import Testing
     @Test func decodingDropsUnknownTabKindsAndRepairsWhatIsLeft() throws {
         let json = """
             {"strips": [
-              {"workspace": "/w/a", "tabs": [{"kind": "terminal", "id": "pty-1"}, {"kind": "session", "id": "a1"}]},
+              {"workspace": "/w/a", "tabs": [{"kind": "notebook", "id": "n-1"}, {"kind": "session", "id": "a1"}]},
               {"workspace": "/w/b", "tabs": [{"kind": "notebook", "id": "/w/b/main.ipynb"}]},
               {"workspace": "/w/a", "tabs": [{"kind": "session", "id": "a1"}, {"kind": "session", "id": "a2"}]}
             ],
-            "selection": {"kind": "terminal", "id": "pty-1"}}
+            "selection": {"kind": "notebook", "id": "n-1"}}
             """
         let layout = try JSONDecoder().decode(TabLayout.self, from: Data(json.utf8))
         #expect(layout.strips.map(\.workspace) == ["/w/a"])
         #expect(layout.tabs == [.session("a1"), .session("a2")])
         #expect(layout.selection == nil)
+    }
+
+    @Test func terminalTabsPersistAndARestartedTerminalKeepsItsPlace() throws {
+        var layout = TabLayout()
+        layout.open(.session("a1"), in: "/w/a")
+        layout.open(.terminal("pty-1"), in: "/w/a")
+        layout.open(.session("a2"), in: "/w/a")
+        layout.select(.terminal("pty-1"))
+        let restored = try JSONDecoder().decode(TabLayout.self, from: JSONEncoder().encode(layout))
+        #expect(restored == layout)
+
+        layout.replace(.terminal("pty-1"), with: .terminal("pty-2"))
+        #expect(layout.tabs == [.session("a1"), .terminal("pty-2"), .session("a2")])
+        #expect(layout.selection == .terminal("pty-2"))
+        layout.replace(.terminal("pty-2"), with: .session("a1"))
+        layout.replace(.terminal("pty-9"), with: .terminal("pty-3"))
+        #expect(layout.tabs == [.session("a1"), .terminal("pty-2"), .session("a2")], "never duplicates or invents a tab")
     }
 }

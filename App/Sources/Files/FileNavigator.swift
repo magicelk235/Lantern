@@ -63,15 +63,15 @@ extension AppState {
         return tabs.selection
     }
 
-    /// A click in the sidebar: a session shows at once; a file is only highlighted, Return or a double-click opens it.
+    /// A click in the sidebar: a session or terminal shows at once; a file is only highlighted, Return or a
+    /// double-click opens it.
     func selectInSidebar(_ tab: TabKind?) {
         guard let tab else { return }
-        switch tab {
-        case .editor(let path):
+        if case .editor(let path) = tab {
             editors.highlight = Editors.Highlight(path: path, over: tabs.selection)
-        case .session(let key):
+        } else {
             editors.highlight = nil
-            showSession(key)
+            showTab(tab)
         }
     }
 

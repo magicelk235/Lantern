@@ -3,7 +3,7 @@ import IDEState
 import SwiftUI
 
 /// The tabs of the workspace on screen, above the detail area. Selecting a tab shows it; closing one leaves its omp
-/// session running, and closing an editor with unsaved edits asks first.
+/// session or terminal running, and closing an editor with unsaved edits asks first.
 struct TabStrip: View {
     let app: AppState
     let strip: TabLayout.Strip
@@ -22,7 +22,7 @@ struct TabStrip: View {
                 HStack(spacing: 2) {
                     ForEach(strip.tabs, id: \.self) { tab in
                         TabItem(
-                            tab: tab, entry: tab.sessionKey.flatMap(app.entry(for:)),
+                            tab: tab, entry: tab.sessionKey.flatMap(app.entry(for:)), terminal: terminalLabel(tab),
                             document: tab.editorPath.flatMap(app.editors.document(for:)),
                             isSelected: app.tabs.selection == tab, select: { app.selectTab(tab) }, close: { app.closeTab(tab) })
                     }
@@ -40,11 +40,18 @@ struct TabStrip: View {
         let name = URL(filePath: strip.workspace, directoryHint: .isDirectory).lastPathComponent
         return name.isEmpty ? strip.workspace : name
     }
+
+    private func terminalLabel(_ tab: TabKind) -> TerminalLabel? {
+        guard let ptyId = tab.ptyId else { return nil }
+        return TerminalLabel(title: app.terminals.title(for: ptyId), hasExited: app.terminals.model(ptyId)?.hasExited == true)
+    }
 }
 
 private struct TabItem: View {
     let tab: TabKind
     let entry: SessionManifestEntry?
+    /// Set for a terminal tab.
+    let terminal: TerminalLabel?
     /// The file an editor tab shows.
     let document: EditorDocument?
     let isSelected: Bool
@@ -56,7 +63,11 @@ private struct TabItem: View {
         HStack(spacing: 6) {
             Button(action: select) {
                 HStack(spacing: 6) {
-                    if let document {
+                    if let terminal {
+                        Image(systemName: "terminal")
+                            .font(.system(size: 10))
+                            .foregroundStyle(terminal.hasExited ? .tertiary : .secondary)
+                    } else if let document {
                         EditorTabIndicator(document: document)
                     } else {
                         TabStatusIndicator(status: entry?.status)
@@ -80,7 +91,7 @@ private struct TabItem: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(isSelected || hovering ? .secondary : .tertiary)
-            .help(document == nil ? "Close Tab (the session keeps running)" : "Close Tab")
+            .help(tab.ptyId != nil ? "Close Tab (the terminal keeps running)" : document != nil ? "Close Tab" : "Close Tab (the session keeps running)")
             .accessibilityLabel("Close Tab \(title)")
         }
         .font(.callout)
@@ -93,6 +104,7 @@ private struct TabItem: View {
     private var title: String {
         switch tab {
         case .session(let key): entry?.displayTitle ?? "Session \(key.prefix(8))"
+        case .terminal: terminal?.title ?? "Terminal"
         case .editor(let path): (path as NSString).lastPathComponent
         }
     }
@@ -101,6 +113,12 @@ private struct TabItem: View {
         if isSelected { return Color.accentColor.opacity(0.16) }
         return hovering ? Color.secondary.opacity(0.1) : .clear
     }
+}
+
+/// What a terminal tab shows.
+private struct TerminalLabel {
+    var title: String
+    var hasExited: Bool
 }
 
 private struct TabStatusIndicator: View {

@@ -24,6 +24,9 @@ struct OmpIDEApp: App {
                 Button("New Session…") { app.newSession() }
                     .keyboardShortcut("n")
                     .disabled(!app.connection.isConnected)
+                Button("New Terminal") { app.newTerminal() }
+                    .keyboardShortcut("`", modifiers: .control)
+                    .disabled(!app.connection.isConnected)
             }
             EditorCommands(app: app)
         }
