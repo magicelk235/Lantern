@@ -28,7 +28,7 @@ let package = Package(
         ),
         .executableTarget(name: "ompd", dependencies: ["OmpdCore"]),
 
-        .testTarget(name: "OmpRPCTests", dependencies: ["OmpRPC"]),
+        .testTarget(name: "OmpRPCTests", dependencies: ["OmpRPC"], exclude: ["Fixtures"]),
         .testTarget(name: "IDEProtocolTests", dependencies: ["IDEProtocol"]),
         .testTarget(name: "IDETransportTests", dependencies: ["IDETransport"]),
         .testTarget(name: "OmpdCoreTests", dependencies: ["OmpdCore"]),

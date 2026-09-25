@@ -41,7 +41,11 @@ public enum JSONValue: Sendable, Hashable, Codable {
     public var stringValue: String? { if case .string(let s) = self { return s }; return nil }
     public var boolValue: Bool? { if case .bool(let b) = self { return b }; return nil }
     public var doubleValue: Double? { if case .number(let n) = self { return n }; return nil }
-    public var intValue: Int? { doubleValue.map { Int($0) } }
+    /// The number truncated toward zero; nil when it is not a number or does not fit in `Int` (NaN, ±infinity, overflow).
+    public var intValue: Int? {
+        guard let n = doubleValue, n >= -9_223_372_036_854_775_808.0, n < 9_223_372_036_854_775_808.0 else { return nil }
+        return Int(n)
+    }
     public var arrayValue: [JSONValue]? { if case .array(let a) = self { return a }; return nil }
     public var objectValue: [String: JSONValue]? { if case .object(let o) = self { return o }; return nil }
 
