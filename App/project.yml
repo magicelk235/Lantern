@@ -85,6 +85,8 @@ targets:
     dependencies:
       - package: OmpIDE
         product: OmpdCore
+      - package: OmpIDE
+        product: IDETransport
     settings:
       base:
         PRODUCT_NAME: ompd

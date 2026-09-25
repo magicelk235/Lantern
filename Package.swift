@@ -27,7 +27,7 @@ let package = Package(
             name: "OmpdCore",
             dependencies: ["OmpRPC", "IDEProtocol", "IDETransport", .product(name: "SwiftTerm", package: "SwiftTerm")]
         ),
-        .executableTarget(name: "ompd", dependencies: ["OmpdCore"]),
+        .executableTarget(name: "ompd", dependencies: ["OmpdCore", "IDETransport"]),
         // App-side state (no AppKit/SwiftUI): daemon connection, per-session sync, transcript reducer.
         .target(name: "IDEModel", dependencies: ["IDETransport"]),
 

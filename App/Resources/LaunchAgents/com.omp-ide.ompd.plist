@@ -2,24 +2,28 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>Label</key>
-	<string>com.omp-ide.ompd</string>
+	<key>AbandonProcessGroup</key>
+	<true/>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>com.omp-ide.app</string>
+	</array>
 	<key>BundleProgram</key>
 	<string>Contents/MacOS/ompd</string>
+	<key>ExitTimeOut</key>
+	<integer>20</integer>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.omp-ide.ompd</string>
+	<key>ProcessType</key>
+	<string>Interactive</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>ompd</string>
 		<string>run</string>
 	</array>
-	<key>KeepAlive</key>
-	<true/>
 	<key>RunAtLoad</key>
 	<true/>
-	<key>ProcessType</key>
-	<string>Interactive</string>
-	<key>AssociatedBundleIdentifiers</key>
-	<array>
-		<string>com.omp-ide.app</string>
-	</array>
 </dict>
 </plist>
