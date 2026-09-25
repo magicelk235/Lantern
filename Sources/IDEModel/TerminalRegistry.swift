@@ -3,41 +3,43 @@ import IDEProtocol
 import IDETransport
 import Observation
 
-/// ompd's PTYs as the app sees them: the list of every PTY, and a model per terminal the app shows.
+/// ompd's PTYs as the app sees them: every PTY — plain terminals and the TUIs of omp sessions — and a model
+/// per PTY the app shows.
 ///
-/// ompd pushes no PTY events, so the list is refreshed with `pty.list` on every connect, after a PTY is opened or closed
-/// here, and every `refreshInterval` while connected; that is how an exited program or a shell's `cd` shows up. A PTY
-/// the app has a model for that ompd no longer has is reported through `onGone` (its tab should go).
+/// The list comes from one `pty.list` per connection, then from the `ptys` frames ompd pushes whenever it changes (a PTY
+/// opened, exited, closed or resized); that is how an exited program or a shell's `cd` shows up. A PTY with a model that
+/// a list no longer shows is gone: the model reports it through `onGone` (its terminal tab should go). A PTY this client
+/// knows to exist first-hand — it opened it, or the manifest names it as a session's TUI — stays until a list has shown
+/// it once, since a list can be older than the PTY.
 @MainActor @Observable
 public final class TerminalRegistry {
     /// Every PTY in ompd, in creation order.
     public private(set) var ptys: [PTYInfo] = []
-    /// Models of the terminals the app shows or showed, by PTY. A model stays until its PTY is gone, so attaching and
-    /// detaching one PTY always go through the same model, in order.
+    /// Models of the PTYs the app shows or showed, by PTY. A model stays until its PTY is gone, or a session no longer
+    /// runs on it, so attaching and detaching one PTY always go through the same model, in order.
     @ObservationIgnored public private(set) var models: [PTYID: TerminalSessionModel] = [:]
 
     /// Called when ompd turns out not to have a PTY that has a model: closed, or lost with a daemon restart.
     @ObservationIgnored public var onGone: (@MainActor (PTYID) -> Void)?
-    /// How often `ptys` is refreshed while connected.
-    @ObservationIgnored public var refreshInterval: Duration = .seconds(2)
     /// How long a terminal's size must hold before ompd gets it.
     @ObservationIgnored public var resizeDebounce: Duration = .milliseconds(120)
 
     @ObservationIgnored weak var backend: (any TerminalBackend)?
     @ObservationIgnored private var connected = false
-    /// Bumped by every connect and disconnect: a list requested on an earlier connection is not applied.
+    /// Bumped by every connect and disconnect: the list asked for on an earlier connection is not applied.
     @ObservationIgnored private var connectionEpoch = 0
-    @ObservationIgnored private var poller: Task<Void, Never>?
-    @ObservationIgnored private var isListing = false
-    @ObservationIgnored private var listAgain = false
-    /// `pty.list` requests sent so far.
-    @ObservationIgnored private var listsSent = 0
-    /// PTYs opened here, with `listsSent` when the open returned: only a list requested later proves one gone.
-    @ObservationIgnored private var openedAfterList: [PTYID: Int] = [:]
-    /// PTYs closed here; a list requested before the close took effect would still show them.
+    /// `ptys` pushes received on this connection. The `pty.list` answer is dropped when a push arrived while it was on
+    /// its way: that push is at least as new, and every later change brings another one.
+    @ObservationIgnored private var pushes = 0
+    /// PTYs known to exist (opened here, or a session's TUI per the manifest) that no list has shown yet.
+    @ObservationIgnored private var unlisted: Set<PTYID> = []
+    /// PTYs closed here that a list older than the close would still show.
     @ObservationIgnored private var closed: Set<PTYID> = []
 
     init() {}
+
+    /// The plain terminals: PTYs that do not run an omp session's TUI.
+    public var terminals: [PTYInfo] { ptys.filter { $0.sessionKey == nil } }
 
     /// The PTY's latest description, if ompd listed it.
     public func info(_ ptyId: PTYID) -> PTYInfo? {
@@ -59,8 +61,10 @@ public final class TerminalRegistry {
         guard let backend else { throw IDETransportError.notConnected }
         let size = size.clamped
         let info = try await backend.openPTY(PTYOpen.Params(cwd: cwd, command: command, cols: size.cols, rows: size.rows))
-        openedAfterList[info.ptyId] = listsSent
-        if !ptys.contains(where: { $0.ptyId == info.ptyId }) { ptys.append(info) }
+        if !ptys.contains(where: { $0.ptyId == info.ptyId }) {
+            unlisted.insert(info.ptyId)
+            ptys.append(info)
+        }
         let model = model(for: info.ptyId)
         model.update(info)
         return model
@@ -75,19 +79,24 @@ public final class TerminalRegistry {
             // Already gone.
         }
         closed.insert(ptyId)
+        unlisted.remove(ptyId)
         ptys.removeAll { $0.ptyId == ptyId }
-        if let model = models[ptyId] { model.markGone() } else { openedAfterList[ptyId] = nil }
+        models[ptyId]?.markGone()
     }
 
-    /// Lists the PTYs now, or right after the list in flight.
-    public func refresh() {
-        guard connected else { return }
-        if isListing {
-            listAgain = true
-            return
-        }
-        isListing = true
-        Task { await list() }
+    // MARK: - Session TUIs (SessionTerminal)
+
+    /// The model of the PTY the manifest names as a session's TUI: it exists, even if no list has shown it yet.
+    func sessionModel(for ptyId: PTYID) -> TerminalSessionModel {
+        if models[ptyId] == nil, info(ptyId) == nil { unlisted.insert(ptyId) }
+        return model(for: ptyId)
+    }
+
+    /// The session no longer shows the PTY (omp runs on another one now, or the tab closed): its model goes, without
+    /// `onGone`, and a later list decides nothing about it.
+    func releaseSessionModel(_ ptyId: PTYID) {
+        models[ptyId] = nil
+        unlisted.remove(ptyId)
     }
 
     // MARK: - Driven by DaemonConnection
@@ -95,22 +104,14 @@ public final class TerminalRegistry {
     func connectionOpened() {
         connected = true
         connectionEpoch += 1
+        pushes = 0
         for model in models.values { model.connectionOpened() }
-        let interval = refreshInterval
-        poller?.cancel()
-        poller = Task { [weak self] in
-            while !Task.isCancelled {
-                self?.refresh()
-                try? await Task.sleep(for: interval)
-            }
-        }
+        Task { await listOnce() }
     }
 
     func connectionClosed() {
         connected = false
         connectionEpoch += 1
-        poller?.cancel()
-        poller = nil
         for model in models.values { model.connectionClosed() }
     }
 
@@ -118,43 +119,41 @@ public final class TerminalRegistry {
         models[output.ptyId]?.receive(output.data)
     }
 
-    // MARK: - Listing
-
-    /// One `pty.list` at a time, so an older list is never applied over a newer one.
-    private func list() async {
-        repeat {
-            listAgain = false
-            guard connected, let backend else { break }
-            listsSent += 1
-            let serial = listsSent
-            let epoch = connectionEpoch
-            if let ptys = try? await backend.listPTYs(), epoch == connectionEpoch {
-                apply(ptys, serial: serial)
-            }
-        } while listAgain
-        isListing = false
+    /// A `ptys` push: ompd's whole PTY list after a change.
+    func receive(_ list: PTYList.Result) {
+        pushes += 1
+        apply(list.ptys)
     }
 
-    private func apply(_ listed: [PTYInfo], serial: Int) {
-        let listedIDs = Set(listed.map(\.ptyId))
-        // A PTY opened here after this list was requested is too new for it.
-        let newer = ptys.filter { !listedIDs.contains($0.ptyId) && (openedAfterList[$0.ptyId] ?? -1) >= serial }
-        let current = listed.filter { !closed.contains($0.ptyId) } + newer
+    // MARK: - Listing
+
+    /// The list at connect time; pushes keep it current from then on.
+    private func listOnce() async {
+        guard connected, let backend else { return }
+        let epoch = connectionEpoch
+        let pushesBefore = pushes
+        guard let listed = try? await backend.listPTYs(), epoch == connectionEpoch, pushes == pushesBefore else { return }
+        apply(listed)
+    }
+
+    private func apply(_ listed: [PTYInfo]) {
+        let byID = Dictionary(listed.map { ($0.ptyId, $0) }, uniquingKeysWith: { first, _ in first })
+        unlisted.subtract(byID.keys)
+        closed.formIntersection(byID.keys)
+        let current = listed.filter { !closed.contains($0.ptyId) } + ptys.filter { unlisted.contains($0.ptyId) }
         if current != ptys { ptys = current }
         for (ptyId, model) in models {
-            if let info = listed.first(where: { $0.ptyId == ptyId }) {
+            if let info = byID[ptyId] {
                 model.update(info)
-            } else if (openedAfterList[ptyId] ?? -1) < serial {
+            } else if !unlisted.contains(ptyId) {
                 model.markGone()
             }
         }
-        for ptyId in listedIDs where (openedAfterList[ptyId] ?? .max) < serial { openedAfterList[ptyId] = nil }
-        closed.formIntersection(listedIDs)
     }
 
     private func gone(_ ptyId: PTYID) {
         models[ptyId] = nil
-        openedAfterList[ptyId] = nil
+        unlisted.remove(ptyId)
         ptys.removeAll { $0.ptyId == ptyId }
         onGone?(ptyId)
     }

@@ -17,29 +17,30 @@ struct ContentView: View {
                 if let strip = app.tabs.selectedStrip {
                     TabStrip(app: app, strip: strip)
                 }
-                if let key = app.selectedSession, let model = app.connection.openSessions[key] {
-                    SessionDetailView(
-                        model: model, savedUI: app.savedUI(for: key),
-                        onScrollAnchorChange: { app.scrollAnchorChanged($0, in: model) }, onClose: { app.close(key) }
-                    )
-                    .id(key)
-                } else if let ptyId = app.tabs.selection?.ptyId {
-                    TerminalDetailView(app: app, ptyId: ptyId)
-                        .id(ptyId)
-                } else if let path = app.tabs.selection?.editorPath, let document = app.editors.document(for: path) {
-                    EditorView(app: app, document: document)
-                        .id(path)
-                } else {
-                    ContentUnavailableView {
-                        Label("No Session", systemImage: "bubble.left.and.text.bubble.right")
-                    } description: {
-                        Text("Pick a session in the sidebar, or start one in a workspace folder.")
-                    } actions: {
-                        Button("New Session…") { app.newSession() }
-                            .disabled(!app.connection.isConnected)
+                Group {
+                    if let key = app.tabs.selection?.sessionKey {
+                        SessionTabView(app: app, sessionKey: key)
+                            .id(key)
+                    } else if let ptyId = app.tabs.selection?.ptyId {
+                        TerminalDetailView(app: app, ptyId: ptyId)
+                            .id(ptyId)
+                    } else if let path = app.tabs.selection?.editorPath, let document = app.editors.document(for: path) {
+                        EditorView(app: app, document: document)
+                            .id(path)
+                    } else {
+                        ContentUnavailableView {
+                            Label("No Session", systemImage: "terminal")
+                        } description: {
+                            Text("Pick a session in the sidebar, or start omp in a workspace folder.")
+                        } actions: {
+                            Button("New Session…") { app.newSession() }
+                                .disabled(!app.connection.isConnected)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                // Where a new tab's emulator will go: its PTY starts at that size.
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { app.tabContentSizeChanged($0) }
             }
         }
         .toolbar {
@@ -78,12 +79,15 @@ struct SidebarView: View {
             ForEach(app.connection.workspaces) { workspace in
                 Section {
                     ForEach(workspace.sessions, id: \.sessionKey) { entry in
-                        SessionRow(entry: entry)
+                        SessionRow(entry: entry, title: app.sessionTitle(entry.sessionKey))
                             .tag(TabKind.session(entry.sessionKey))
-                            .badge(entry.pending.uiRequests.count)
                             .contextMenu {
-                                Button("Close Session") { app.close(entry.sessionKey) }
-                                    .disabled(entry.closedByUser || entry.status == .closed)
+                                if entry.canResume {
+                                    Button("Resume Session") { app.resumeSession(entry.sessionKey) }
+                                        .disabled(!app.connection.isConnected)
+                                }
+                                Button("Close Session") { app.closeSession(entry.sessionKey) }
+                                    .disabled(!app.connection.isConnected || entry.status == .closed)
                             }
                     }
                     TerminalRows(app: app, terminals: terminals[workspace.path] ?? [])
@@ -109,7 +113,7 @@ struct SidebarView: View {
         .listStyle(.sidebar)
         .fileNavigatorActions(app)
         .overlay {
-            if app.connection.sessions.isEmpty, app.connection.terminals.ptys.isEmpty, app.connection.isConnected {
+            if app.connection.sessions.isEmpty, app.connection.terminals.terminals.isEmpty, app.connection.isConnected {
                 ContentUnavailableView("No Sessions", systemImage: "tray", description: Text("⌘N starts one."))
             }
         }
@@ -121,11 +125,12 @@ struct SidebarView: View {
 
 struct SessionRow: View {
     let entry: SessionManifestEntry
+    let title: String
 
     var body: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.displayTitle)
+                Text(title)
                     .lineLimit(1)
                 Text(entry.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
                     .font(.caption)
@@ -134,58 +139,7 @@ struct SessionRow: View {
             Spacer(minLength: 4)
             SessionStatusBadge(status: entry.status)
         }
-        .opacity(entry.closedByUser ? 0.55 : 1)
-    }
-}
-
-struct SessionStatusBadge: View {
-    let status: SessionStatus
-
-    var body: some View {
-        HStack(spacing: 4) {
-            if status == .busy || status == .starting || status == .resuming {
-                ProgressView().controlSize(.mini)
-            } else {
-                Circle().fill(color).frame(width: 7, height: 7)
-            }
-            Text(label)
-        }
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-        .help(help)
-    }
-
-    private var label: String {
-        switch status {
-        case .starting: "starting"
-        case .busy: "working"
-        case .settled: "idle"
-        case .interrupted: "interrupted"
-        case .resuming: "resuming"
-        case .closed: "closed"
-        case .needsAttention: "attention"
-        }
-    }
-
-    private var color: Color {
-        switch status {
-        case .settled: .green
-        case .interrupted: .orange
-        case .needsAttention: .red
-        case .closed, .starting, .busy, .resuming: .secondary
-        }
-    }
-
-    private var help: String {
-        switch status {
-        case .starting: "omp is starting"
-        case .busy: "The agent is working"
-        case .settled: "Nothing is running"
-        case .interrupted: "omp stopped unexpectedly; waiting to resume"
-        case .resuming: "omp is resuming the session"
-        case .closed: "Closed: omp is not running for this session"
-        case .needsAttention: "Needs your attention before it can resume"
-        }
+        .opacity(entry.status == .closed ? 0.55 : 1)
     }
 }
 

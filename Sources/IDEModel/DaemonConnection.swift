@@ -1,14 +1,15 @@
 import Foundation
-import IDEProtocol
+// The models speak the wire types (`SessionManifestEntry`, `PTYInfo`, …): importing IDEModel brings them along.
+@_exported import IDEProtocol
 import IDETransport
 import Observation
 
 /// The app's link to ompd: connects over `run/ompd.sock` with the token in `run/token`, retrying
-/// with exponential backoff while the daemon is starting or restarting, keeps the session list current, routes pushed
-/// journal records to the open sessions and PTY output to the terminals, and re-subscribes every open session from its
-/// `lastSeq` (and re-attaches every shown terminal) after each (re)connect. Restoring sends no omp command.
+/// with exponential backoff while the daemon is starting or restarting, keeps the session manifest and the PTY list
+/// current from ompd's pushes, and routes PTY output to the terminals and session TUIs on screen. After each
+/// (re)connect every shown terminal and session attaches again; restoring sends nothing to omp.
 @MainActor @Observable
-public final class DaemonConnection: SessionBackend {
+public final class DaemonConnection: TerminalBackend {
     public enum Status: Equatable, Sendable {
         case connecting
         case connected(Welcome)
@@ -39,13 +40,13 @@ public final class DaemonConnection: SessionBackend {
     public private(set) var status: Status = .connecting
     /// Every session in the daemon's manifest (welcome, then `sessions` pushes).
     public private(set) var sessions: [SessionManifestEntry] = []
-    /// Sessions the user opened; each stays subscribed while connected.
-    public private(set) var openSessions: [SessionKey: SessionViewModel] = [:]
+    /// Sessions shown in a tab, each following its omp TUI from PTY to PTY.
+    public private(set) var openSessions: [SessionKey: SessionTerminal] = [:]
     /// Out-of-band notices from the running ompd (`ServerFrame.notice`, e.g. read-only mode), oldest first. At most
     /// `noticeLimit`; cleared when the app connects to a different ompd process or by `dismissNotices()`.
     public private(set) var notices: [DaemonNotice] = []
     public nonisolated static let noticeLimit = 50
-    /// ompd's PTYs and the terminals the app shows.
+    /// ompd's PTYs: the terminals, and the PTYs the session TUIs run on.
     public let terminals = TerminalRegistry()
 
     @ObservationIgnored private var client: IDEClient?
@@ -81,53 +82,67 @@ public final class DaemonConnection: SessionBackend {
         runTask = Task { await run() }
     }
 
-    /// Disconnects and stops reconnecting. Open sessions keep their transcripts.
+    /// Disconnects and stops reconnecting.
     public func stop() async {
         runTask?.cancel()
         runTask = nil
         await client?.close()
     }
 
-    /// The model for `sessionKey`, subscribing it (now if connected, else on connect) the first time.
+    // MARK: - Sessions
+
+    /// The TUI of `sessionKey` for its tab, made the first time. It attaches once a display asks, and follows omp to
+    /// every PTY it runs on.
     @discardableResult
-    public func open(_ sessionKey: SessionKey) -> SessionViewModel {
-        if let model = openSessions[sessionKey] { return model }
-        let model = SessionViewModel(sessionKey: sessionKey, entry: sessions.first { $0.sessionKey == sessionKey }, backend: self)
-        openSessions[sessionKey] = model
-        if client != nil { model.connectionOpened() }
-        return model
+    public func open(_ sessionKey: SessionKey) -> SessionTerminal {
+        if let session = openSessions[sessionKey] { return session }
+        let session = SessionTerminal(sessionKey: sessionKey, registry: terminals)
+        session.update(entry: sessions.first { $0.sessionKey == sessionKey })
+        openSessions[sessionKey] = session
+        return session
     }
 
-    /// Asks ompd to spawn omp in `workspace`. The new session also arrives through the next `sessions` push.
-    public func createSession(workspace: URL, approvalMode: ApprovalMode?) async throws -> SessionManifestEntry {
+    /// The session's tab closed: ompd stops streaming its TUI to the app. omp keeps running.
+    public func release(_ sessionKey: SessionKey) {
+        openSessions.removeValue(forKey: sessionKey)?.release()
+    }
+
+    /// Asks ompd to start omp's TUI in `workspace`, `size` big. The new session also arrives through the next `sessions`
+    /// push.
+    public func createSession(workspace: URL, approvalMode: ApprovalMode?, size: TerminalSize) async throws -> SessionManifestEntry {
         var path = workspace.standardizedFileURL.path(percentEncoded: false)
         if path.count > 1, path.hasSuffix("/") { path.removeLast() }
-        let entry = try await connectedClient().call(SessionCreate.self, .init(workspace: path, approvalMode: approvalMode?.rawValue))
-        if !sessions.contains(where: { $0.sessionKey == entry.sessionKey }) { sessions.append(entry) }
+        let size = size.clamped
+        let entry = try await connectedClient().call(
+            SessionCreate.self,
+            .init(workspace: path, approvalMode: approvalMode?.rawValue, cols: size.cols, rows: size.rows))
+        adopt(entry)
         return entry
     }
 
-    /// Gracefully ends the session's omp (the daemon closes its stdin and drains it); the transcript stays readable.
+    /// Starts omp again for a closed session, resuming its session file (`session.open`) with the TUI `size` big. ompd
+    /// keeps the session (same key) and moves it to a new PTY, which its tab follows.
+    public func resumeSession(_ sessionKey: SessionKey, size: TerminalSize) async throws -> SessionManifestEntry {
+        guard let entry = sessions.first(where: { $0.sessionKey == sessionKey }), let sessionFile = entry.sessionFile else {
+            throw DaemonError(.noSuchSession, "ompd knows no session file to resume this session from.")
+        }
+        let size = size.clamped
+        let resumed = try await connectedClient().call(
+            SessionOpen.self, .init(sessionFile: sessionFile, workspace: entry.workspace, cols: size.cols, rows: size.rows))
+        adopt(resumed)
+        return resumed
+    }
+
+    /// Ends the session's omp gracefully; the session stays listed as closed and can be resumed.
     public func closeSession(_ sessionKey: SessionKey) async throws {
         _ = try await connectedClient().call(SessionClose.self, .init(sessionKey: sessionKey))
     }
 
-    // MARK: - SessionBackend
-
-    public func subscribe(_ sessionKey: SessionKey, since: Seq) async throws -> Subscribe.Result {
-        try await connectedClient().call(Subscribe.self, .init(sessionKey: sessionKey, since: since))
-    }
-
-    public func snapshot(_ sessionKey: SessionKey) async throws -> SessionSnapshot.Result {
-        try await connectedClient().call(SessionSnapshot.self, .init(sessionKey: sessionKey))
-    }
-
-    public func send(_ command: JSONValue, to sessionKey: SessionKey) async throws -> JSONValue {
-        try await connectedClient().call(OmpCommand.self, .init(sessionKey: sessionKey, command: command))
-    }
-
-    public func respond(to requestId: String, in sessionKey: SessionKey, with response: JSONValue) async throws {
-        _ = try await connectedClient().call(UIRespond.self, .init(sessionKey: sessionKey, requestId: requestId, response: response))
+    /// A session a call returned. A `sessions` push may already have brought it, or a newer state of it: that stays.
+    private func adopt(_ entry: SessionManifestEntry) {
+        guard !sessions.contains(where: { $0.sessionKey == entry.sessionKey }) else { return }
+        sessions.append(entry)
+        openSessions[entry.sessionKey]?.update(entry: entry)
     }
 
     // MARK: - Connection loop
@@ -170,34 +185,31 @@ public final class DaemonConnection: SessionBackend {
             noticesDaemonStartedAt = welcome.daemonStartedAt
         }
         apply(sessions: welcome.sessions)
-        for model in openSessions.values { model.connectionOpened() }
         terminals.connectionOpened()
         for await frame in client.pushes {
             route(frame)
         }
         self.client = nil
         await client.close()
-        for model in openSessions.values { model.connectionClosed() }
         terminals.connectionClosed()
     }
 
     private func route(_ frame: ServerFrame) {
         switch frame {
-        case .event(let record): openSessions[record.sessionKey]?.receive(record)
-        case .resync(let resync): openSessions[resync.sessionKey]?.receive(resync)
         case .sessions(let list): apply(sessions: list.sessions)
+        case .ptys(let list): terminals.receive(list)
+        case .ptyOutput(let output): terminals.receive(output)
         case .notice(let notice):
             notices.append(notice)
             if notices.count > Self.noticeLimit { notices.removeFirst(notices.count - Self.noticeLimit) }
-        case .ptyOutput(let output): terminals.receive(output)
         case .welcome, .response: break // the client consumes these
         }
     }
 
     private func apply(sessions: [SessionManifestEntry]) {
         if sessions != self.sessions { self.sessions = sessions }
-        for entry in sessions {
-            openSessions[entry.sessionKey]?.update(entry: entry)
+        for (sessionKey, session) in openSessions {
+            session.update(entry: sessions.first { $0.sessionKey == sessionKey })
         }
     }
 
@@ -259,4 +271,7 @@ extension SessionManifestEntry {
         if let title, !title.isEmpty { return title }
         return "Session \(sessionKey.prefix(8))"
     }
+
+    /// omp does not run for the session and it can be started again from its session file (`session.open`).
+    public var canResume: Bool { status == .closed && sessionFile != nil }
 }

@@ -5,17 +5,15 @@ import os
 
 let appLog = Logger(subsystem: "com.omp-ide.app", category: "state")
 
-/// The app's side of `state.sqlite`: what the previous run left, the latest UI of every session and editor,
-/// debounced saving, and ordered durable writes of unsaved editor text (hot-exit). Without a usable database the app
-/// still works for this run, it just does not remember it.
+/// The app's side of `state.sqlite`: what the previous run left, the latest UI of every editor, debounced
+/// saving, and ordered durable writes of unsaved editor text (hot-exit). Without a usable database the app still works
+/// for this run, it just does not remember it.
 @MainActor
 final class StatePersistence {
     /// Why nothing is saved this run; nil when `state.sqlite` works.
     let unavailableReason: String?
     /// The window's layout when the app last ran.
     let restoredWindow: WindowState?
-    /// The latest UI of each session that has one (restored at launch, then kept current).
-    private(set) var sessions: [SessionKey: SessionUIState]
     /// Unsaved editor buffers the previous run left (hot-exit), by path.
     let restoredDirtyBuffers: [String: DirtyBuffer]
     /// Where each file's editor was (restored at launch, then kept current).
@@ -29,7 +27,6 @@ final class StatePersistence {
     init(paths: AppSupportPaths) {
         var store: StateStore?
         var window: WindowState?
-        var sessions: [SessionKey: SessionUIState] = [:]
         var dirtyBuffers: [String: DirtyBuffer] = [:]
         var editorUI: [String: EditorUIState] = [:]
         var reason: String?
@@ -41,7 +38,6 @@ final class StatePersistence {
                 )
             }
             window = try opened.window(id: AppState.mainWindowID)
-            sessions = try opened.sessionUIStates()
             dirtyBuffers = Dictionary(try opened.dirtyBuffers().map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
             editorUI = try opened.editorUIStates()
             store = opened
@@ -51,23 +47,13 @@ final class StatePersistence {
         }
         self.store = store
         restoredWindow = window
-        self.sessions = sessions
-        restoredDirtyBuffers = dirtyBuffers
         self.editorUI = editorUI
+        restoredDirtyBuffers = dirtyBuffers
         unavailableReason = reason
     }
 
     func save(_ window: WindowState) {
         store?.setWindow(window)
-    }
-
-    /// Applies `change` to the UI of `sessionKey`; a real change is saved (debounced).
-    func updateSession(_ sessionKey: SessionKey, _ change: (inout SessionUIState) -> Void) {
-        var state = sessions[sessionKey] ?? SessionUIState(sessionKey: sessionKey)
-        change(&state)
-        guard state != sessions[sessionKey] else { return }
-        sessions[sessionKey] = state
-        store?.setSessionUI(state)
     }
 
     /// Remembers where the editor of `state.path` is; a real change is saved (debounced).

@@ -1,6 +1,5 @@
 import Foundation
 import GRDB
-import IDEProtocol
 import os
 
 let stateLog = Logger(subsystem: "com.omp-ide", category: "state")
@@ -21,7 +20,8 @@ enum StateSchema {
                 // `TabLayout` as JSON: strips of `{kind, id}` tabs in order, and the selected tab.
                 table.column("tabs", .text).notNull()
             }
-            try db.create(table: SessionUIRecord.databaseTableName) { table in
+            // Per-session composer draft, transcript scroll anchor and journal seq; dropped by `drop_session_ui`.
+            try db.create(table: "session_ui") { table in
                 table.primaryKey("sessionKey", .text)
                 table.column("draft", .text).notNull()
                 table.column("scrollAnchor", .text)
@@ -43,6 +43,10 @@ enum StateSchema {
                 table.column("scrollX", .double).notNull()
                 table.column("scrollY", .double).notNull()
             }
+        }
+        // Sessions are omp's own TUI now: omp keeps the draft and the scrollback, and there is no journal to track.
+        migrator.registerMigration("drop_session_ui") { db in
+            try db.drop(table: "session_ui")
         }
         return migrator
     }()
@@ -84,25 +88,6 @@ struct WindowRecord: FetchableRecord, PersistableRecord {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         container["tabs"] = String(decoding: try encoder.encode(state.tabs), as: UTF8.self)
-    }
-}
-
-struct SessionUIRecord: FetchableRecord, PersistableRecord {
-    static let databaseTableName = "session_ui"
-    var state: SessionUIState
-
-    init(_ state: SessionUIState) { self.state = state }
-
-    init(row: Row) throws {
-        state = SessionUIState(
-            sessionKey: row["sessionKey"], draft: row["draft"], scrollAnchor: row["scrollAnchor"], lastSeq: row["lastSeq"])
-    }
-
-    func encode(to container: inout PersistenceContainer) throws {
-        container["sessionKey"] = state.sessionKey
-        container["draft"] = state.draft
-        container["scrollAnchor"] = state.scrollAnchor
-        container["lastSeq"] = state.lastSeq
     }
 }
 

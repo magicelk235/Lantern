@@ -13,43 +13,6 @@ struct DaemonConnectionTests {
         return false
     }
 
-    @Test func reconnectsAfterADaemonRestartAndResubscribesFromLastSeq() async throws {
-        let home = try TempHome()
-        defer { home.remove() }
-        let records = try Fixture.records("bash-approve")
-        let first = FakeDaemon(sessions: [manifestEntry("s1")], journal: ["s1": Array(records[0 ..< 40])])
-        var server = try await home.startServer(first)
-        let connection = DaemonConnection(paths: home.paths, clientVersion: "test", backoff: backoff)
-        connection.start()
-        try await eventually("connected") { connection.isConnected }
-        #expect(connection.sessions.map(\.sessionKey) == ["s1"])
-
-        let model = connection.open("s1")
-        try await eventually("replayed") { model.lastSeq == 40 && model.sync == .live }
-        #expect(first.subscribes == [.init(sessionKey: "s1", since: 0)])
-        first.append(records[40])
-        try await eventually("live record") { model.lastSeq == 41 }
-
-        // ompd restarts (launchd KeepAlive): the connection drops, nobody listens for a while, then a new daemon with
-        // the same journal (plus what omp produced meanwhile) comes up.
-        await server.stop()
-        try await eventually("daemon unavailable") { isUnavailable(connection) }
-        #expect(model.sync == .detached)
-        #expect(model.lastSeq == 41, "the transcript survives the outage")
-
-        let second = FakeDaemon(sessions: [manifestEntry("s1", status: .busy)], journal: ["s1": records])
-        server = try await home.startServer(second)
-        try await eventually("reconnected and caught up") { model.lastSeq == Seq(records.count) && model.sync == .live }
-        #expect(second.subscribes == [.init(sessionKey: "s1", since: 41)])
-        #expect(second.ompCommands.isEmpty, "Regime A: restoring sends no omp command")
-        #expect(second.snapshots.isEmpty)
-        #expect(model.transcript == reduce(records), "identical to an always-connected client")
-        #expect(model.entry?.status == .busy, "manifest from the new welcome")
-
-        await connection.stop()
-        await server.stop()
-    }
-
     @Test func waitsForADaemonThatIsStillStarting() async throws {
         let home = try TempHome(withToken: false)
         defer { home.remove() }
@@ -66,54 +29,61 @@ struct DaemonConnectionTests {
             return false
         }
 
-        let server = try await home.startServer(FakeDaemon(sessions: [manifestEntry("a"), manifestEntry("b", workspace: "/tmp/other")]))
+        let daemon = FakeDaemon()
+        daemon.addSession("a", ptyId: "tui-a")
+        daemon.addSession("b", ptyId: "tui-b", workspace: "/tmp/other")
+        let server = try await home.startServer(daemon)
         try await eventually("connected") { connection.isConnected }
         #expect(connection.workspaces.map(\.path) == ["/tmp/other", "/tmp/workspace"])
         await connection.stop()
         await server.stop()
     }
 
-    @Test func createsSessionsAndPassesCommandsThrough() async throws {
+    @Test func aNewSessionStartsAtTheSizeOfTheViewAndItsTUIShows() async throws {
         let home = try TempHome()
         defer { home.remove() }
-        let daemon = FakeDaemon(sessions: [])
+        let daemon = FakeDaemon()
         let server = try await home.startServer(daemon)
-        let connection = DaemonConnection(paths: home.paths, clientVersion: "test", backoff: backoff)
-        connection.start()
-        try await eventually("connected") { connection.isConnected }
+        let connection = try await connect(home)
 
-        let entry = try await connection.createSession(workspace: URL(filePath: "/tmp/project/", directoryHint: .isDirectory), approvalMode: .alwaysAsk)
-        #expect(daemon.creates == [.init(workspace: "/tmp/project", approvalMode: "always-ask")])
+        let entry = try await connection.createSession(
+            workspace: URL(filePath: "/tmp/project/", directoryHint: .isDirectory), approvalMode: .alwaysAsk,
+            size: TerminalSize(cols: 132, rows: 43))
+        #expect(daemon.creates == [.init(workspace: "/tmp/project", approvalMode: "always-ask", cols: 132, rows: 43)])
         #expect(connection.sessions.map(\.sessionKey) == [entry.sessionKey])
+        let ptyId = try #require(entry.ptyId)
 
-        let model = connection.open(entry.sessionKey)
-        try await eventually("subscribed") { model.sync == .live }
-        #expect(await model.send("hi", streamingBehavior: .followUp))
-        #expect(daemon.ompCommands == [.init(sessionKey: entry.sessionKey, command: ["type": "prompt", "message": "hi", "streamingBehavior": "followUp"])])
+        let session = connection.open(entry.sessionKey)
+        let display = RecordingDisplay()
+        session.resize(TerminalSize(cols: 132, rows: 43))
+        session.attach(to: display)
+        try await eventually("omp's first screen") { display.text == "omp \(entry.sessionKey) 132x43\r\n" }
+        #expect(session.isLive)
+        #expect(daemon.resizes.isEmpty, "the TUI already has the view's size")
+        session.send(Data("hello\r".utf8))
+        try await eventually("typed into the TUI") { daemon.written(to: ptyId) == Data("hello\r".utf8) }
 
         await connection.stop()
         await server.stop()
     }
 
-    @Test func commandsFailCleanlyWhileDisconnected() async throws {
+    @Test func callsFailCleanlyWhileDisconnected() async throws {
         let home = try TempHome()
         defer { home.remove() }
         let connection = DaemonConnection(paths: home.paths, clientVersion: "test", backoff: backoff)
-        let model = connection.open("s1")
-        #expect(await model.send("hello") == false)
-        #expect(model.lastError == "Not connected to ompd.")
         await #expect(throws: IDETransportError.notConnected) {
-            _ = try await connection.createSession(workspace: URL(filePath: "/tmp"), approvalMode: nil)
+            _ = try await connection.createSession(workspace: URL(filePath: "/tmp"), approvalMode: nil, size: .standard)
+        }
+        await #expect(throws: IDETransportError.notConnected) {
+            try await connection.closeSession("s1")
         }
     }
 
     @Test func daemonNoticesCollectUntilDismissedOrTheDaemonRestarts() async throws {
         let home = try TempHome()
         defer { home.remove() }
-        var server = try await home.startServer(FakeDaemon(sessions: []))
-        let connection = DaemonConnection(paths: home.paths, clientVersion: "test", backoff: backoff)
-        connection.start()
-        try await eventually("connected") { connection.isConnected }
+        var server = try await home.startServer(FakeDaemon())
+        let connection = try await connect(home)
 
         let readOnly = DaemonNotice(level: "error", message: "ompd is read-only", at: testDate)
         let slow = DaemonNotice(level: "warning", message: "omp is slow", sessionKey: "s1", at: testDate)
@@ -129,7 +99,7 @@ struct DaemonConnectionTests {
         await server.stop()
         try await eventually("daemon unavailable") { isUnavailable(connection) }
         #expect(connection.latestNotice == readOnly, "an outage alone does not clear what the daemon said")
-        server = try await home.startServer(FakeDaemon(sessions: []), startedAt: testDate.addingTimeInterval(60))
+        server = try await home.startServer(FakeDaemon(), startedAt: testDate.addingTimeInterval(60))
         try await eventually("reconnected to a new ompd") { connection.isConnected }
         #expect(connection.notices.isEmpty, "a restarted ompd starts over")
 

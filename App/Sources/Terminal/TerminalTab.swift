@@ -22,26 +22,32 @@ final class OmpTerminalView: TerminalView {
     }
 }
 
-/// One terminal tab's emulator: shows its `TerminalSessionModel` and sends the model what the user types. Lives as long
-/// as the tab, so switching tabs keeps its screen, scrollback and selection.
+/// One tab's emulator: shows its endpoint — a terminal's PTY, or an omp session's TUI on whichever PTY omp runs on — and
+/// sends it what the user types. Lives as long as the tab, so switching tabs keeps its screen, scrollback and selection.
+///
+/// Everything a TUI needs passes through SwiftTerm: Ctrl chords, Esc, Option as Meta (per tab kind, see
+/// `TerminalSettings`), the kitty keyboard protocol once the program asks for it (Shift+Enter, Ctrl+Enter, ⌥Enter
+/// distinct), bracketed paste, mouse reporting, true color and OSC 8 links (⌘-click opens them). OSC 52 writes go to
+/// the clipboard; reads are refused.
 @MainActor
 final class TerminalTab {
     /// Lines kept above the screen, as many as ompd keeps (`TerminalMirror.scrollbackLines`), so a reattach shows
     /// what the view showed.
     static let scrollbackLines = 5_000
 
-    let model: TerminalSessionModel
+    let endpoint: any TerminalEndpoint
     let view: OmpTerminalView
     private let onSize: (TerminalSize) -> Void
 
     /// `onSize`: the emulator's size whenever it changes.
-    init(model: TerminalSessionModel, font: NSFont, onSize: @escaping (TerminalSize) -> Void) {
-        self.model = model
+    init(endpoint: any TerminalEndpoint, font: NSFont, optionAsMeta: Bool, onSize: @escaping (TerminalSize) -> Void) {
+        self.endpoint = endpoint
         self.onSize = onSize
         view = OmpTerminalView(frame: .zero, font: font, options: TerminalOptions(scrollback: Self.scrollbackLines))
         view.applyColors()
+        view.optionAsMetaKey = optionAsMeta
         view.terminalDelegate = self
-        model.attach(to: self)
+        endpoint.attach(to: self)
     }
 
     /// The emulator's size in cells.
@@ -55,9 +61,13 @@ final class TerminalTab {
         view.font = font
     }
 
+    func setOptionAsMeta(_ optionAsMeta: Bool) {
+        view.optionAsMetaKey = optionAsMeta
+    }
+
     /// The tab closed: ompd stops streaming to it. The PTY keeps running.
     func close() {
-        model.detach()
+        endpoint.detach()
     }
 }
 
@@ -81,23 +91,30 @@ extension TerminalTab: TerminalDisplay {
 extension TerminalTab: @preconcurrency TerminalViewDelegate {
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
         let size = TerminalSize(cols: newCols, rows: newRows)
-        model.resize(size)
+        endpoint.resize(size)
         onSize(size)
     }
 
     func setTerminalTitle(source: TerminalView, title: String) {
-        model.programTitle = title.isEmpty ? nil : title
+        endpoint.programTitle = title.isEmpty ? nil : title
     }
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
-        // ompd reports the shell's folder in `pty.list`, which works without shell integration.
+        // ompd reports the shell's folder in its PTY list, which works without shell integration.
     }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        model.send(Data(data))
+        endpoint.send(Data(data))
     }
 
     func scrolled(source: TerminalView, position: Double) {}
 
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+
+    /// OSC 52 from the program (omp copying a message or a code block): onto the general pasteboard.
+    func clipboardCopy(source: TerminalView, content: Data) {
+        guard let text = String(data: content, encoding: .utf8) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
 }

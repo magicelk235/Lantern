@@ -3,13 +3,12 @@ import GRDB
 import IDEProtocol
 import os
 
-/// `$APP_SUPPORT/state.sqlite`: what the IDE itself owns — window layouts with their tabs, per-session UI
-/// (composer draft, scroll anchor, last seq seen), per-file editor UI (selections, scroll) and hot-exit dirty buffers —
-/// in SQLite (WAL) through GRDB.
+/// `$APP_SUPPORT/state.sqlite`: what the IDE itself owns — window layouts with their tabs, per-file editor
+/// UI (selections, scroll) and hot-exit dirty buffers — in SQLite (WAL) through GRDB.
 ///
-/// - Window, session and editor UI changes are coalesced and written `debounce` after the last one, and at most
-///   `maxDelay` after the first unwritten one while changes keep coming; `flush()` writes them at once. WAL makes each
-///   write atomic, so a crash loses at most the unwritten changes.
+/// - Window and editor UI changes are coalesced and written `debounce` after the last one, and at most `maxDelay` after
+///   the first unwritten one while changes keep coming; `flush()` writes them at once. WAL makes each write atomic, so a
+///   crash loses at most the unwritten changes.
 /// - Dirty buffers are written synchronously in `synchronous=FULL` transactions (flushed with `F_FULLFSYNC`) and
 ///   mirrored to `hot-exit/<sha256(path)>` plain files: once a buffer call returns, the edit survives a crash or a
 ///   power loss, and also a lost or corrupt database.
@@ -39,10 +38,9 @@ public final class StateStore: Sendable {
     private let queue = DispatchQueue(label: "com.omp-ide.state")
     private let pending = OSAllocatedUnfairLock(initialState: Pending())
 
-    /// Window, session and editor UI changes not written yet.
+    /// Window and editor UI changes not written yet.
     private struct Pending: Sendable {
         var windows: [String: WindowState] = [:]
-        var sessions: [SessionKey: SessionUIState] = [:]
         var editors: [String: EditorUIState] = [:]
         /// Arrival of the oldest and of the newest unwritten change.
         var first: ContinuousClock.Instant?
@@ -50,7 +48,7 @@ public final class StateStore: Sendable {
         /// A debounce timer is scheduled on `queue`.
         var armed = false
 
-        var isEmpty: Bool { windows.isEmpty && sessions.isEmpty && editors.isEmpty }
+        var isEmpty: Bool { windows.isEmpty && editors.isEmpty }
     }
 
     /// Opens (creating, migrating or recovering) `paths.stateDB`, with dirty-buffer mirrors in `paths.hotExit`.
@@ -84,25 +82,13 @@ public final class StateStore: Sendable {
         self.recovery = recovery
     }
 
-    // MARK: - Windows and session UI (debounced)
+    // MARK: - Windows and editor UI (debounced)
 
     /// Window `id`'s layout, including a change not written yet.
     public func window(id: String) throws -> WindowState? {
         try queue.sync {
             if let state = pending.withLock({ $0.windows[id] }) { return state }
             return try database.read { db in try WindowRecord.fetchOne(db, key: id)?.state }
-        }
-    }
-
-    /// The UI of every session that has one, including changes not written yet.
-    public func sessionUIStates() throws -> [SessionKey: SessionUIState] {
-        try queue.sync {
-            var states: [SessionKey: SessionUIState] = [:]
-            for record in try database.read({ db in try SessionUIRecord.fetchAll(db) }) {
-                states[record.state.sessionKey] = record.state
-            }
-            for (key, state) in pending.withLock({ $0.sessions }) { states[key] = state }
-            return states
         }
     }
 
@@ -121,11 +107,6 @@ public final class StateStore: Sendable {
     /// Replaces window `state.id`'s layout, written after the debounce or by `flush()`.
     public func setWindow(_ state: WindowState) {
         record { $0.windows[state.id] = state }
-    }
-
-    /// Replaces the UI of session `state.sessionKey`, written after the debounce or by `flush()`.
-    public func setSessionUI(_ state: SessionUIState) {
-        record { $0.sessions[state.sessionKey] = state }
     }
 
     /// Replaces where the editor of `state.path` is, written after the debounce or by `flush()`.
@@ -178,7 +159,7 @@ public final class StateStore: Sendable {
         do {
             try writePending()
         } catch {
-            stateLog.error("writing window and session state failed: \(String(describing: error), privacy: .public)")
+            stateLog.error("writing window and editor state failed: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -187,7 +168,6 @@ public final class StateStore: Sendable {
         let batch = pending.withLock { pending -> Pending in
             let batch = pending
             pending.windows = [:]
-            pending.sessions = [:]
             pending.editors = [:]
             pending.first = nil
             pending.last = nil
@@ -197,14 +177,12 @@ public final class StateStore: Sendable {
         do {
             try database.write { db in
                 for state in batch.windows.values { try WindowRecord(state).upsert(db) }
-                for state in batch.sessions.values { try SessionUIRecord(state).upsert(db) }
                 for state in batch.editors.values { try EditorUIRecord(state).upsert(db) }
             }
         } catch {
             // Newer changes that came in meanwhile win; the rest waits for the next write.
             pending.withLock { pending in
                 pending.windows.merge(batch.windows) { newer, _ in newer }
-                pending.sessions.merge(batch.sessions) { newer, _ in newer }
                 pending.editors.merge(batch.editors) { newer, _ in newer }
                 if let first = batch.first { pending.first = min(pending.first ?? first, first) }
                 if pending.last == nil { pending.last = batch.last }

@@ -15,7 +15,7 @@ final class AppState {
     let agent = DaemonAgent()
     /// Open files and the file navigators.
     let editors: Editors
-    /// Terminals: PTYs in ompd, shown as `.terminal` tabs.
+    /// Terminal emulators: `.terminal` tabs on PTYs in ompd, and `.session` tabs showing omp's TUI.
     let terminals: TerminalsController
     /// Detail-area tabs, one strip per workspace. The selected tab is what the detail area shows and what the sidebar
     /// highlights.
@@ -34,6 +34,8 @@ final class AppState {
     @ObservationIgnored private var windowFrame: WindowFrame?
     @ObservationIgnored private weak var window: NSWindow?
     @ObservationIgnored private var windowObservers: [any NSObjectProtocol] = []
+    /// Size of the area below the tab strip, where a tab's content goes, and whether the strip was showing.
+    @ObservationIgnored private var tabContentArea: (size: CGSize, belowStrip: Bool)?
 
     struct AlertMessage: Identifiable {
         let id = UUID()
@@ -51,9 +53,8 @@ final class AppState {
         initialSidebarWidth = restored?.sidebarWidth ?? 270
         sidebarWidth = restored?.sidebarWidth
         windowFrame = restored?.frame
-        // Regime A: each restored session tab subscribes once connected, replaying its journal from the
-        // start; nothing is sent to omp.
-        for sessionKey in tabs.tabs.compactMap(\.sessionKey) { openSession(sessionKey) }
+        // Regime A: each restored session tab attaches to omp's TUI once connected; nothing is sent to omp.
+        for sessionKey in tabs.tabs.compactMap(\.sessionKey) { connection.open(sessionKey) }
         restoreEditors()
         // Terminal tabs re-attach once shown; those whose PTY ompd no longer lists close.
         for strip in tabs.strips {
@@ -74,9 +75,6 @@ final class AppState {
     }
 
     // MARK: - Sessions and tabs
-
-    /// The session on screen.
-    var selectedSession: SessionKey? { tabs.selectedSession }
 
     func entry(for sessionKey: SessionKey) -> SessionManifestEntry? {
         connection.sessions.first { $0.sessionKey == sessionKey }
@@ -100,6 +98,10 @@ final class AppState {
         guard let path = tab.editorPath else {
             tabs.close(tab)
             if let ptyId = tab.ptyId { terminals.release(ptyId) }
+            if let sessionKey = tab.sessionKey {
+                terminals.releaseSession(sessionKey)
+                connection.release(sessionKey)
+            }
             saveWindow()
             return
         }
@@ -146,20 +148,35 @@ final class AppState {
         if let selection { tabs.select(selection) }
     }
 
-    /// Picks a workspace folder and asks ompd to start omp there with the default approval mode.
+    /// Picks a workspace folder and asks ompd to start omp's TUI there, with the default approval mode, at the size
+    /// the new tab will have.
     func newSession() {
         guard let folder = WorkspacePicker.choose() else { return }
         let mode = UserDefaults.standard.string(forKey: AppSettings.defaultApprovalModeKey).flatMap(ApprovalMode.init(rawValue:))
+        let size = newTabSize()
         Task {
             do {
-                show(try await connection.createSession(workspace: folder, approvalMode: mode))
+                show(try await connection.createSession(workspace: folder, approvalMode: mode, size: size))
             } catch {
                 alert = AlertMessage(title: "Could not start a session", message: error.userMessage)
             }
         }
     }
 
-    func close(_ sessionKey: SessionKey) {
+    /// Starts omp again for a closed session from its session file; its tab follows omp to the new PTY.
+    func resumeSession(_ sessionKey: SessionKey) {
+        let size = connection.openSessions[sessionKey]?.size ?? newTabSize()
+        Task {
+            do {
+                show(try await connection.resumeSession(sessionKey, size: size))
+            } catch {
+                alert = AlertMessage(title: "Could not resume the session", message: error.userMessage)
+            }
+        }
+    }
+
+    /// Ends omp for the session gracefully; its tab stays, with the last screen and Resume.
+    func closeSession(_ sessionKey: SessionKey) {
         Task {
             do {
                 try await connection.closeSession(sessionKey)
@@ -169,51 +186,31 @@ final class AppState {
         }
     }
 
-    /// Where the transcript of `sessionKey` was scrolled when it was last on screen.
-    func savedUI(for sessionKey: SessionKey) -> SessionUIState? {
-        persistence.sessions[sessionKey]
-    }
-
-    /// `anchor`: the transcript row at the bottom edge, nil while scrolled to the end.
-    func scrollAnchorChanged(_ anchor: String?, in model: SessionViewModel) {
-        persistence.updateSession(model.sessionKey) { ui in
-            ui.scrollAnchor = anchor
-            ui.lastSeq = max(ui.lastSeq, model.lastSeq)
-        }
+    /// omp's title for the session, else the title its TUI set, else a short form of its key.
+    func sessionTitle(_ sessionKey: SessionKey) -> String {
+        let entry = entry(for: sessionKey)
+        if let title = entry?.title, !title.isEmpty { return title }
+        if let title = connection.openSessions[sessionKey]?.programTitle, !title.isEmpty { return title }
+        return entry?.displayTitle ?? "Session \(sessionKey.prefix(8))"
     }
 
     private func show(_ entry: SessionManifestEntry) {
-        openSession(entry.sessionKey)
+        connection.open(entry.sessionKey)
         tabs.open(.session(entry.sessionKey), in: entry.workspace)
         saveWindow()
     }
 
-    /// Subscribes the session (now or on connect) and gives it back its unsent draft.
-    private func openSession(_ sessionKey: SessionKey) {
-        guard connection.openSessions[sessionKey] == nil else { return }
-        let model = connection.open(sessionKey)
-        if let draft = persistence.sessions[sessionKey]?.draft, !draft.isEmpty { model.draft = draft }
-        observeDraft(of: model)
+    /// The area below the tab strip changed size.
+    func tabContentSizeChanged(_ size: CGSize) {
+        tabContentArea = (size, tabs.selectedStrip != nil)
     }
 
-    private func observeDraft(of model: SessionViewModel) {
-        withObservationTracking {
-            _ = model.draft
-        } onChange: { [weak self, weak model] in
-            guard let self, let model else { return }
-            // `onChange` runs before the new value is stored.
-            Task { @MainActor in
-                self.saveSessionUI(of: model)
-                self.observeDraft(of: model)
-            }
-        }
-    }
-
-    private func saveSessionUI(of model: SessionViewModel) {
-        persistence.updateSession(model.sessionKey) { ui in
-            ui.draft = model.draft
-            ui.lastSeq = max(ui.lastSeq, model.lastSeq)
-        }
+    /// The cells a new terminal or session tab's emulator gets: what fits the area below the tab strip.
+    private func newTabSize() -> TerminalSize {
+        guard var area = tabContentArea?.size else { return terminals.lastSize ?? .standard }
+        // A first tab brings the strip along.
+        if tabContentArea?.belowStrip == false { area.height -= TabStrip.height }
+        return terminals.cells(fitting: TerminalPane.emulatorSize(in: area))
     }
 
     // MARK: - Terminals
@@ -222,9 +219,10 @@ final class AppState {
     /// new tab of that workspace's strip.
     func newTerminal(in workspace: String? = nil) {
         let workspace = workspace ?? tabs.selectedStrip?.workspace ?? NSHomeDirectory()
+        let size = newTabSize()
         Task {
             do {
-                let ptyId = try await terminals.open(in: workspace)
+                let ptyId = try await terminals.open(in: workspace, size: size)
                 tabs.open(.terminal(ptyId), in: workspace)
                 saveWindow()
             } catch {
@@ -324,7 +322,6 @@ final class AppState {
     /// and quit.
     func flushState() {
         windowFrameChanged()
-        for model in connection.openSessions.values { saveSessionUI(of: model) }
         editors.flush()
         saveWindow()
         persistence.flush()
