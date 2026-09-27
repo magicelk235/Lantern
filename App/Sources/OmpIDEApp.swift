@@ -19,8 +19,8 @@ struct OmpIDEApp: App {
                 }
         }
         .defaultSize(width: 1100, height: 760)
-        // The tab strip and the sidebar name what is on screen; the toolbar holds only the actions.
-        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
+        // The tab strip and the sidebar name what is on screen; the toolbar holds only the actions, with their names.
+        .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Session") { if let project = app.currentProject { app.newSession(in: project) } else { app.newSession() } }

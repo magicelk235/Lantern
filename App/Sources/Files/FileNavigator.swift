@@ -3,40 +3,25 @@ import IDEEditorModel
 import IDEState
 import SwiftUI
 
-/// The Files panel, trailing the detail area: one project's folder as an outline (each folder listed when first
-/// expanded), or, while the find field has text, the files whose path contains it. A click highlights a file; Return
-/// or a double-click opens it in the project's tab strip.
+/// The Files panel, trailing the detail area: one project's folder as an outline, each folder listed when first
+/// expanded. A click highlights a file; Return or a double-click opens it in the project's tab strip.
 struct FilesPanel: View {
     @Bindable var app: AppState
-    @State private var query = ""
-    @State private var index = FileIndex()
 
     var body: some View {
         VStack(spacing: 0) {
             if let project = app.filesProject {
                 header(project)
-                TextField("Find files", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .controlSize(.small)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 8)
                 Divider()
                 let tree = app.editors.tree(for: project)
                 List(selection: Binding(get: { app.filesSelection }, set: { app.selectInFiles($0) })) {
-                    if query.trimmingCharacters(in: .whitespaces).isEmpty {
-                        FileRows(app: app, tree: tree, folder: tree.root)
-                    } else {
-                        FindResults(app: app, tree: tree, matches: index.matches(query))
-                    }
+                    FileRows(app: app, tree: tree, folder: tree.root)
                 }
                 .listStyle(.inset)
                 .scrollContentBackground(.hidden)
                 .environment(\.defaultMinListRowHeight, 22)
                 .fileNavigatorActions(app)
-                .task(id: project) {
-                    tree.setExpanded(tree.root, true)
-                    await index.load(root: project)
-                }
+                .task(id: project) { tree.setExpanded(tree.root, true) }
             } else {
                 ContentUnavailableView {
                     Text("No Project")
@@ -182,31 +167,6 @@ private struct FileRows: View {
     }
 }
 
-/// Files whose path matches the find field, shown with their folder.
-private struct FindResults: View {
-    let app: AppState
-    let tree: FileTree
-    let matches: [String]
-
-    var body: some View {
-        if matches.isEmpty {
-            Text("No matching files")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        ForEach(matches, id: \.self) { path in
-            let relative = String(path.dropFirst(tree.root.count + 1))
-            let folder = (relative as NSString).deletingLastPathComponent
-            FileRow(
-                name: (path as NSString).lastPathComponent, path: path, isDirectory: false,
-                isIgnored: tree.isIgnored(path), isDirty: app.editors.document(for: path)?.isDirty ?? false,
-                detail: folder.isEmpty ? nil : folder
-            )
-            .tag(TabKind.editor(path: path))
-        }
-    }
-}
-
 private struct FileRow: View {
     let name: String
     let path: String
@@ -257,57 +217,5 @@ private struct FileRow: View {
         case "sh", "zsh", "bash", "fish": return "terminal"
         default: return "doc.text"
         }
-    }
-}
-
-/// Every file under a project (hidden folders, `.git`, `node_modules` and build output skipped, at most
-/// `limit` entries), for the find field. Listed off the main thread when the panel shows the project.
-@MainActor @Observable
-final class FileIndex {
-    private(set) var root = ""
-    private(set) var paths: [String] = []
-
-    nonisolated static let limit = 50_000
-    nonisolated static let skippedFolders: Set<String> = [".git", "node_modules", ".build", "DerivedData", "dist", "out"]
-
-    func load(root: String) async {
-        let paths = await Task.detached(priority: .utility) { Self.list(root) }.value
-        guard !Task.isCancelled else { return }
-        self.root = root
-        self.paths = paths
-    }
-
-    /// Paths containing `query` (case-insensitive), file names matching first, at most 200.
-    func matches(_ query: String) -> [String] {
-        let query = query.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return [] }
-        var byName: [String] = []
-        var byPath: [String] = []
-        for path in paths {
-            let relative = path.dropFirst(root.count + 1)
-            guard relative.localizedCaseInsensitiveContains(query) else { continue }
-            let name = (path as NSString).lastPathComponent
-            if name.localizedCaseInsensitiveContains(query) { byName.append(path) } else { byPath.append(path) }
-            if byName.count >= 200 { break }
-        }
-        return Array((byName + byPath).prefix(200))
-    }
-
-    private nonisolated static func list(_ root: String) -> [String] {
-        var result: [String] = []
-        let url = URL(filePath: root, directoryHint: .isDirectory)
-        guard let enumerator = FileManager.default.enumerator(
-            at: url, includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey], options: [.skipsPackageDescendants])
-        else { return [] }
-        for case let file as URL in enumerator {
-            guard let values = try? file.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey]) else { continue }
-            if values.isDirectory == true {
-                if skippedFolders.contains(file.lastPathComponent) || values.isHidden == true { enumerator.skipDescendants() }
-                continue
-            }
-            result.append(file.path(percentEncoded: false))
-            if result.count >= limit { break }
-        }
-        return result
     }
 }

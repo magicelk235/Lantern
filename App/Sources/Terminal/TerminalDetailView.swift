@@ -101,7 +101,7 @@ struct TerminalRows: View {
             TerminalRow(info: info, title: app.terminals.title(for: info.ptyId))
                 .tag(TabKind.terminal(info.ptyId))
                 .contextMenu {
-                    Button("Close Terminal…") { app.requestCloseTerminal(info.ptyId) }
+                    Button("Close Terminal") { app.requestCloseTerminal(info.ptyId) }
                         .disabled(!app.connection.isConnected)
                 }
         }

@@ -55,14 +55,12 @@ final class AppState {
 
     enum CloseRequest: Identifiable {
         case session(SessionKey)
-        case terminal(PTYID)
         /// Remove a stopped session from ompd's list.
         case forget(SessionKey)
 
         var id: String {
             switch self {
             case .session(let key): "session:\(key)"
-            case .terminal(let ptyId): "terminal:\(ptyId)"
             case .forget(let key): "forget:\(key)"
             }
         }
@@ -140,24 +138,31 @@ final class AppState {
         saveWindow()
     }
 
-    /// Closes the tab only: the session or terminal keeps running (Close Session / Close Terminal stop them). An
-    /// editor with unsaved edits asks to save them first.
+    /// Closes the tab. A session tab ends its session and a terminal tab its PTY (they are gone, not hidden; asked
+    /// first when the agent is working or a program runs in the terminal). An editor with unsaved edits asks to
+    /// save them first.
     func closeTab(_ tab: TabKind) {
-        guard let path = tab.editorPath else {
-            tabs.close(tab)
-            if let ptyId = tab.ptyId { terminals.release(ptyId) }
-            if let sessionKey = tab.sessionKey {
-                terminals.releaseSession(sessionKey)
-                connection.release(sessionKey)
+        switch tab {
+        case .session(let sessionKey):
+            requestCloseSession(sessionKey)
+        case .terminal(let ptyId):
+            requestCloseTerminal(ptyId)
+        case .editor(let path):
+            Task {
+                guard await editors.closeIfConfirmed(path, window: window) else { return }
+                tabs.close(tab)
+                saveWindow()
             }
-            saveWindow()
-            return
         }
-        Task {
-            guard await editors.closeIfConfirmed(path, window: window) else { return }
-            tabs.close(tab)
-            saveWindow()
-        }
+    }
+
+    /// Closes a session's tab without touching the session.
+    private func dropSessionTab(_ sessionKey: SessionKey) {
+        guard tabs.contains(.session(sessionKey)) else { return }
+        tabs.close(.session(sessionKey))
+        terminals.releaseSession(sessionKey)
+        connection.release(sessionKey)
+        saveWindow()
     }
 
     /// Shows `tab`, opening it first if needed (sidebar selection).
@@ -291,17 +296,33 @@ final class AppState {
         }
     }
 
-    /// Asks before ending omp for the session (the confirmation lives in the window).
+    /// Ends the session: at once, or after a confirmation while the agent is working (it lives in the window).
     func requestCloseSession(_ sessionKey: SessionKey) {
-        guard connection.isConnected, let entry = entry(for: sessionKey), entry.status != .closed else { return }
-        pendingClose = .session(sessionKey)
+        guard connection.isConnected, let entry = entry(for: sessionKey) else {
+            dropSessionTab(sessionKey)
+            return
+        }
+        if entry.status == .busy { pendingClose = .session(sessionKey) } else { closeSession(sessionKey) }
     }
 
-    /// Ends omp for the session gracefully; its tab stays, with the last screen and Resume.
+    /// Ends omp for the session gracefully and drops the session from ompd's list; its tab closes. The conversation
+    /// file on disk stays (resumable through `session.open`).
     func closeSession(_ sessionKey: SessionKey) {
         Task {
             do {
-                try await connection.closeSession(sessionKey)
+                if let entry = entry(for: sessionKey), !entry.isStopped {
+                    try await connection.closeSession(sessionKey)
+                }
+                // The stop is reported before the manifest settles: a forget refused for a running omp is retried.
+                for attempt in 1...5 {
+                    do {
+                        try await connection.forgetSession(sessionKey)
+                        break
+                    } catch let error as DaemonError where error.code == .sessionBusy && attempt < 5 {
+                        try await Task.sleep(for: .milliseconds(400))
+                    }
+                }
+                dropSessionTab(sessionKey)
             } catch {
                 alert = AlertMessage(title: "Could not close the session", message: error.userMessage)
             }
@@ -402,10 +423,15 @@ final class AppState {
         saveWindow()
     }
 
-    /// Ends the PTY at once when its program ended, else asks first (the confirmation lives in the window).
+    /// Ends the PTY and everything on it; its tab closes.
     func requestCloseTerminal(_ ptyId: PTYID) {
-        guard connection.isConnected else { return }
-        if terminals.model(ptyId)?.hasExited == true { closeTerminal(ptyId) } else { pendingClose = .terminal(ptyId) }
+        guard connection.isConnected, terminals.model(ptyId) != nil else {
+            tabs.close(.terminal(ptyId))
+            terminals.release(ptyId)
+            saveWindow()
+            return
+        }
+        closeTerminal(ptyId)
     }
 
     /// Ends the PTY and everything running on it; its tab closes.

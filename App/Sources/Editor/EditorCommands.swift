@@ -63,12 +63,12 @@ struct SessionCommands: Commands {
             let ptyId = app.tabs.selection?.ptyId
             Button("Resume Session") { if let entry { app.resumeSession(entry.sessionKey) } }
                 .disabled(!app.connection.isConnected || entry?.isResumable != true)
-            Button("Close Session…") { if let entry { app.requestCloseSession(entry.sessionKey) } }
+            Button("Close Session") { if let entry { app.requestCloseSession(entry.sessionKey) } }
                 .disabled(!app.connection.isConnected || entry == nil || entry?.isStopped == true)
             Button("Remove Session…") { if let entry { app.requestForgetSession(entry.sessionKey) } }
                 .disabled(!app.connection.isConnected || entry?.isStopped != true)
             Divider()
-            Button("Close Terminal…") { if let ptyId { app.requestCloseTerminal(ptyId) } }
+            Button("Close Terminal") { if let ptyId { app.requestCloseTerminal(ptyId) } }
                 .disabled(!app.connection.isConnected || ptyId == nil)
         }
     }

@@ -53,7 +53,7 @@ struct SessionNotice {
         var title: String {
             switch self {
             case .resume: "Resume"
-            case .closeSession: "Close Session…"
+            case .closeSession: "Close Session"
             case .forget: "Remove Session…"
             case .closeTab: "Close Tab"
             }

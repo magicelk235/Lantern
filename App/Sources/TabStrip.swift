@@ -70,7 +70,7 @@ private struct TabMenu: View {
                 SessionMenu(app: app, entry: entry)
             }
         case .terminal(let ptyId):
-            Button("Close Terminal…") { app.requestCloseTerminal(ptyId) }
+            Button("Close Terminal") { app.requestCloseTerminal(ptyId) }
                 .disabled(!app.connection.isConnected)
         case .editor(let path):
             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: path)]) }
@@ -118,7 +118,7 @@ private struct TabItem: View {
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .opacity(isSelected || hovering ? 1 : 0)
-            .help(tab.ptyId != nil ? "Close Tab (the terminal keeps running)" : document != nil ? "Close Tab" : "Close Tab (the session keeps running)")
+            .help(tab.ptyId != nil ? "Close Terminal" : document != nil ? "Close Tab" : "Close Session")
             .accessibilityLabel("Close Tab \(title)")
         }
         .font(.system(size: 12))

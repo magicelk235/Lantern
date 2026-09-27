@@ -48,27 +48,30 @@ struct ContentView: View {
         .toolbarBackground(Chrome.surface, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         .toolbar {
-            // Flexible space: with no title in the compact toolbar, the actions would otherwise sit at the sidebar.
+            // Flexible space: with no title, the actions would otherwise sit at the sidebar.
             ToolbarItem(placement: .principal) { Spacer() }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
-                    app.newTerminal()
-                } label: {
-                    Label("New Terminal", systemImage: "terminal")
-                }
-                .help("Open a terminal in \(app.currentProject.map(AppState.projectName) ?? "your home folder") (⌃`)")
-                .disabled(!app.connection.isConnected)
-                Button {
                     if let project = app.currentProject { app.newSession(in: project) } else { app.newSession() }
                 } label: {
-                    Label("New Session", systemImage: "plus")
+                    Label("New Session", systemImage: "plus.circle.fill")
+                        .labelStyle(.titleAndIcon)
                 }
                 .help("Start omp in \(app.currentProject.map(AppState.projectName) ?? "a project folder") (⌘N)")
+                .disabled(!app.connection.isConnected)
+                Button {
+                    app.newTerminal()
+                } label: {
+                    Label("Terminal", systemImage: "terminal")
+                        .labelStyle(.titleAndIcon)
+                }
+                .help("Open a terminal in \(app.currentProject.map(AppState.projectName) ?? "your home folder") (⌃`)")
                 .disabled(!app.connection.isConnected)
                 Button {
                     app.filesVisible.toggle()
                 } label: {
                     Label("Files", systemImage: "sidebar.trailing")
+                        .labelStyle(.titleAndIcon)
                 }
                 .help("Show or hide the Files panel (⌥⌘0)")
             }
@@ -83,17 +86,13 @@ struct ContentView: View {
             switch request {
             case .session(let key):
                 Button("Close Session", role: .destructive) { app.closeSession(key) }
-            case .terminal(let ptyId):
-                Button("Close Terminal", role: .destructive) { app.closeTerminal(ptyId) }
             case .forget(let key):
                 Button("Remove Session", role: .destructive) { app.forgetSession(key) }
             }
         } message: { request in
             switch request {
             case .session:
-                Text("omp exits. The conversation is kept, and Resume starts omp again where it left off.")
-            case .terminal:
-                Text("The shell and every program running in it are ended.")
+                Text("The agent is working. omp exits and the session leaves the list; its conversation file on disk is kept.")
             case .forget:
                 Text("ompd forgets the session and its tab closes. The conversation file on disk is kept.")
             }
@@ -107,8 +106,7 @@ struct ContentView: View {
 
     private var closeTitle: String {
         switch app.pendingClose {
-        case .session: "Close this session?"
-        case .terminal: "Close this terminal?"
+        case .session: "Close this session while the agent works?"
         case .forget: "Remove this session from the list?"
         case nil: ""
         }
@@ -128,7 +126,7 @@ private struct EmptyDetail: View {
             }
         } description: {
             if app.currentProject != nil {
-                Text("Start omp here, or open a terminal. Sessions keep running after you close their tab or quit.")
+                Text("Start omp here, or open a terminal. Sessions keep running after you quit; closing a tab ends it.")
             } else {
                 Text("Add a project folder to start omp in it, open terminals, and browse its files.")
             }
@@ -333,7 +331,7 @@ struct SessionMenu: View {
             Button("Remove Session…") { app.requestForgetSession(entry.sessionKey) }
                 .disabled(!app.connection.isConnected)
         } else {
-            Button("Close Session…") { app.requestCloseSession(entry.sessionKey) }
+            Button("Close Session") { app.requestCloseSession(entry.sessionKey) }
                 .disabled(!app.connection.isConnected)
         }
     }
