@@ -48,30 +48,13 @@ struct ContentView: View {
         .toolbarBackground(Chrome.surface, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         .toolbar {
-            // Flexible space: with no title, the actions would otherwise sit at the sidebar.
+            // Flexible space: with no title, the action would otherwise sit at the sidebar.
             ToolbarItem(placement: .principal) { Spacer() }
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button {
-                    if let project = app.currentProject { app.newSession(in: project) } else { app.newSession() }
-                } label: {
-                    Label("New Session", systemImage: "plus.circle.fill")
-                        .labelStyle(.titleAndIcon)
-                }
-                .help("Start omp in \(app.currentProject.map(AppState.projectName) ?? "a project folder") (⌘N)")
-                .disabled(!app.connection.isConnected)
-                Button {
-                    app.newTerminal()
-                } label: {
-                    Label("Terminal", systemImage: "terminal")
-                        .labelStyle(.titleAndIcon)
-                }
-                .help("Open a terminal in \(app.currentProject.map(AppState.projectName) ?? "your home folder") (⌃`)")
-                .disabled(!app.connection.isConnected)
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     app.filesVisible.toggle()
                 } label: {
                     Label("Files", systemImage: "sidebar.trailing")
-                        .labelStyle(.titleAndIcon)
                 }
                 .help("Show or hide the Files panel (⌥⌘0)")
             }
@@ -149,61 +132,55 @@ private struct EmptyDetail: View {
 
 // MARK: - Sidebar
 
-/// The projects, each with its sessions and terminals. A search field narrows the rows by title.
+/// The projects, each with its rows: running sessions first, then terminals, then closed sessions. Add Project sits
+/// at the bottom.
 struct ProjectsSidebar: View {
     @Bindable var app: AppState
-    @State private var query = ""
 
     var body: some View {
         let terminals = app.terminals.byWorkspace(among: app.knownWorkspaces, hosting: app.adoptedTerminals)
-        let filtering = !query.trimmingCharacters(in: .whitespaces).isEmpty
         List(selection: Binding(get: { app.tabs.selection }, set: { if let tab = $0 { app.showTab(tab) } })) {
             ForEach(app.projects, id: \.self) { project in
-                let sessions = (app.connection.workspaces.first { $0.path == project }?.sessions ?? [])
-                    .filter { matches(app.sessionTitle($0.sessionKey)) }
-                let ptys = (terminals[project] ?? []).filter { matches(app.terminals.title(for: $0.ptyId)) }
-                if !filtering || !sessions.isEmpty || !ptys.isEmpty {
-                    Section {
-                        ForEach(sessions, id: \.sessionKey) { entry in
-                            // A session running in a terminal (the user typed `omp` there) is shown by that terminal's tab.
-                            SessionRow(entry: entry, title: app.sessionTitle(entry.sessionKey))
-                                .tag(app.tab(for: entry))
-                                .contextMenu { SessionMenu(app: app, entry: entry) }
-                        }
-                        TerminalRows(app: app, terminals: ptys)
-                        if sessions.isEmpty, ptys.isEmpty {
-                            StartHereRow(app: app, project: project)
-                        }
-                    } header: {
-                        ProjectHeader(app: app, project: project)
+                let sessions = app.connection.workspaces.first { $0.path == project }?.sessions ?? []
+                let running = sessions.filter { !$0.isStopped }
+                let stopped = sessions.filter(\.isStopped)
+                let ptys = terminals[project] ?? []
+                Section {
+                    ForEach(running, id: \.sessionKey) { entry in
+                        // A session running in a terminal (the user typed `omp` there) is shown by that terminal's tab.
+                        SessionRow(entry: entry, title: app.sessionTitle(entry.sessionKey))
+                            .tag(app.tab(for: entry))
+                            .contextMenu { SessionMenu(app: app, entry: entry) }
                     }
+                    TerminalRows(app: app, terminals: ptys)
+                    ForEach(stopped, id: \.sessionKey) { entry in
+                        SessionRow(entry: entry, title: app.sessionTitle(entry.sessionKey))
+                            .tag(app.tab(for: entry))
+                            .contextMenu { SessionMenu(app: app, entry: entry) }
+                    }
+                    if sessions.isEmpty, ptys.isEmpty {
+                        StartHereRow(app: app, project: project)
+                    }
+                } header: {
+                    ProjectHeader(app: app, project: project)
                 }
             }
         }
         .listStyle(.sidebar)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            VStack(spacing: 8) {
-                TextField("Search sessions", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .controlSize(.small)
-                HStack {
-                    Text("Projects")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button {
-                        app.addProject()
-                    } label: {
-                        Image(systemName: "folder.badge.plus")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .help("Add a project folder (⌘O)")
-                }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Button {
+                app.addProject()
+            } label: {
+                Label("Add Project", systemImage: "plus")
+                    .font(.system(size: 12))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .help("Add a project folder (⌘O)")
         }
         .overlay {
             if app.projects.isEmpty {
@@ -217,11 +194,6 @@ struct ProjectsSidebar: View {
                 }
             }
         }
-    }
-
-    private func matches(_ title: String) -> Bool {
-        let query = query.trimmingCharacters(in: .whitespaces)
-        return query.isEmpty || title.localizedCaseInsensitiveContains(query)
     }
 }
 
@@ -251,16 +223,6 @@ struct ProjectHeader: View {
             .opacity(hovering ? 1 : 0)
             .disabled(!app.connection.isConnected)
             .help("Start omp in \(AppState.projectName(project))")
-            Menu {
-                ProjectMenu(app: app, project: project)
-            } label: {
-                Image(systemName: "ellipsis")
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .foregroundStyle(.secondary)
-            .opacity(hovering ? 1 : 0)
         }
         .textCase(nil)
         .padding(.vertical, 2)
@@ -338,8 +300,7 @@ struct SessionMenu: View {
     }
 }
 
-/// A session: its state as a dot or spinner, its title, and when it was last active (a status word instead when
-/// something needs the user).
+/// A session: its state as a dot or spinner, its title, and a status word when something needs the user.
 struct SessionRow: View {
     let entry: SessionManifestEntry
     let title: String
@@ -350,26 +311,27 @@ struct SessionRow: View {
                 if entry.status.isInProgress {
                     ProgressView().controlSize(.mini)
                 } else {
-                    StatusDot(color: entry.status.dotColor, hollow: entry.status == .closed)
+                    StatusDot(color: entry.status.dotColor, hollow: entry.isStopped)
                 }
             }
             .frame(width: 14)
             Text(title)
                 .lineLimit(1)
             Spacer(minLength: 6)
-            Text(trailing)
-                .font(.system(size: 11))
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
+            if let trailing {
+                Text(trailing)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
         }
-        .opacity(entry.status == .closed ? 0.6 : 1)
-        .help("\(entry.status.explanation). Started \(entry.createdAt.formatted(date: .abbreviated, time: .shortened))")
+        .opacity(entry.isStopped ? 0.6 : 1)
+        .help("\(entry.status.explanation). Last active \(AppState.age(of: entry)); started \(entry.createdAt.formatted(date: .abbreviated, time: .shortened))")
     }
 
-    private var trailing: String {
+    private var trailing: String? {
         switch entry.status {
-        case .paused, .interrupted, .needsAttention, .starting, .resuming: entry.status.label
-        case .idle, .busy, .closed: AppState.age(of: entry)
+        case .paused, .interrupted, .needsAttention: entry.status.label
+        case .idle, .busy, .closed, .starting, .resuming: nil
         }
     }
 }

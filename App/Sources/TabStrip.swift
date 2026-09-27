@@ -10,40 +10,50 @@ struct TabStrip: View {
     let app: AppState
     let strip: TabLayout.Strip
 
+    /// Widest a tab gets; with many tabs they shrink evenly to `minimumTabWidth`, then the strip scrolls.
+    static let maximumTabWidth: CGFloat = 220
+    static let minimumTabWidth: CGFloat = 72
+    private static let newTabButtonWidth: CGFloat = 28
+
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Divider()
-            ScrollView(.horizontal) {
-                HStack(spacing: 0) {
-                    ForEach(strip.tabs, id: \.self) { tab in
-                        // A terminal running an adopted session stands for that session: its title, status and menu.
-                        let hosted = tab.ptyId.flatMap(app.adoptedSession(on:))
-                        TabItem(
-                            tab: tab, title: title(of: tab), entry: tab.sessionKey.flatMap(app.entry(for:)) ?? hosted,
-                            terminalExited: hosted == nil ? tab.ptyId.map { app.terminals.model($0)?.hasExited == true } : nil,
-                            document: tab.editorPath.flatMap(app.editors.document(for:)),
-                            isSelected: app.tabs.selection == tab, select: { app.selectTab(tab) }, close: { app.closeTab(tab) }
-                        )
-                        .contextMenu { TabMenu(app: app, tab: tab) }
+        GeometryReader { geometry in
+            let available = geometry.size.width - Self.newTabButtonWidth
+            let width = min(Self.maximumTabWidth, max(Self.minimumTabWidth, available / CGFloat(max(strip.tabs.count, 1))))
+            ZStack(alignment: .bottom) {
+                Divider()
+                ScrollView(.horizontal) {
+                    HStack(spacing: 0) {
+                        ForEach(strip.tabs, id: \.self) { tab in
+                            // A terminal running an adopted session stands for that session: its title, status and menu.
+                            let hosted = tab.ptyId.flatMap(app.adoptedSession(on:))
+                            TabItem(
+                                tab: tab, title: title(of: tab), entry: tab.sessionKey.flatMap(app.entry(for:)) ?? hosted,
+                                terminalExited: hosted == nil ? tab.ptyId.map { app.terminals.model($0)?.hasExited == true } : nil,
+                                document: tab.editorPath.flatMap(app.editors.document(for:)),
+                                isSelected: app.tabs.selection == tab, width: width,
+                                select: { app.selectTab(tab) }, close: { app.closeTab(tab) }
+                            )
+                            .contextMenu { TabMenu(app: app, tab: tab) }
+                        }
+                        Menu {
+                            Button("New Session") { app.newSession(in: strip.workspace) }
+                            Button("New Terminal") { app.newTerminal(in: strip.workspace) }
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 11, weight: .medium))
+                                .frame(width: Self.newTabButtonWidth, height: Chrome.tabStripHeight)
+                                .contentShape(Rectangle())
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .foregroundStyle(.secondary)
+                        .disabled(!app.connection.isConnected)
+                        .help("New session or terminal in \(AppState.projectName(strip.workspace))")
                     }
-                    Menu {
-                        Button("New Session") { app.newSession(in: strip.workspace) }
-                        Button("New Terminal") { app.newTerminal(in: strip.workspace) }
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 11, weight: .medium))
-                            .frame(width: 28, height: Chrome.tabStripHeight)
-                            .contentShape(Rectangle())
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .foregroundStyle(.secondary)
-                    .disabled(!app.connection.isConnected)
-                    .help("New session or terminal in \(AppState.projectName(strip.workspace))")
                 }
+                .scrollIndicators(.never)
             }
-            .scrollIndicators(.never)
         }
         .frame(height: Chrome.tabStripHeight)
         .background(Chrome.surface)
@@ -95,6 +105,8 @@ private struct TabItem: View {
     /// The file an editor tab shows.
     let document: EditorDocument?
     let isSelected: Bool
+    /// The tab's width, shared out by the strip.
+    let width: CGFloat
     let select: () -> Void
     let close: () -> Void
     @State private var hovering = false
@@ -109,7 +121,7 @@ private struct TabItem: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                .frame(maxWidth: 200, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -132,6 +144,7 @@ private struct TabItem: View {
         .foregroundStyle(isSelected ? .primary : .secondary)
         .padding(.leading, 12)
         .padding(.trailing, 6)
+        .frame(width: width)
         .frame(maxHeight: .infinity)
         .background(isSelected ? Chrome.canvas : hovering ? Color.primary.opacity(0.04) : .clear)
         .overlay(alignment: .trailing) { Chrome.hairline.frame(width: 1) }
