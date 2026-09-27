@@ -12,7 +12,8 @@ public struct SessionManifest: Sendable, Equatable, Codable {
 }
 
 /// One omp session owned by ompd. The session runs omp's own interactive TUI inside a daemon-owned PTY;
-/// clients render it by attaching to `ptyId` (`pty.attach`), exactly like any other terminal.
+/// clients render it by attaching to `ptyId` (`pty.attach`), exactly like any other terminal. An `adopted` session's
+/// omp was started by the user in one of the IDE's terminals instead; `ptyId` is then that terminal's PTY.
 public struct SessionManifestEntry: Sendable, Equatable, Codable, Identifiable {
     public var id: SessionKey { sessionKey }
     public var sessionKey: SessionKey
@@ -31,11 +32,17 @@ public struct SessionManifestEntry: Sendable, Equatable, Codable, Identifiable {
     public var lastActiveAt: Date?
     public var services: [NamedService]
     public var closedByUser: Bool
+    /// omp runs in one of the IDE's terminals (`ptyId`), where the user started it, and ompd adopted it through the
+    /// ide-bridge: the PTY is a plain terminal that ompd neither spawned nor closes with the session. Cleared once that
+    /// omp exits (the session is then closed like any other, resumed in a session PTY of its own). Runtime-only like
+    /// `ptyId`; absent from older manifests.
+    public var adopted: Bool
 
     public init(
         sessionKey: SessionKey, workspace: String, sessionFile: String? = nil, sessionId: String? = nil,
         title: String? = nil, launch: LaunchSpec, status: SessionStatus = .starting, ptyId: PTYID? = nil,
-        createdAt: Date, lastActiveAt: Date? = nil, services: [NamedService] = [], closedByUser: Bool = false
+        createdAt: Date, lastActiveAt: Date? = nil, services: [NamedService] = [], closedByUser: Bool = false,
+        adopted: Bool = false
     ) {
         self.sessionKey = sessionKey
         self.workspace = workspace
@@ -49,6 +56,25 @@ public struct SessionManifestEntry: Sendable, Equatable, Codable, Identifiable {
         self.lastActiveAt = lastActiveAt
         self.services = services
         self.closedByUser = closedByUser
+        self.adopted = adopted
+    }
+
+    /// Manifests written before `adopted` existed decode with it false.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionKey = try container.decode(SessionKey.self, forKey: .sessionKey)
+        workspace = try container.decode(String.self, forKey: .workspace)
+        sessionFile = try container.decodeIfPresent(String.self, forKey: .sessionFile)
+        sessionId = try container.decodeIfPresent(String.self, forKey: .sessionId)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        launch = try container.decode(LaunchSpec.self, forKey: .launch)
+        status = try container.decode(SessionStatus.self, forKey: .status)
+        ptyId = try container.decodeIfPresent(PTYID.self, forKey: .ptyId)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        lastActiveAt = try container.decodeIfPresent(Date.self, forKey: .lastActiveAt)
+        services = try container.decode([NamedService].self, forKey: .services)
+        closedByUser = try container.decode(Bool.self, forKey: .closedByUser)
+        adopted = try container.decodeIfPresent(Bool.self, forKey: .adopted) ?? false
     }
 }
 

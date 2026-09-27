@@ -41,6 +41,8 @@ struct SessionTabView: View {
         case .closeSession: app.requestCloseSession(sessionKey)
         case .forget: app.requestForgetSession(sessionKey)
         case .closeTab: app.closeTab(.session(sessionKey))
+        case .showTerminal:
+            if let entry = app.entry(for: sessionKey), entry.adopted, let ptyId = entry.ptyId { app.showTerminal(ptyId) }
         }
     }
 }
@@ -48,7 +50,7 @@ struct SessionTabView: View {
 /// Why omp's TUI is not live in a session tab, and what the user can do about it.
 struct SessionNotice {
     enum Action: Hashable {
-        case resume, closeSession, forget, closeTab
+        case resume, closeSession, forget, closeTab, showTerminal
 
         var title: String {
             switch self {
@@ -56,6 +58,7 @@ struct SessionNotice {
             case .closeSession: "Close Session"
             case .forget: "Remove Session…"
             case .closeTab: "Close Tab"
+            case .showTerminal: "Show Terminal"
             }
         }
     }
@@ -103,6 +106,13 @@ struct SessionNotice {
         case .starting:
             self.init("Starting omp…", "", "terminal", .secondary, inProgress: true)
         case .busy, .idle, .paused:
+            if entry.adopted {
+                // omp runs in a terminal tab; this tab has nothing of it to show.
+                self.init(
+                    "Running in a Terminal", "omp was started in a terminal of this window; its tab shows the session.",
+                    "terminal", .secondary, actions: [.showTerminal, .closeTab])
+                return
+            }
             // omp runs; its TUI is not on screen (yet).
             switch session.terminal?.phase {
             case .failed(let message):

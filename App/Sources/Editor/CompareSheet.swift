@@ -9,13 +9,42 @@ struct CompareSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
+        DiffSheet(
+            title: "“\(document.name)” on disk and in the editor", removedLegend: "− only on disk",
+            insertedLegend: "+ only in your unsaved version", hunks: comparison.hunks
+        ) {
+            Button("Keep Mine") {
+                document.keepMine()
+                dismiss()
+            }
+            Button("Reload from Disk") {
+                document.revert()
+                dismiss()
+            }
+            Spacer()
+            Button("Close") { dismiss() }
+                .keyboardShortcut(.defaultAction)
+        }
+    }
+}
+
+/// A sheet that shows one unified line diff: a title, two legends, the hunks (or "No differences"), and the actions
+/// under a hairline, Close last. `CompareSheet` and `ChangeDiffSheet` are made of it.
+struct DiffSheet<Actions: View>: View {
+    let title: String
+    let removedLegend: String
+    let insertedLegend: String
+    let hunks: [LineDiff.Hunk]
+    @ViewBuilder let actions: Actions
+
+    var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("“\(document.name)” on disk and in the editor")
+                Text(title)
                     .font(.headline)
                 HStack(spacing: 14) {
-                    Legend(color: .red, text: "− only on disk")
-                    Legend(color: .green, text: "+ only in your unsaved version")
+                    Legend(color: .red, text: removedLegend)
+                    Legend(color: .green, text: insertedLegend)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -23,13 +52,13 @@ struct CompareSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
             Divider()
-            if comparison.hunks.isEmpty {
+            if hunks.isEmpty {
                 ContentUnavailableView("No differences", systemImage: "equal", description: Text("The texts are the same."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView([.vertical, .horizontal]) {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(comparison.hunks.enumerated()), id: \.offset) { _, hunk in
+                        ForEach(Array(hunks.enumerated()), id: \.offset) { _, hunk in
                             Text(hunk.header)
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 8)
@@ -46,20 +75,8 @@ struct CompareSheet: View {
                 }
             }
             Divider()
-            HStack {
-                Button("Keep Mine") {
-                    document.keepMine()
-                    dismiss()
-                }
-                Button("Reload from Disk") {
-                    document.revert()
-                    dismiss()
-                }
-                Spacer()
-                Button("Close") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(12)
+            HStack { actions }
+                .padding(12)
         }
         .frame(minWidth: 720, idealWidth: 900, minHeight: 420, idealHeight: 620)
     }

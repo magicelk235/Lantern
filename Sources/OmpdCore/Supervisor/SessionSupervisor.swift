@@ -8,6 +8,11 @@ import os
 /// busy/idle, title, session switches, pause) into the manifest, holds the session file's ownership lock, respawns omp
 /// with `--resume` when it dies, pauses omp's agents while the daemon wants them paused, and stops it the
 /// graceful way (bridge `session.shutdown`), never with a signal first.
+///
+/// An adopted session (`adoptTerminalSession`) is an omp the user started in one of the IDE's terminals: the same
+/// bridge, the same manifest, the same pause policy, but the PTY is the terminal's, which ompd neither spawned nor
+/// signals. The bridge is the only handle on that omp: a graceful stop goes through it or not at all, and its
+/// disconnect is the exit — the session is `closed`, never respawned, and resumes in a session PTY like any other.
 public actor SessionSupervisor {
     public nonisolated let sessionKey: SessionKey
 
@@ -29,13 +34,16 @@ public actor SessionSupervisor {
     private var status: SessionStatus
 
     // The omp TUI
-    /// The session's PTY: running, or exited and kept so its last screen stays attachable. Mirrors `entry.ptyId`.
+    /// The session's PTY: running, or exited and kept so its last screen stays attachable. Mirrors `entry.ptyId`. For an
+    /// adopted session, the terminal PTY omp runs in.
     private var ptyId: PTYID?
     /// The running omp; nil once it exited.
     private var pid: Int32?
+    /// omp runs in a terminal the user started it in (`entry.adopted`): no PTY of its own, no signals, no respawn.
+    private var adopted = false
     /// Bumped per spawn; work tied to an older spawn is dropped.
     private var generation = 0
-    /// Opens when the current spawn's omp exits.
+    /// Opens when the current spawn's omp exits (an adopted omp: when its bridge disconnects).
     private var exited = ExitGate()
     private var spawnedAt = Date.distantPast
     private var startTask: Task<Void, any Error>?
@@ -43,7 +51,7 @@ public actor SessionSupervisor {
     private var bridgeHello: BridgeHello?
     /// ompd is stopping omp: its exit is expected and finished by `stop`.
     private var stopping: StopIntent?
-    /// `stop` was called: nothing starts omp again until `reopen`.
+    /// `stop` was called: nothing starts omp again until `reopen` or an adoption.
     private var stopRequested = false
     /// When automatic respawns happened (crash-loop guard).
     private var respawns: [ContinuousClock.Instant] = []
@@ -74,6 +82,9 @@ public actor SessionSupervisor {
 
     /// omp runs (it may be being stopped).
     public var isRunning: Bool { pid != nil }
+
+    /// omp runs or is being started: nothing else may serve the session now.
+    public var isOpen: Bool { pid != nil || startTask != nil }
 
     public var currentStatus: SessionStatus { status }
 
@@ -113,6 +124,60 @@ public actor SessionSupervisor {
             entry.workspace = workspace
         }
         try await start(.resume, cols: cols, rows: rows)
+    }
+
+    /// An omp the user started in terminal PTY `terminal` said hello with the terminal's credentials and ompd accepted
+    /// it (`hello`, as the bridge registered it under this session's key): from now on this session is that omp. Only
+    /// while omp does not run for the session (a new entry, or one that is closed or given up); `lock` is the file's
+    /// ownership lock the daemon already took for a new entry, nil for a session of this supervisor's own, which takes
+    /// it itself. `workspace` is omp's cwd. Follows the bridge from here as after a spawn's hello, and applies the pause
+    /// demand.
+    public func adoptTerminalSession(
+        hello: BridgeHello, terminal: PTYID, workspace: String, lock handle: (any SessionLockHandle)?
+    ) async throws {
+        if let startTask { _ = try? await startTask.value }
+        guard pid == nil else { throw DaemonError(.sessionBusy, "session \(sessionKey) is already open") }
+        if let handle {
+            adoptLock(handle, sessionFile: hello.sessionFile)
+        } else {
+            try takeOwnership(of: hello.sessionFile, sessionId: hello.sessionId)
+        }
+        stopRequested = false
+        stopping = nil
+        respawns = []
+        generation += 1
+        let generation = generation
+        bridgeTask?.cancel()
+        let gate = ExitGate()
+        exited = gate
+        let previous = ptyId
+        pid = hello.pid
+        ptyId = terminal
+        adopted = true
+        spawnedAt = Date()
+        bridgeHello = hello
+        pausedBy = hello.pausedBy
+        activity = .idle
+        let new: SessionStatus = pausedBy == nil ? .idle : .paused
+        status = new
+        let title = hello.title
+        let now = Date()
+        await updateEntry { entry in
+            entry.workspace = workspace
+            entry.sessionFile = hello.sessionFile
+            entry.sessionId = hello.sessionId
+            if let title { entry.title = title }
+            entry.status = new
+            entry.ptyId = terminal
+            entry.adopted = true
+            entry.closedByUser = false
+            entry.lastActiveAt = now
+        }
+        // The last screen of the session's own previous omp, if a PTY was kept for it: the terminal shows omp now.
+        if let previous, previous != terminal { try? await context.ptys.close(previous) }
+        warnAboutCapabilities(of: hello)
+        Task { await self.syncPause() }
+        bridgeTask = Task { await self.followAdoptedBridge(generation: generation, gate: gate) }
     }
 
     /// Regime B2: the daemon restarted and this session's omp is gone. Resumed from its file, started
@@ -200,13 +265,17 @@ public actor SessionSupervisor {
         exited = gate
         pid = gate.isOpen ? nil : info.pid
         ptyId = info.ptyId
+        adopted = false
         spawnedAt = Date()
         stopping = nil
         // A new omp starts with its pause gate open and its main agent waiting for input.
         pausedBy = nil
         activity = .idle
         if let pid = info.pid { await context.bridge.setExpectedPID(pid, for: sessionKey) }
-        await updateEntry { $0.ptyId = info.ptyId }
+        await updateEntry { entry in
+            entry.ptyId = info.ptyId
+            entry.adopted = false
+        }
         // Only now that the entry points to the new PTY does the old one go away (clients follow `ptyId`).
         if let previous, previous != info.ptyId { try? await context.ptys.close(previous) }
         guard generation == self.generation, !gate.isOpen else { return } // exited already: ptyExited takes over
@@ -273,6 +342,25 @@ public actor SessionSupervisor {
         }
     }
 
+    /// An adopted omp's bridge went away: omp exited (`/exit`, a crash, its terminal closed) or was stopped through
+    /// the bridge. An exit ompd asked for is finished by `stop`. Any other makes the session `closed` — how omp ended
+    /// is its terminal's business, and nothing is respawned into it — with no PTY of its own: the terminal stays a
+    /// terminal, and the session resumes in a session PTY like any other.
+    private func adoptedOmpGone(generation: Int) async {
+        guard generation == self.generation, stopping == nil, !stopRequested else { return }
+        await forgetSpawn()
+        adopted = false
+        releaseLock()
+        ptyId = nil
+        status = .closed
+        await updateEntry { entry in
+            entry.status = .closed
+            entry.ptyId = nil
+            entry.adopted = false
+        }
+        notify("info", "omp exited in its terminal; the session is closed. Open it again to resume it.")
+    }
+
     /// Drops what belonged to the omp that exited. Idempotent.
     private func forgetSpawn() async {
         pid = nil
@@ -288,6 +376,10 @@ public actor SessionSupervisor {
     /// Graceful stop: bridge `session.shutdown` (omp disposes: `session_exit {kind:"normal"}`, tool
     /// processes torn down) and up to `timings.stop` for the exit; then SIGHUP (the only step without a bridge), then
     /// SIGKILL of the process group. Returns once omp is gone. `.user` then closes the session and its PTY.
+    ///
+    /// An adopted omp gets the bridge step only: its terminal is never signalled or closed. If it does not exit, a
+    /// `.user` stop leaves the session as it was (omp keeps running in its terminal); a `.daemonShutdown` stop leaves
+    /// the rest to the PTY pool's shutdown, which hangs the terminals up.
     public func stop(_ intent: StopIntent) async {
         stopRequested = true
         if let startTask { _ = try? await startTask.value }
@@ -298,17 +390,27 @@ public actor SessionSupervisor {
         if pid != nil {
             if stopping == nil || intent == .user { stopping = intent }
             await terminate()
+            if adopted, !exited.isOpen {
+                if intent == .user {
+                    stopping = nil
+                    stopRequested = false
+                    await updateEntry { $0.closedByUser = false }
+                }
+                return
+            }
             await forgetSpawn()
         }
         guard intent == .user else { return }
         releaseLock()
-        let closing = ptyId
+        let closing = adopted ? nil : ptyId
+        adopted = false
         ptyId = nil
         status = .closed
         await updateEntry { entry in
             entry.status = .closed
             entry.ptyId = nil
             entry.closedByUser = true
+            entry.adopted = false
         }
         if let closing { try? await context.ptys.close(closing) }
     }
@@ -341,13 +443,25 @@ public actor SessionSupervisor {
             } catch BridgeError.disconnected {
                 asked = true // the bridge went away while omp disposed
             } catch {
-                notify("warning", "The graceful shutdown through the ide-bridge failed (\(error)); hanging up omp's terminal.")
+                notify(
+                    "warning",
+                    adopted
+                        ? "The graceful shutdown through the ide-bridge failed (\(error)); omp keeps running in its terminal."
+                        : "The graceful shutdown through the ide-bridge failed (\(error)); hanging up omp's terminal.")
             }
             if asked {
                 if await gate.wait(timeout: max(.zero, deadline - ContinuousClock.now)) { return }
-                notify("warning", "omp did not exit within \(timings.stop) of the graceful shutdown; hanging up its terminal.")
+                notify(
+                    "warning",
+                    adopted
+                        ? "omp did not exit within \(timings.stop) of the graceful shutdown; it keeps running in its terminal."
+                        : "omp did not exit within \(timings.stop) of the graceful shutdown; hanging up its terminal.")
             }
+        } else if adopted {
+            notify("warning", "This omp cannot be stopped through the ide-bridge; it keeps running in its terminal.")
         }
+        // An adopted omp's terminal is the user's: never signalled.
+        guard !adopted else { return }
         try? await context.ptys.signal(ptyId, SIGHUP)
         if await gate.wait(timeout: asked ? timings.hangup : timings.stop) { return }
         notify("warning", "omp did not exit after SIGHUP; killing its process group.")
@@ -387,11 +501,7 @@ public actor SessionSupervisor {
         guard generation == self.generation, pid != nil else { return }
         bridgeHello = hello
         pausedBy = hello.pausedBy
-        if hello.capabilities["events.activity"] != true {
-            notify("warning", "An older copy of the ide-bridge serves this omp (no activity or title events); the session's status and title will not update until it is restarted with the current omp IDE.")
-        } else if hello.capabilities["session.pause"] != true {
-            notify("warning", "This omp cannot be paused through the ide-bridge; its agents keep working while omp IDE is closed.")
-        }
+        warnAboutCapabilities(of: hello)
         await adopt(sessionFile: hello.sessionFile, sessionId: hello.sessionId, title: hello.title, replacingTitle: false)
         await becomeIdleIfStarting()
         // An omp spawned while no omp IDE window is connected is paused right away.
@@ -399,6 +509,25 @@ public actor SessionSupervisor {
         for await event in await context.bridge.events(sessionKey) {
             guard generation == self.generation else { return }
             await handle(bridgeEvent: event)
+        }
+    }
+
+    /// The bridge of an adopted omp, from its hello on; its end is the omp's exit.
+    private func followAdoptedBridge(generation: Int, gate: ExitGate) async {
+        for await event in await context.bridge.events(sessionKey) {
+            guard generation == self.generation else { return }
+            await handle(bridgeEvent: event)
+        }
+        guard generation == self.generation else { return }
+        gate.open()
+        Task { await self.adoptedOmpGone(generation: generation) }
+    }
+
+    private func warnAboutCapabilities(of hello: BridgeHello) {
+        if hello.capabilities["events.activity"] != true {
+            notify("warning", "An older copy of the ide-bridge serves this omp (no activity or title events); the session's status and title will not update until it is restarted with the current omp IDE.")
+        } else if hello.capabilities["session.pause"] != true {
+            notify("warning", "This omp cannot be paused through the ide-bridge; its agents keep working while omp IDE is closed.")
         }
     }
 

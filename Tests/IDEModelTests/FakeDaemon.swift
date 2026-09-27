@@ -275,6 +275,35 @@ final class FakeDaemon: IDERequestHandler {
         }
     }
 
+    /// The user resumed the session with `omp` in terminal `ptyId`: ompd adopted it there, and the PTY that kept the
+    /// session's last screen (if any) went.
+    func adopt(_ sessionKey: SessionKey, inTerminal ptyId: PTYID) {
+        state.withLock { s in
+            guard let index = s.sessions.firstIndex(where: { $0.sessionKey == sessionKey }) else { return }
+            let old = s.sessions[index].ptyId
+            s.sessions[index].status = .idle
+            s.sessions[index].ptyId = ptyId
+            s.sessions[index].adopted = true
+            s.sessions[index].closedByUser = false
+            Self.pushSessions(s, target)
+            if let old, old != ptyId {
+                Self.removePTY(&s, old)
+                Self.pushPTYs(s, target)
+            }
+        }
+    }
+
+    /// The adopted omp exited in its terminal: the session is closed with no PTY of its own; the terminal stays.
+    func adoptedOmpExits(_ sessionKey: SessionKey) {
+        state.withLock { s in
+            guard let index = s.sessions.firstIndex(where: { $0.sessionKey == sessionKey }) else { return }
+            s.sessions[index].status = .closed
+            s.sessions[index].ptyId = nil
+            s.sessions[index].adopted = false
+            Self.pushSessions(s, target)
+        }
+    }
+
     func setWriteDelay(milliseconds: ClosedRange<Int>) { state.withLock { $0.writeDelay = milliseconds } }
     func setAttachDelay(milliseconds: Int) { state.withLock { $0.attachDelay = milliseconds } }
     func setListDelay(milliseconds: Int) { state.withLock { $0.listDelay = milliseconds } }

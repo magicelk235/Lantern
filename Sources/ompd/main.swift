@@ -82,7 +82,8 @@ enum StatusTable {
             for entry in status.sessions {
                 rows.append([
                     entry.sessionKey, entry.closedByUser && entry.status == .closed ? "closed (by user)" : entry.status.rawValue,
-                    entry.ptyId ?? "-", entry.lastActiveAt.map(stamp) ?? "-", entry.workspace, entry.title ?? "-",
+                    (entry.ptyId ?? "-") + (entry.adopted ? " (terminal)" : ""), entry.lastActiveAt.map(stamp) ?? "-", entry.workspace,
+                    entry.title ?? "-",
                 ])
             }
             lines += table(rows)

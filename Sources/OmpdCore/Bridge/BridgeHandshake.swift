@@ -28,9 +28,38 @@ public struct BridgeCredentials: Sendable, Equatable {
     }
 }
 
+/// What ompd puts into the environment of every terminal PTY's program (`pty.open`, and terminals restored after a
+/// daemon restart) so an omp the user starts from that shell can dial back and be adopted as a session: the bridge
+/// socket, the terminal's PTY id, a token per terminal and the daemon's pid. No session key: the bridge's terminal
+/// mode says hello with `ptyId` and this token instead, and checks the daemon pid is alive rather than its parent
+/// (the omp is the shell's child, not ompd's). The token serves every omp started in that terminal, one at a time,
+/// until the PTY is closed; never persisted (a restored terminal gets fresh credentials).
+public struct TerminalCredentials: Sendable, Equatable {
+    public static let ptyVariable = "OMP_IDE_TERMINAL_PTY"
+    public static let tokenVariable = "OMP_IDE_TERMINAL_TOKEN"
+
+    public let socketPath: String
+    public let ptyId: PTYID
+    /// 64 hex characters.
+    public let token: String
+    public let daemonPID: Int32
+
+    /// The `OMP_IDE_*` variables to merge into the terminal program's environment.
+    public var environment: [String: String] {
+        [
+            BridgeCredentials.socketVariable: socketPath, Self.ptyVariable: ptyId, Self.tokenVariable: token,
+            BridgeCredentials.daemonPIDVariable: String(daemonPID),
+        ]
+    }
+}
+
 /// An accepted ide-bridge handshake: token and peer pid verified by `BridgeServer`.
 public struct BridgeHello: Sendable, Equatable {
-    public let sessionKey: SessionKey
+    /// The session the omp serves: the key ompd spawned it for, or — for an omp started in a terminal (`ptyId`) — the
+    /// key ompd adopted it into (`adoptTerminalHello`); empty while such a hello awaits ompd's verdict.
+    public internal(set) var sessionKey: SessionKey
+    /// The terminal PTY an omp the user started said hello from (`TerminalCredentials`); nil for an omp ompd spawned.
+    public let ptyId: PTYID?
     /// omp's pid, verified with `LOCAL_PEERPID`.
     public let pid: Int32
     public let ompVersion: String
@@ -56,9 +85,10 @@ extension BridgeHello {
         let description: String
     }
 
-    /// Parses a `hello` frame received from the socket peer `peerPID`; the frame's own `pid` must match it.
-    init(frame: [String: JSONValue], peerPID: pid_t) throws(Malformed) {
-        guard let sessionKey = frame["sessionKey"]?.stringValue else { throw Malformed(description: "sessionKey missing") }
+    /// Parses a `hello` frame received from the socket peer `peerPID`; the frame's own `pid` must match it. `sessionKey`
+    /// is the frame's for a spawned omp's hello; a terminal-mode hello (`ptyId` instead) gets the empty key until ompd
+    /// adopts it.
+    init(frame: [String: JSONValue], sessionKey: SessionKey, peerPID: pid_t) throws(Malformed) {
         guard let number = frame["pid"]?.doubleValue, let pid = Int32(exactly: number) else {
             throw Malformed(description: "pid missing")
         }
@@ -79,11 +109,23 @@ extension BridgeHello {
         raw["token"] = nil
         let pausedBy = PauseOwner(paused: session["paused"]?.boolValue == true, by: session["pausedBy"]?.stringValue)
         self.init(
-            sessionKey: sessionKey, pid: pid, ompVersion: ompVersion,
+            sessionKey: sessionKey, ptyId: frame["ptyId"]?.stringValue, pid: pid, ompVersion: ompVersion,
             capabilities: capabilities.compactMapValues(\.boolValue), sessionId: sessionId, sessionFile: sessionFile,
             onDisk: onDisk, cwd: cwd, artifactsDir: session["artifactsDir"]?.stringValue,
             title: session["title"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 },
             pausedBy: pausedBy,
             raw: .object(raw))
     }
+}
+
+/// A `hello` from an omp the user started in one of the IDE's terminals (the ide-bridge's terminal mode), whose
+/// terminal token and peer pid `BridgeServer` verified, waiting for ompd's verdict: `adoptTerminalHello` makes it a
+/// session's bridge, `refuseTerminalHello` turns it away (the bridge then behaves as in lock mode).
+public struct TerminalHello: Sendable {
+    /// The terminal PTY the omp runs in.
+    public let ptyId: PTYID
+    /// The handshake; its `sessionKey` is empty until ompd adopts it.
+    public let hello: BridgeHello
+    /// The server's connection, for the verdict.
+    let peerID: Int
 }

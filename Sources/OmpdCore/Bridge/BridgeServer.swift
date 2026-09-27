@@ -12,6 +12,11 @@ import IDEProtocol
 /// back as `{t:"welcome"}` or `{t:"reject", reason}` (the bridge of a rejected process refuses to keep a daemon-owned
 /// session open).
 ///
+/// Per terminal PTY: `expectTerminal(ptyId:)` mints the token of `TerminalCredentials`, good for every omp the user
+/// starts in that terminal until `forgetTerminal`. A hello naming a `ptyId` and that token (the bridge's terminal mode)
+/// is handed to ompd through `terminalHellos()` once token and peer pid checked out; ompd's `adoptTerminalHello`
+/// registers the omp as the bridge of a session key of its choosing (`welcome`), `refuseTerminalHello` rejects it.
+///
 /// Wire: JSON lines. ompd → bridge `{t:"req", id, method, params}`; bridge → ompd `{t:"res", id, ok, result|error}`,
 /// `{t:"evt", seq, ts, agentId, kind, data}`, `{t:"gap", ...}`. Requests on one session run concurrently in the bridge.
 public actor BridgeServer {
@@ -27,10 +32,14 @@ public actor BridgeServer {
     private var listener: BridgeListener?
     private var socketFile: SocketFileIdentity?
     private var sessions: [SessionKey: Session] = [:]
+    /// Token per terminal PTY (`expectTerminal`).
+    private var terminals: [PTYID: [UInt8]] = [:]
     private var peers: [Int: Peer] = [:]
     private var lastPeerID = 0
     private var lastRequestID: UInt64 = 0
     private var lastWaiterID = 0
+    private let terminalHelloStream: AsyncStream<TerminalHello>
+    private let terminalHelloSink: AsyncStream<TerminalHello>.Continuation
 
     private struct Session {
         let token: [UInt8]
@@ -66,6 +75,8 @@ public actor BridgeServer {
         case awaitingHello
         /// Token accepted; waiting for `setExpectedPID` of that session.
         case awaitingPID(BridgeHello)
+        /// A terminal's token accepted; waiting for ompd's verdict on the `TerminalHello`.
+        case adopting(PTYID)
         case accepted(SessionKey)
         /// Rejected or dropped by the server; waiting for the socket to finish closing.
         case closing
@@ -79,6 +90,7 @@ public actor BridgeServer {
         self.socketPath = socketPath
         self.handshakeTimeout = handshakeTimeout
         self.maxFrameBytes = maxFrameBytes
+        (terminalHelloStream, terminalHelloSink) = AsyncStream.makeStream(of: TerminalHello.self, bufferingPolicy: .unbounded)
     }
 
     deinit {
@@ -113,22 +125,68 @@ public actor BridgeServer {
         socketFile = nil
         let all = sessions
         sessions = [:]
+        terminals = [:]
         for session in all.values { tearDown(session) }
         for (id, peer) in peers {
             peers[id]?.stage = .closing
             peer.connection.close()
         }
+        terminalHelloSink.finish()
     }
 
     /// Registers a spawn: a fresh random token for `sessionKey`, valid for one `hello`. Replaces any previous
     /// registration of the key (closing its connection, failing its waits and calls, finishing its event stream).
     public func expect(sessionKey: SessionKey) -> BridgeCredentials {
         if let previous = sessions.removeValue(forKey: sessionKey) { tearDown(previous, closing: sessionKey) }
-        var generator = SystemRandomNumberGenerator()
-        let token = (0..<32).map { _ in String(format: "%02x", generator.next() as UInt8) }.joined()
+        let token = Self.mintToken()
         let (events, sink) = AsyncStream.makeStream(of: JSONValue.self, bufferingPolicy: .unbounded)
         sessions[sessionKey] = Session(token: Array(token.utf8), events: events, eventSink: sink)
         return BridgeCredentials(socketPath: socketPath, sessionKey: sessionKey, token: token, daemonPID: getpid())
+    }
+
+    /// Registers a terminal PTY: a fresh random token for `ptyId`, good for any number of hellos (one omp at a time is
+    /// ompd's decision) until `forgetTerminal`. Replaces the PTY's previous token.
+    public func expectTerminal(ptyId: PTYID) -> TerminalCredentials {
+        let token = Self.mintToken()
+        terminals[ptyId] = Array(token.utf8)
+        return TerminalCredentials(socketPath: socketPath, ptyId: ptyId, token: token, daemonPID: getpid())
+    }
+
+    /// The terminal PTY is gone: its token is void, and hellos from it still awaiting a verdict are rejected.
+    public func forgetTerminal(ptyId: PTYID) {
+        terminals[ptyId] = nil
+        for id in peers.keys.sorted() {
+            if case .adopting(let pty)? = peers[id]?.stage, pty == ptyId { reject(id, "terminal \(ptyId) closed") }
+        }
+    }
+
+    /// Hellos from terminal-mode bridges whose token and peer pid checked out, in arrival order, each waiting for
+    /// `adoptTerminalHello` or `refuseTerminalHello`. Single consumer; finishes on `stop`.
+    public func terminalHellos() -> AsyncStream<TerminalHello> {
+        terminalHelloStream
+    }
+
+    /// The omp of `hello` is session `sessionKey`'s bridge from now on: its events and calls go by that key (a previous
+    /// registration of the key is dropped as by `expect`) and it gets its `welcome`. Returns the hello as registered
+    /// (`sessionKey` set), or nil when the connection ended before the verdict.
+    public func adoptTerminalHello(_ hello: TerminalHello, as sessionKey: SessionKey) -> BridgeHello? {
+        guard let peer = peers[hello.peerID], case .adopting(let ptyId) = peer.stage, ptyId == hello.ptyId else { return nil }
+        if let previous = sessions.removeValue(forKey: sessionKey) { tearDown(previous, closing: sessionKey) }
+        var accepted = hello.hello
+        accepted.sessionKey = sessionKey
+        let (events, sink) = AsyncStream.makeStream(of: JSONValue.self, bufferingPolicy: .unbounded)
+        sessions[sessionKey] = Session(
+            token: Array(Self.mintToken().utf8), expectedPID: accepted.pid, hello: accepted, peerID: hello.peerID,
+            events: events, eventSink: sink)
+        peers[hello.peerID]?.stage = .accepted(sessionKey)
+        peer.connection.send(Self.welcomeLine)
+        return accepted
+    }
+
+    /// Turns the omp of `hello` away with `reason` (`reject`). A no-op once the verdict was given or the peer left.
+    public func refuseTerminalHello(_ hello: TerminalHello, reason: String) {
+        guard case .adopting(let ptyId)? = peers[hello.peerID]?.stage, ptyId == hello.ptyId else { return }
+        reject(hello.peerID, reason)
     }
 
     /// The pid of the omp child spawned with `sessionKey`'s credentials. Only a socket peer with this pid can complete
@@ -236,7 +294,7 @@ public actor BridgeServer {
         guard let peer = peers[id] else { return }
         guard case .object(let frame)? = try? JSONDecoder().decode(JSONValue.self, from: line) else {
             switch peer.stage {
-            case .awaitingHello, .awaitingPID: return reject(id, "malformed frame")
+            case .awaitingHello, .awaitingPID, .adopting: return reject(id, "malformed frame")
             case .accepted(let key):
                 bridgeLog.error("bridge of \(key, privacy: .public) sent a malformed frame; closing")
                 return peer.connection.close()
@@ -248,7 +306,7 @@ public actor BridgeServer {
         case .awaitingHello:
             guard type == "hello" else { return reject(id, "the first frame must be hello") }
             hello(frame, from: id)
-        case .awaitingPID:
+        case .awaitingPID, .adopting:
             reject(id, "frame sent before the welcome")
         case .accepted(let key):
             switch type {
@@ -266,7 +324,11 @@ public actor BridgeServer {
         guard frame["v"]?.doubleValue == Double(Self.wireVersion) else {
             return reject(id, "unsupported bridge wire version (ompd speaks \(Self.wireVersion))")
         }
-        guard let key = frame["sessionKey"]?.stringValue, let session = sessions[key] else {
+        guard let key = frame["sessionKey"]?.stringValue else {
+            guard let ptyId = frame["ptyId"]?.stringValue else { return reject(id, "hello names neither a session key nor a terminal") }
+            return terminalHello(frame, ptyId: ptyId, from: id, peer: peer)
+        }
+        guard let session = sessions[key] else {
             return reject(id, "unknown session key")
         }
         guard Self.tokenMatches(session.token, frame["token"]?.stringValue ?? "") else {
@@ -280,7 +342,7 @@ public actor BridgeServer {
         }
         let hello: BridgeHello
         do {
-            hello = try BridgeHello(frame: frame, peerPID: peerPID)
+            hello = try BridgeHello(frame: frame, sessionKey: key, peerPID: peerPID)
         } catch {
             return reject(id, "malformed hello: \(error.description)", countingAgainst: key)
         }
@@ -292,6 +354,21 @@ public actor BridgeServer {
             return reject(id, "peer pid \(peerPID) is not the omp process ompd spawned", countingAgainst: key)
         }
         accept(id, hello)
+    }
+
+    /// A terminal-mode hello: the terminal's token and the peer pid must check out; ompd then decides.
+    private func terminalHello(_ frame: [String: JSONValue], ptyId: PTYID, from id: Int, peer: Peer) {
+        guard let token = terminals[ptyId] else { return reject(id, "unknown terminal") }
+        guard Self.tokenMatches(token, frame["token"]?.stringValue ?? "") else { return reject(id, "invalid token") }
+        guard let peerPID = peer.connection.peerPID else { return reject(id, "the kernel did not report the peer pid") }
+        let hello: BridgeHello
+        do {
+            hello = try BridgeHello(frame: frame, sessionKey: "", peerPID: peerPID)
+        } catch {
+            return reject(id, "malformed hello: \(error.description)")
+        }
+        peers[id]?.stage = .adopting(ptyId)
+        terminalHelloSink.yield(TerminalHello(ptyId: ptyId, hello: hello, peerID: id))
     }
 
     private func accept(_ id: Int, _ hello: BridgeHello) {
@@ -323,6 +400,8 @@ public actor BridgeServer {
             reject(id, "no hello within the handshake timeout")
         case .awaitingPID(let hello)?:
             reject(id, "ompd never registered the pid for session \(hello.sessionKey)", countingAgainst: hello.sessionKey)
+        case .adopting(let ptyId)?:
+            reject(id, "ompd gave no verdict on the omp in terminal \(ptyId) within the handshake timeout")
         case .accepted?, .closing?, nil:
             break
         }
@@ -411,6 +490,12 @@ public actor BridgeServer {
         var data = try encoder.encode(JSONValue.object(object))
         data.append(0x0A)
         return data
+    }
+
+    /// 32 random bytes as 64 hex characters.
+    private static func mintToken() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return (0..<32).map { _ in String(format: "%02x", generator.next() as UInt8) }.joined()
     }
 
     /// Constant time in the candidate's content: always walks the whole expected token.

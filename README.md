@@ -1,6 +1,6 @@
 # omp IDE
 
-Native macOS IDE for [omp](https://github.com/can1357/oh-my-pi) (Swift 6, SwiftUI + AppKit, macOS 14+). Each session is omp's own TUI running in a terminal tab; the `ompd` daemon (a LaunchAgent) owns every omp TUI and terminal in its own PTYs and mirrors their screens, so quitting the app never ends a session and reopening shows exactly what was there. While no omp IDE window is open, ompd pauses every session's agents with omp's own `/pause` (3 s after the last window closes) and resumes them when the app is back; a `/pause` of your own stays until you dismiss it.
+Native macOS IDE for [omp](https://github.com/can1357/oh-my-pi) (Swift 6, SwiftUI + AppKit, macOS 14+). Each session is omp's own TUI running in a terminal tab; the `ompd` daemon (a LaunchAgent) owns every omp TUI and terminal in its own PTYs and mirrors their screens, so quitting the app never ends a session and reopening shows exactly what was there. `omp` typed into one of the IDE's terminals is adopted as a session too (listed, paused and closed like the others; its tab is the terminal's). While no omp IDE window is open, ompd pauses every session's agents with omp's own `/pause` (3 s after the last window closes) and resumes them when the app is back; a `/pause` of your own stays until you dismiss it.
 
 ## Layout
 
@@ -8,11 +8,11 @@ Native macOS IDE for [omp](https://github.com/can1357/oh-my-pi) (Swift 6, SwiftU
 |---|---|
 | `Sources/IDEProtocol` | daemon ↔ app wire contract and `$APP_SUPPORT` layout |
 | `Sources/IDETransport` | length-prefixed frames over a unix socket (`IDEServer`, `IDEClient`, `IDERouter`) |
-| `Sources/OmpdCore` | daemon: manifest, session supervisors (omp TUIs in PTYs, respawn with `--resume`, paused while no window is connected), PTY pool with headless screen mirrors, ide-bridge server + ownership lock, power observers |
+| `Sources/OmpdCore` | daemon: manifest, session supervisors (omp TUIs in PTYs, respawn with `--resume`, paused while no window is connected; omps typed into IDE terminals adopted as sessions), PTY pool with headless screen mirrors (terminals carry per-PTY bridge credentials), ide-bridge server + ownership lock, power observers |
 | `Sources/ompd` | `ompd run \| status [--json] \| --version` |
 | `Sources/IDEModel` | app-side models: daemon connection, session TUIs that follow omp from PTY to PTY (`SessionTerminal`), terminal models (PTY attach, serial input, push-driven PTY registry) |
 | `Sources/IDEEditorModel` | editor logic without AppKit: text file read/atomic save, content-hash buffer state machine (dirty, revert, external change, hot-exit restore), line diff, navigator listing, FSEvents watcher |
-| `bridge/ide-bridge.ts` | omp extension loaded into every daemon-owned omp (agent registry, revive, pause/resume via omp's `/pause`, ownership lock) |
+| `bridge/ide-bridge.ts` | omp extension loaded into every daemon-owned omp and, installed globally, into every other omp (agent registry, revive, pause/resume via omp's `/pause`, ownership lock; terminal mode has an omp started in an IDE terminal adopted by ompd) |
 | `App/` | XcodeGen spec + SwiftUI sources for `omp IDE.app` (embeds `ompd` and its LaunchAgent plist) |
 | `scripts/` | `dev-launchagent.sh` (dev LaunchAgent), `acceptance.sh` (TUI-session acceptance with real omp) |
 

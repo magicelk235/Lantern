@@ -42,6 +42,7 @@ struct OmpIDEApp: App {
             }
             EditorCommands(app: app)
             SessionCommands(app: app)
+            SourceControlCommands(app: app)
         }
 
         Settings {

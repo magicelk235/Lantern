@@ -116,6 +116,19 @@ final class FakeBridge: Sendable {
         ])
     }
 
+    /// A terminal-mode hello (`ptyId` and the terminal's token in place of a session key), as the real bridge sends it.
+    func sendTerminalHello(ptyId: PTYID, token: String, pid: Int32 = getpid(), sessionFile: String = "/tmp/omb-terminal.jsonl") throws {
+        try send([
+            "t": "hello", "v": 1, "ptyId": .string(ptyId), "token": .string(token), "pid": .number(Double(pid)),
+            "ompVersion": "18.3.1",
+            "capabilities": ["session.shutdown": true, "session.pause": true],
+            "session": [
+                "id": "0199bbbb", "file": .string(sessionFile), "onDisk": true, "leafId": nil, "cwd": "/tmp",
+                "artifactsDir": nil, "title": "typed in a terminal",
+            ],
+        ])
+    }
+
     /// Sends a hello with `credentials` and returns the server's verdict frame.
     func handshake(_ credentials: BridgeCredentials) async throws -> JSONValue? {
         try sendHello(sessionKey: credentials.sessionKey, token: credentials.token)

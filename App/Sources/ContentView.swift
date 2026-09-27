@@ -155,7 +155,7 @@ struct ProjectsSidebar: View {
     @State private var query = ""
 
     var body: some View {
-        let terminals = app.terminals.byWorkspace(among: app.knownWorkspaces)
+        let terminals = app.terminals.byWorkspace(among: app.knownWorkspaces, hosting: app.adoptedTerminals)
         let filtering = !query.trimmingCharacters(in: .whitespaces).isEmpty
         List(selection: Binding(get: { app.tabs.selection }, set: { if let tab = $0 { app.showTab(tab) } })) {
             ForEach(app.projects, id: \.self) { project in
@@ -165,8 +165,9 @@ struct ProjectsSidebar: View {
                 if !filtering || !sessions.isEmpty || !ptys.isEmpty {
                     Section {
                         ForEach(sessions, id: \.sessionKey) { entry in
+                            // A session running in a terminal (the user typed `omp` there) is shown by that terminal's tab.
                             SessionRow(entry: entry, title: app.sessionTitle(entry.sessionKey))
-                                .tag(TabKind.session(entry.sessionKey))
+                                .tag(app.tab(for: entry))
                                 .contextMenu { SessionMenu(app: app, entry: entry) }
                         }
                         TerminalRows(app: app, terminals: ptys)

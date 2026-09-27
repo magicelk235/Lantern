@@ -3,25 +3,48 @@ import IDEEditorModel
 import IDEState
 import SwiftUI
 
+/// The trailing panel's two sides: the project's files, or its git changes (`SourceControlPanel`). The choice is
+/// remembered in the defaults.
+enum FilesPanelTab: String, CaseIterable {
+    case files
+    case changes
+
+    static let defaultsKey = "filesPanelTab"
+
+    /// Puts `tab` on screen: what the panel's `@AppStorage` reads.
+    static func select(_ tab: FilesPanelTab) {
+        UserDefaults.standard.set(tab.rawValue, forKey: defaultsKey)
+    }
+}
+
 /// The Files panel, trailing the detail area: one project's folder as an outline, each folder listed when first
-/// expanded. A click highlights a file; Return or a double-click opens it in the project's tab strip.
+/// expanded, or, on its Changes side, the project's git changes. A click highlights a file; Return or a double-click
+/// opens it in the project's tab strip.
 struct FilesPanel: View {
     @Bindable var app: AppState
+    @AppStorage(FilesPanelTab.defaultsKey) private var tab = FilesPanelTab.files
 
     var body: some View {
         VStack(spacing: 0) {
             if let project = app.filesProject {
                 header(project)
-                Divider()
-                let tree = app.editors.tree(for: project)
-                List(selection: Binding(get: { app.filesSelection }, set: { app.selectInFiles($0) })) {
-                    FileRows(app: app, tree: tree, folder: tree.root)
+                Picker("Panel", selection: $tab) {
+                    Text("Files").tag(FilesPanelTab.files)
+                    Text("Changes").tag(FilesPanelTab.changes)
                 }
-                .listStyle(.inset)
-                .scrollContentBackground(.hidden)
-                .environment(\.defaultMinListRowHeight, 22)
-                .fileNavigatorActions(app)
-                .task(id: project) { tree.setExpanded(tree.root, true) }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+                Divider()
+                switch tab {
+                case .files:
+                    files(project)
+                case .changes:
+                    SourceControlPanel(app: app, repository: app.editors.repositories.repository(for: project))
+                        .id(project)
+                }
             } else {
                 ContentUnavailableView {
                     Text("No Project")
@@ -34,6 +57,19 @@ struct FilesPanel: View {
             }
         }
         .background(Chrome.surface)
+    }
+
+    /// The project's folder as an outline.
+    private func files(_ project: String) -> some View {
+        let tree = app.editors.tree(for: project)
+        return List(selection: Binding(get: { app.filesSelection }, set: { app.selectInFiles($0) })) {
+            FileRows(app: app, tree: tree, folder: tree.root)
+        }
+        .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 22)
+        .fileNavigatorActions(app)
+        .task(id: project) { tree.setExpanded(tree.root, true) }
     }
 
     /// The project's name; a menu of the projects when there are several, and Finder.
@@ -207,9 +243,14 @@ private struct FileRow: View {
         .accessibilityLabel(name + (isDirty ? ", edited" : ""))
     }
 
-    private var symbol: String {
+    private var symbol: String { FileSymbol.name(for: name, isDirectory: isDirectory) }
+}
+
+/// The navigator's icon for a file, by extension; folders are folders.
+enum FileSymbol {
+    static func name(for fileName: String, isDirectory: Bool) -> String {
         if isDirectory { return "folder" }
-        switch (name as NSString).pathExtension.lowercased() {
+        switch (fileName as NSString).pathExtension.lowercased() {
         case "swift": return "swift"
         case "md", "markdown", "txt", "rtf": return "doc.plaintext"
         case "json", "yml", "yaml", "toml", "plist", "xml": return "curlybraces"

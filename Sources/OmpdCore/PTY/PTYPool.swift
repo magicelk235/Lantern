@@ -9,7 +9,9 @@ import IDEProtocol
 /// Two kinds of PTY share the pool: plain terminals (`open`, restored from their snapshots after a restart) and
 /// session PTYs (`openSession`), each running one omp session's TUI for its `SessionSupervisor`. A session PTY is
 /// tagged with its `SessionKey`, reports its program's exit to the supervisor, and is never restored by the pool:
-/// the supervisor respawns omp with `--resume`, and the new PTY starts from the previous one's scrollback.
+/// the supervisor respawns omp with `--resume`, and the new PTY starts from the previous one's scrollback. A plain
+/// terminal's program starts with the variables of `terminalEnvironment` (the terminal's bridge credentials, so an omp
+/// started from its shell can be adopted as a session); they are never written to snapshots.
 ///
 /// Execution: the pool runs on the main executor. SwiftTerm schedules work on the main queue (synchronized
 /// output timeout) and every dispatch source (PTY reads/writes, child exit) is delivered there, so handlers enter
@@ -36,6 +38,7 @@ public actor PTYPool {
     /// continues from it (`restoreFromSnapshots` collects them; `discardSessionScreens` drops unknown sessions).
     private var sessionScreens: [SessionKey: PTYSnapshot] = [:]
     private var onChange: (@Sendable ([PTYInfo]) -> Void)?
+    private var terminalEnvironment: (@Sendable (PTYID) async -> [String: String])?
     private var nextSequence: UInt64 = 0
     private var snapshotTimer: Task<Void, Never>?
     private var isShutDown = false
@@ -59,18 +62,27 @@ public actor PTYPool {
         onChange = handler
     }
 
+    /// Variables merged last into the environment of every plain terminal's program, asked per PTY (with its id)
+    /// right before the program starts: on `open` and for every terminal `restoreFromSnapshots` starts again.
+    public func setTerminalEnvironment(_ provider: @escaping @Sendable (PTYID) async -> [String: String]) {
+        terminalEnvironment = provider
+    }
+
     /// Starts `params.command` (nil: the user's login shell with `-l`) on a new PTY with `TERM=xterm-256color`,
-    /// in `params.cwd`, with `params.env` merged over the daemon environment.
-    public func open(_ params: PTYOpen.Params) throws -> PTYInfo {
+    /// in `params.cwd`, with `params.env` merged over the daemon environment and the terminal environment over both.
+    public func open(_ params: PTYOpen.Params) async throws -> PTYInfo {
         try ensureRunning()
         try Self.validateSize(cols: params.cols, rows: params.rows)
         guard PTYSpawner.isDirectory(params.cwd) else {
             throw DaemonError(.badParams, "working directory does not exist: \(params.cwd)")
         }
         let command = params.command ?? [PTYSpawner.loginShell(), "-l"]
+        let id = UUID().uuidString.lowercased()
+        let overlay = await terminalOverlay(id, over: params.env)
+        try ensureRunning()
         let pty = try launch(
-            id: UUID().uuidString.lowercased(), cwd: params.cwd, command: command,
-            environment: PTYSpawner.environment(base: ProcessInfo.processInfo.environment, overlay: params.env, cwd: params.cwd),
+            id: id, cwd: params.cwd, command: command,
+            environment: PTYSpawner.environment(base: ProcessInfo.processInfo.environment, overlay: overlay, cwd: params.cwd),
             persistedEnv: params.env, cols: params.cols, rows: params.rows)
         publishChange()
         return pty.info
@@ -210,11 +222,11 @@ public actor PTYPool {
     }
 
     /// Regime B2: recreates every snapshotted plain terminal with its id, size, command, environment
-    /// overrides and working directory, its terminal prefilled with the saved scrollback followed by a
-    /// "— terminal restarted —" divider. Terminals whose program had already exited come back as exited (their
-    /// command is not re-run); if a command can no longer be started the PTY also comes back exited. Session PTYs are
-    /// not recreated: their newest snapshot per session is kept for that session's next `openSession`.
-    public func restoreFromSnapshots() throws -> [PTYInfo] {
+    /// overrides and working directory (fresh terminal environment on top), its terminal prefilled with the saved
+    /// scrollback followed by a "— terminal restarted —" divider. Terminals whose program had already exited come back
+    /// as exited (their command is not re-run); if a command can no longer be started the PTY also comes back exited.
+    /// Session PTYs are not recreated: their newest snapshot per session is kept for that session's next `openSession`.
+    public func restoreFromSnapshots() async throws -> [PTYInfo] {
         try ensureRunning()
         var restored: [PTYInfo] = []
         for snapshot in try store.loadAll() where ptys[snapshot.info.ptyId] == nil {
@@ -228,7 +240,10 @@ public actor PTYPool {
             let screen = [UInt8](snapshot.screen)
             if info.running, !info.command.isEmpty {
                 let cwd = PTYSpawner.isDirectory(info.cwd) ? info.cwd : PTYSpawner.homeDirectory()
-                let environment = PTYSpawner.environment(base: ProcessInfo.processInfo.environment, overlay: snapshot.env, cwd: cwd)
+                let overlay = await terminalOverlay(info.ptyId, over: snapshot.env)
+                try ensureRunning()
+                guard ptys[info.ptyId] == nil else { continue }
+                let environment = PTYSpawner.environment(base: ProcessInfo.processInfo.environment, overlay: overlay, cwd: cwd)
                 if let pty = try? launch(
                     id: info.ptyId, cwd: cwd, command: info.command, environment: environment, persistedEnv: snapshot.env,
                     cols: info.cols, rows: info.rows,
@@ -475,6 +490,12 @@ public actor PTYPool {
         guard pty.info.running, let pid = pty.info.pid, let cwd = PTYSpawner.currentDirectory(of: pid), cwd != pty.info.cwd else { return }
         pty.info.cwd = cwd
         markDirty(pty)
+    }
+
+    /// `env` (a terminal's own overrides) with the terminal environment of `ptyId` on top.
+    private func terminalOverlay(_ ptyId: PTYID, over env: [String: String]?) async -> [String: String]? {
+        guard let terminalEnvironment else { return env }
+        return (env ?? [:]).merging(await terminalEnvironment(ptyId)) { _, new in new }
     }
 
     private func existing(_ id: PTYID) throws -> ManagedPTY {

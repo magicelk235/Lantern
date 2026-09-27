@@ -185,6 +185,69 @@ import Testing
         }
     }
 
+    /// An omp the user started in a terminal: its hello names the terminal and carries the terminal's token; ompd
+    /// decides, and an adopted omp is then served like a spawned one under the key ompd chose.
+    @Test func terminalHelloIsAuthenticatedByTheTerminalsTokenAndServedUnderTheAdoptedKey() async throws {
+        try await withBridgeServer { server in
+            let credentials = await server.expectTerminal(ptyId: "t1")
+            #expect(credentials.environment.keys.sorted() == ["OMP_IDE_BRIDGE_SOCK", "OMP_IDE_DAEMON_PID", "OMP_IDE_TERMINAL_PTY", "OMP_IDE_TERMINAL_TOKEN"])
+            #expect(credentials.environment["OMP_IDE_TERMINAL_PTY"] == "t1" && credentials.environment["OMP_IDE_BRIDGE_SOCK"] == server.socketPath)
+            let hellos = Box<[TerminalHello]>([])
+            let taking = Task { for await hello in await server.terminalHellos() { hellos.mutate { $0.append(hello) } } }
+            defer { taking.cancel() }
+
+            let impostor = try FakeBridge(socketPath: server.socketPath)
+            try impostor.sendTerminalHello(ptyId: "t1", token: String(repeating: "0", count: 64))
+            #expect(try await impostor.next()?["reason"]?.stringValue?.contains("token") == true)
+            let stranger = try FakeBridge(socketPath: server.socketPath)
+            try stranger.sendTerminalHello(ptyId: "t2", token: credentials.token)
+            #expect(try await stranger.next()?["reason"]?.stringValue?.contains("terminal") == true)
+            let liar = try FakeBridge(socketPath: server.socketPath)
+            try liar.sendTerminalHello(ptyId: "t1", token: credentials.token, pid: 1)
+            #expect(try await liar.next()?["reason"]?.stringValue?.contains("pid") == true)
+
+            // The genuine one waits for ompd's verdict; nothing reaches the session side before it.
+            let omp = try FakeBridge(socketPath: server.socketPath)
+            try omp.sendTerminalHello(ptyId: "t1", token: credentials.token)
+            let request = try await eventuallyValue("the terminal hello") { hellos.value.first }
+            #expect(request.ptyId == "t1" && request.hello.ptyId == "t1" && request.hello.sessionKey.isEmpty)
+            #expect(request.hello.pid == getpid() && request.hello.title == "typed in a terminal" && request.hello.sessionFile == "/tmp/omb-terminal.jsonl")
+            await #expect(throws: BridgeError.notConnected) { try await server.waitForHello("adopted", timeout: .milliseconds(50)) }
+
+            let accepted = try #require(await server.adoptTerminalHello(request, as: "adopted"))
+            #expect(accepted.sessionKey == "adopted" && accepted.pid == getpid())
+            #expect(try await omp.next()?["t"] == "welcome")
+            #expect(try await server.waitForHello("adopted", timeout: .seconds(5)) == accepted)
+            let call = Task { try await server.call("adopted", method: "session.info") }
+            let req = try #require(try await omp.next())
+            #expect(req["method"] == "session.info")
+            try omp.send(["t": "res", "id": req["id"] ?? .null, "ok": true, "result": ["file": "/tmp/omb-terminal.jsonl"]])
+            #expect(try await call.value["file"] == "/tmp/omb-terminal.jsonl")
+            try omp.send(["t": "evt", "seq": 1, "ts": 0, "agentId": "Main", "kind": "activity", "data": ["state": "busy"]])
+            await server.refuseTerminalHello(request, reason: "too late")
+            #expect(await server.adoptTerminalHello(request, as: "again") == nil, "one verdict per hello")
+
+            // A second omp in the same terminal is ompd's to refuse, with its reason.
+            let nested = try FakeBridge(socketPath: server.socketPath)
+            try nested.sendTerminalHello(ptyId: "t1", token: credentials.token)
+            let second = try await eventuallyValue("the second hello") { hellos.value.count > 1 ? hellos.value[1] : nil }
+            await server.refuseTerminalHello(second, reason: "terminal t1 already runs omp session adopted")
+            let verdict = try await nested.next()
+            #expect(verdict?["t"] == "reject" && verdict?["reason"] == "terminal t1 already runs omp session adopted")
+            #expect(try await nested.next() == nil)
+
+            // The terminal closes: its token is void, and the adopted omp's disconnect ends its stream like any other.
+            await server.forgetTerminal(ptyId: "t1")
+            let late = try FakeBridge(socketPath: server.socketPath)
+            try late.sendTerminalHello(ptyId: "t1", token: credentials.token)
+            #expect(try await late.next()?["reason"]?.stringValue?.contains("terminal") == true)
+            omp.close()
+            let events = try await bridgeCollect(server.events("adopted"))
+            #expect(events.map { $0["kind"] } == ["activity"])
+            await #expect(throws: BridgeError.disconnected) { try await server.call("adopted", method: "session.info") }
+        }
+    }
+
     @Test func socketFileLifecycle() async throws {
         let path = bridgeSocketPath()
         let server = BridgeServer(socketPath: path)

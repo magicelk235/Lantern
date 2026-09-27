@@ -129,6 +129,43 @@ struct SessionTerminalTests {
         await server.stop()
     }
 
+    /// `omp --resume` typed into a terminal: ompd adopts the session there. Its tab neither attaches the terminal's PTY
+    /// (the terminal tab shows it) nor loses what it showed; once omp exits there, Resume brings it back as usual.
+    @Test func aSessionResumedInATerminalIsShownByTheTerminalNotByItsTab() async throws {
+        let home = try TempHome()
+        defer { home.remove() }
+        let daemon = FakeDaemon()
+        daemon.addSession("s1", ptyId: "tui-1", output: "omp> bye\r\n")
+        daemon.addPTY("p1", output: "$ omp --resume\r\n")
+        let server = try await home.startServer(daemon)
+        let connection = try await connect(home)
+        let session = connection.open("s1")
+        let display = RecordingDisplay()
+        session.attach(to: display)
+        try await eventually("omp's screen") { session.isLive }
+        daemon.quitFromTUI("s1")
+        try await eventually("omp exited") { session.entry?.status == .closed }
+
+        daemon.adopt("s1", inTerminal: "p1")
+        try await eventually("adopted") { session.entry?.adopted == true && session.terminal == nil }
+        #expect(session.entry?.ptyId == "p1" && session.entry?.status == .idle && !session.isLive)
+        #expect(session.hasScreen && display.text == "omp> bye\r\n", "the tab keeps the last screen of its own omp")
+        #expect(connection.terminals.models["p1"] == nil && !daemon.lifecycle.contains("attach p1"))
+        #expect(connection.terminals.terminals.map(\.ptyId) == ["p1"], "the terminal is still a terminal")
+        session.send(Data("lost".utf8))
+
+        daemon.adoptedOmpExits("s1")
+        try await eventually("closed again") { session.entry?.status == .closed && session.entry?.ptyId == nil }
+        #expect(session.entry?.canResume == true && session.terminal == nil)
+        let resumed = try await connection.resumeSession("s1", size: .standard)
+        try await eventually("omp is back in the tab") { session.isLive && session.terminal?.ptyId == resumed.ptyId }
+        #expect(daemon.lifecycle.filter { $0.hasPrefix("attach") } == ["attach tui-1", "attach \(try #require(resumed.ptyId))"])
+        #expect(daemon.written.isEmpty, "nothing typed reaches the terminal's omp through the tab")
+
+        await connection.stop()
+        await server.stop()
+    }
+
     @Test func closingTheTabStopsTheStreamButNotOmp() async throws {
         let home = try TempHome()
         defer { home.remove() }

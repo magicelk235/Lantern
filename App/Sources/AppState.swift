@@ -126,10 +126,31 @@ final class AppState {
         connection.sessions.first { $0.sessionKey == sessionKey }
     }
 
+    /// The adopted session whose omp runs in the terminal `ptyId` (the user typed `omp` there), if any: the terminal's
+    /// tab and row stand for the session while it runs.
+    func adoptedSession(on ptyId: PTYID) -> SessionManifestEntry? {
+        connection.sessions.first { $0.adopted && $0.ptyId == ptyId }
+    }
+
+    /// Terminals whose omp is an adopted session: listed as sessions, not as terminals.
+    var adoptedTerminals: Set<PTYID> {
+        Set(connection.sessions.filter(\.adopted).compactMap(\.ptyId))
+    }
+
+    /// The tab a session is shown in: its own, or its terminal's for a session running in a terminal.
+    func tab(for entry: SessionManifestEntry) -> TabKind {
+        if entry.adopted, let ptyId = entry.ptyId { return .terminal(ptyId) }
+        return .session(entry.sessionKey)
+    }
+
     /// Shows `sessionKey` in its tab, opening one at the end of its workspace's strip first if needed.
     func showSession(_ sessionKey: SessionKey) {
         guard let entry = entry(for: sessionKey) else { return }
-        show(entry)
+        if entry.adopted, let ptyId = entry.ptyId {
+            showTerminal(ptyId)
+        } else {
+            show(entry)
+        }
     }
 
     func selectTab(_ tab: TabKind) {
@@ -352,11 +373,17 @@ final class AppState {
     }
 
     /// omp's name for the session, else what its TUI titles its window (without the `π >` glyph, and only when it
-    /// says more than the folder), else "New session".
+    /// says more than the folder), else "New session". A session running in a terminal is titled by that terminal.
     func sessionTitle(_ sessionKey: SessionKey) -> String {
         let entry = entry(for: sessionKey)
         if let title = entry?.title, !title.isEmpty { return title }
-        if let program = connection.openSessions[sessionKey]?.programTitle {
+        let program =
+            if let entry, entry.adopted, let ptyId = entry.ptyId {
+                terminals.model(ptyId)?.programTitle
+            } else {
+                connection.openSessions[sessionKey]?.programTitle
+            }
+        if let program {
             var title = program.trimmingCharacters(in: .whitespaces)
             if title.hasPrefix("π >") { title = String(title.dropFirst(3)).trimmingCharacters(in: .whitespaces) }
             let folder = entry.map { Self.projectName($0.workspace) }

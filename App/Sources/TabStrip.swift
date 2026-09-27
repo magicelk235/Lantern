@@ -16,9 +16,11 @@ struct TabStrip: View {
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
                     ForEach(strip.tabs, id: \.self) { tab in
+                        // A terminal running an adopted session stands for that session: its title, status and menu.
+                        let hosted = tab.ptyId.flatMap(app.adoptedSession(on:))
                         TabItem(
-                            tab: tab, title: title(of: tab), entry: tab.sessionKey.flatMap(app.entry(for:)),
-                            terminalExited: tab.ptyId.map { app.terminals.model($0)?.hasExited == true },
+                            tab: tab, title: title(of: tab), entry: tab.sessionKey.flatMap(app.entry(for:)) ?? hosted,
+                            terminalExited: hosted == nil ? tab.ptyId.map { app.terminals.model($0)?.hasExited == true } : nil,
                             document: tab.editorPath.flatMap(app.editors.document(for:)),
                             isSelected: app.tabs.selection == tab, select: { app.selectTab(tab) }, close: { app.closeTab(tab) }
                         )
@@ -50,7 +52,8 @@ struct TabStrip: View {
     private func title(of tab: TabKind) -> String {
         switch tab {
         case .session(let key): app.sessionTitle(key)
-        case .terminal(let ptyId): app.terminals.title(for: ptyId)
+        case .terminal(let ptyId):
+            app.adoptedSession(on: ptyId).map { app.sessionTitle($0.sessionKey) } ?? app.terminals.title(for: ptyId)
         case .editor(let path): (path as NSString).lastPathComponent
         }
     }
@@ -70,6 +73,10 @@ private struct TabMenu: View {
                 SessionMenu(app: app, entry: entry)
             }
         case .terminal(let ptyId):
+            if let hosted = app.adoptedSession(on: ptyId) {
+                SessionMenu(app: app, entry: hosted)
+                Divider()
+            }
             Button("Close Terminal") { app.requestCloseTerminal(ptyId) }
                 .disabled(!app.connection.isConnected)
         case .editor(let path):

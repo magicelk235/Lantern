@@ -5,8 +5,8 @@ import IDETransport
 import os
 
 /// ompd: owns every omp session (one `SessionSupervisor` per manifest entry, each running omp's TUI on a
-/// session PTY) and every terminal (the PTY pool), and serves the IDE protocol on `$APP_SUPPORT/run/ompd.sock`.
-/// While no omp IDE window is connected, every session is paused.
+/// session PTY, or — adopted — in a terminal the user typed `omp` into) and every terminal (the PTY pool), and serves
+/// the IDE protocol on `$APP_SUPPORT/run/ompd.sock`. While no omp IDE window is connected, every session is paused.
 ///
 /// Lifecycle: `start()` (manifest, supervisors, socket) → `restore()` (Regime B2: terminals from their snapshots,
 /// every session the user did not close respawned with `--resume`) → … → `shutdown()` (the graceful path).
@@ -66,6 +66,8 @@ public actor Daemon {
     private var server: IDEServer?
     private var supervisors: [SessionKey: SessionSupervisor] = [:]
     private var shutdownTask: Task<Void, Never>?
+    /// Serves the bridge's terminal-mode hellos (`adoptTerminal`).
+    private var adoptionTask: Task<Void, Never>?
     /// Connected omp IDE windows (`ClientKind.app`); `ompd status` and other cli clients do not count.
     private var appConnections: Set<UUID> = []
     /// Sleeps out `detachedPauseGrace` once no window is connected, then pauses every session; a grace that was cancelled
@@ -97,6 +99,7 @@ public actor Daemon {
         try await manifest.update { manifest in
             for index in manifest.sessions.indices {
                 manifest.sessions[index].ptyId = nil
+                manifest.sessions[index].adopted = false
                 if manifest.sessions[index].status != .closed { manifest.sessions[index].status = .interrupted }
             }
         }
@@ -106,6 +109,14 @@ public actor Daemon {
         let broadcaster = broadcaster
         manifest.setSink { broadcaster.send(.sessions($0)) }
         await ptys.setChangeHandler { broadcaster.send(.ptys(PTYList.Result(ptys: $0))) }
+        let bridge = bridge
+        await ptys.setTerminalEnvironment { ptyId in await bridge.expectTerminal(ptyId: ptyId).environment }
+        adoptionTask = Task { [weak self] in
+            for await hello in await bridge.terminalHellos() {
+                guard let self else { return }
+                await self.adoptTerminal(hello)
+            }
+        }
         registerRoutes()
         let server = IDEServer(
             socketPath: configuration.paths.socket.path(percentEncoded: false), token: token, daemonVersion: ompdVersion,
@@ -147,6 +158,8 @@ public actor Daemon {
         daemonLog.notice("shutting down")
         detachedPause?.task.cancel()
         detachedPause = nil
+        adoptionTask?.cancel()
+        adoptionTask = nil
         do {
             try await ptys.snapshotAll()
         } catch {
@@ -337,6 +350,81 @@ public actor Daemon {
         return entry
     }
 
+    /// An omp the user started in one of the IDE's terminals said hello (the bridge's terminal mode; token and pid
+    /// already checked): it becomes a session — a new entry, or the entry of a session whose omp is not running when
+    /// omp resumed that session's file — served by the terminal's PTY, `workspace` = omp's cwd. Refused when the
+    /// terminal is not a running plain terminal, already runs an adopted omp (an omp started by that omp inherits the
+    /// terminal's credentials), or omp resumed a file another running session owns (`sessionBusy`); the
+    /// bridge then behaves as in lock mode.
+    private func adoptTerminal(_ request: TerminalHello) async {
+        let hello = request.hello
+        let key: SessionKey
+        var lock: (any SessionLockHandle)?
+        var launch: LaunchSpec?
+        let workspace: String
+        do {
+            try ensureAcceptingWork()
+            guard let terminal = await ptys.info(request.ptyId), terminal.running, terminal.sessionKey == nil else {
+                throw DaemonError(.noSuchPTY, "PTY \(request.ptyId) is not a running terminal")
+            }
+            if let hosting = await manifest.sessions.first(where: { $0.adopted && $0.ptyId == request.ptyId }) {
+                throw DaemonError(.sessionBusy, "terminal \(request.ptyId) already runs omp session \(hosting.sessionKey)")
+            }
+            workspace = try Self.canonicalDirectory(hello.cwd)
+            let file = OwnershipLock.canonicalPath(hello.sessionFile)
+            let existing = await manifest.sessions.first { $0.sessionFile.map(OwnershipLock.canonicalPath) == file }
+            if let existing {
+                guard try await !supervisor(existing.sessionKey).isOpen else {
+                    throw DaemonError(.sessionBusy, "session \(existing.sessionKey) is already open")
+                }
+                key = existing.sessionKey
+            } else {
+                key = UUID().uuidString.lowercased()
+                // Ownership first: nothing is created for a file another omp IDE daemon owns.
+                lock = try locks.acquire(sessionFile: hello.sessionFile, sessionId: hello.sessionId, sessionKey: key)
+                do {
+                    launch = try await launchSpec(approvalMode: nil, model: nil)
+                    try ensureAcceptingWork()
+                } catch {
+                    lock?.release()
+                    throw error
+                }
+            }
+        } catch {
+            daemonLog.notice("omp in terminal \(request.ptyId, privacy: .public) not adopted: \(Self.message(of: error), privacy: .public)")
+            await bridge.refuseTerminalHello(request, reason: Self.message(of: error))
+            return
+        }
+        guard let accepted = await bridge.adoptTerminalHello(request, as: key) else {
+            lock?.release() // omp went away before the verdict
+            return
+        }
+        do {
+            let supervisor: SessionSupervisor
+            if let launch {
+                // Listed in its running state from the first push: omp is already there, waiting for input.
+                let entry = SessionManifestEntry(
+                    sessionKey: key, workspace: workspace, sessionFile: hello.sessionFile, sessionId: hello.sessionId,
+                    title: hello.title, launch: launch, status: accepted.pausedBy == nil ? .idle : .paused, ptyId: request.ptyId,
+                    createdAt: Date(), adopted: true)
+                supervisor = try await register(entry)
+            } else {
+                supervisor = try self.supervisor(key)
+            }
+            try await supervisor.adoptTerminalSession(hello: accepted, terminal: request.ptyId, workspace: workspace, lock: lock)
+        } catch {
+            // Welcomed but without a session: the omp runs on without a bridge.
+            lock?.release()
+            await bridge.forget(key)
+            broadcaster.send(.notice(DaemonNotice(
+                level: "error", message: "omp in a terminal could not be adopted as a session: \(Self.message(of: error))", at: Date())))
+        }
+    }
+
+    private static func message(of error: any Error) -> String {
+        (error as? DaemonError)?.message ?? "\(error)"
+    }
+
     private func closeSession(_ params: SessionClose.Params) async throws -> Empty {
         try await supervisor(params.sessionKey).stop(.user)
         return Empty()
@@ -404,7 +492,9 @@ public actor Daemon {
             return Empty()
         }
         router.on(PTYClose.self) { [weak self] params, _ in
-            try await Self.alive(self).ptys.close(params.ptyId, refusingSessions: true)
+            let daemon = try Self.alive(self)
+            try await daemon.ptys.close(params.ptyId, refusingSessions: true)
+            await daemon.bridge.forgetTerminal(ptyId: params.ptyId)
             return Empty()
         }
         router.on(PTYList.self) { [weak self] _, _ in

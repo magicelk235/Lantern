@@ -15,6 +15,8 @@ final class Editors {
 
     private(set) var documents: [String: EditorDocument] = [:]
     var highlight: Highlight?
+    /// The git repository of each project folder, refreshed when FSEvents reports changes under it.
+    let repositories = GitRepositories()
 
     @ObservationIgnored private let persistence: StatePersistence
     /// Hot-exit copies from the previous run not claimed by an open document yet.
@@ -124,7 +126,9 @@ final class Editors {
         path.hasPrefix(workspace + "/") ? workspace : (path as NSString).deletingLastPathComponent
     }
 
-    private func watch(_ root: String) {
+    /// Watches `root` if it is not yet: FSEvents changes under it reach its navigator, its documents and its git
+    /// repository. The navigator and each opened document ask for their folder; the Changes panel asks for its project.
+    func watch(_ root: String) {
         guard watchers[root] == nil else { return }
         let watcher = FileSystemWatcher(root: root) { [weak self] changes in
             DispatchQueue.main.async {
@@ -142,5 +146,6 @@ final class Editors {
             }
             if affected { document.checkDisk() }
         }
+        repositories.filesChanged(under: root)
     }
 }

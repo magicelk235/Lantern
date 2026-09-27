@@ -98,6 +98,12 @@ struct FakeOmp: Sendable {
         (try? String(contentsOf: file("session.\(pid)"), encoding: .utf8)).flatMap { $0.isEmpty ? nil : $0 }
     }
 
+    /// Pids of every spawn that started so far (wrote its `session.<pid>`).
+    func startedPIDs() -> Set<Int32> {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path(percentEncoded: false))) ?? []
+        return Set(names.compactMap { $0.hasPrefix("session.") ? Int32($0.dropFirst("session.".count)) : nil })
+    }
+
     /// `session_exit` kinds recorded in `path`.
     static func sessionExits(_ path: String) -> [String] {
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
@@ -116,7 +122,9 @@ struct FakeOmp: Sendable {
 /// serves. `session.shutdown` (advertised when `shutdown`) makes the fake exit like omp's dispose. Unless `pausable` is
 /// off it plays omp's pause gate like the ide-bridge: `session.pause`/`session.resume` flip it and push `pause` events,
 /// and `userPause`/`userResume` are the user's /pause and pause screen. Calls are recorded; other events are pushed by
-/// the test.
+/// the test. `terminalOmpSaysHello` is a fake omp the user started in a terminal PTY saying hello in terminal mode; the
+/// daemon's verdict lands in `adoptions` or `refusals`, and an adopted omp's event stream finishes when its process is
+/// gone, as the real bridge's socket closes with it.
 actor ScriptedBridge: SessionBridgeLink {
     private let connects: Bool
     private let shutdown: Bool
@@ -129,12 +137,22 @@ actor ScriptedBridge: SessionBridgeLink {
     private(set) var calls: [String] = []
     /// `calls` with the session each went to.
     private(set) var sessionCalls: [(sessionKey: SessionKey, method: String)] = []
+    /// Terminal PTYs with credentials (`expectTerminal`, until `forgetTerminal`).
+    private(set) var terminals: Set<PTYID> = []
+    private let terminalHelloStream: AsyncStream<TerminalHello>
+    private let terminalHelloSink: AsyncStream<TerminalHello>.Continuation
+    private var lastPeerID = 0
+    /// Terminal hellos awaiting the daemon's verdict, by peer.
+    private var pending: Set<Int> = []
+    private(set) var adoptions: [(ptyId: PTYID, sessionKey: SessionKey)] = []
+    private(set) var refusals: [(ptyId: PTYID, reason: String)] = []
 
     init(omp: FakeOmp, connects: Bool, shutdown: Bool = true, pausable: Bool = true) {
         self.omp = omp
         self.connects = connects
         self.shutdown = shutdown
         self.pausable = pausable
+        (terminalHelloStream, terminalHelloSink) = AsyncStream.makeStream(of: TerminalHello.self)
     }
 
     func expect(sessionKey: SessionKey) -> BridgeCredentials {
@@ -152,7 +170,7 @@ actor ScriptedBridge: SessionBridgeLink {
         let omp = omp
         let file = try await eventuallyValue("fake omp \(pid) to start", timeout: timeout) { omp.sessionFile(of: pid) }
         return BridgeHello(
-            sessionKey: sessionKey, pid: pid, ompVersion: "18.3.1",
+            sessionKey: sessionKey, ptyId: nil, pid: pid, ompVersion: "18.3.1",
             capabilities: [
                 "session.info": true, "session.shutdown": shutdown, "events.activity": true, "events.title": true,
                 "session.pause": pausable,
@@ -219,6 +237,73 @@ actor ScriptedBridge: SessionBridgeLink {
         streams.removeValue(forKey: sessionKey)?.sink.finish()
         pids[sessionKey] = nil
         paused[sessionKey] = nil
+    }
+
+    // MARK: - Terminals
+
+    func expectTerminal(ptyId: PTYID) -> TerminalCredentials {
+        terminals.insert(ptyId)
+        return TerminalCredentials(socketPath: "/fake/bridge.sock", ptyId: ptyId, token: String(repeating: "0", count: 64), daemonPID: getpid())
+    }
+
+    func forgetTerminal(ptyId: PTYID) {
+        terminals.remove(ptyId)
+    }
+
+    func terminalHellos() -> AsyncStream<TerminalHello> {
+        terminalHelloStream
+    }
+
+    /// The fake omp `pid`, started by the user in terminal `ptyId` and serving `sessionFile` in `cwd`, says hello.
+    @discardableResult
+    func terminalOmpSaysHello(
+        ptyId: PTYID, pid: Int32, sessionFile: String, cwd: String, sessionId: String = "terminal-session", title: String? = nil,
+        pausedBy: PauseOwner? = nil
+    ) -> TerminalHello {
+        lastPeerID += 1
+        let hello = BridgeHello(
+            sessionKey: "", ptyId: ptyId, pid: pid, ompVersion: "18.3.1",
+            capabilities: [
+                "session.info": true, "session.shutdown": shutdown, "events.activity": true, "events.title": true,
+                "session.pause": pausable,
+            ],
+            sessionId: sessionId, sessionFile: sessionFile, onDisk: true, cwd: cwd, artifactsDir: nil, title: title,
+            pausedBy: pausedBy, raw: ["t": "hello"])
+        let request = TerminalHello(ptyId: ptyId, hello: hello, peerID: lastPeerID)
+        pending.insert(lastPeerID)
+        terminalHelloSink.yield(request)
+        return request
+    }
+
+    func adoptTerminalHello(_ hello: TerminalHello, as sessionKey: SessionKey) -> BridgeHello? {
+        guard pending.remove(hello.peerID) != nil else { return nil }
+        streams.removeValue(forKey: sessionKey)?.sink.finish()
+        let (stream, sink) = AsyncStream.makeStream(of: JSONValue.self)
+        streams[sessionKey] = (stream, sink)
+        pids[sessionKey] = hello.hello.pid
+        paused[sessionKey] = hello.hello.pausedBy
+        adoptions.append((hello.ptyId, sessionKey))
+        var accepted = hello.hello
+        accepted.sessionKey = sessionKey
+        // The bridge's socket closes with its omp.
+        let pid = hello.hello.pid
+        Task { [weak self] in
+            while kill(pid, 0) == 0 { try? await Task.sleep(for: .milliseconds(20)) }
+            await self?.ompGone(sessionKey, pid: pid, sink: sink)
+        }
+        return accepted
+    }
+
+    func refuseTerminalHello(_ hello: TerminalHello, reason: String) {
+        guard pending.remove(hello.peerID) != nil else { return }
+        refusals.append((hello.ptyId, reason))
+    }
+
+    private func ompGone(_ sessionKey: SessionKey, pid: Int32, sink: AsyncStream<JSONValue>.Continuation) {
+        sink.finish()
+        guard pids[sessionKey] == pid else { return }
+        streams[sessionKey] = nil
+        pids[sessionKey] = nil
     }
 }
 

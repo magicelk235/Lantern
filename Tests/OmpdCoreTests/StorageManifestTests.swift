@@ -77,6 +77,26 @@ private func manifestEntry(_ key: SessionKey) -> SessionManifestEntry {
         #expect(updated.sessions.map(\.sessionKey) == ["a", "b"])
     }
 
+    /// A manifest written before sessions could be adopted (no `adopted` key) loads with the field false.
+    @Test func manifestWithoutAdoptedLoadsAsNotAdopted() async throws {
+        let dir = try StorageTempDir()
+        let url = dir.url.appending(path: "sessions.json")
+        var expected = manifestEntry("a")
+        expected.adopted = true
+        let written = expected
+        try await ManifestStore(url: url).update { $0.sessions.append(written) }
+        var json = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        var sessions = try #require(json["sessions"] as? [[String: Any]])
+        #expect(sessions[0]["adopted"] as? Bool == true)
+        sessions[0]["adopted"] = nil
+        json["sessions"] = sessions
+        try JSONSerialization.data(withJSONObject: json).write(to: url)
+
+        let loaded = try await ManifestStore(url: url).load()
+        expected.adopted = false
+        #expect(loaded.sessions == [expected])
+    }
+
     @Test func failedUpdateChangesNeitherMemoryNorDisk() async throws {
         struct Refused: Error {}
         let dir = try StorageTempDir()

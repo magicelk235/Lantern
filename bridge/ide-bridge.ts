@@ -1,7 +1,7 @@
 /**
  * omp IDE bridge — the only omp-side code of omp IDE.
  *
- * One file, two modes, chosen at load from the environment:
+ * One file, three modes, chosen at load from the environment:
  *
  *   daemon mode  OMP_IDE_BRIDGE_SOCK, OMP_IDE_SESSION_KEY, OMP_IDE_BRIDGE_TOKEN and OMP_IDE_DAEMON_PID are set and this
  *                process's parent is that daemon: ompd spawned this omp's interactive TUI on a PTY with
@@ -12,12 +12,19 @@
  *                this process's pid right after spawning it; a hello that beats it is held until then). After
  *                `welcome` it answers requests and pushes activity, title and agent-tree events. A process the daemon
  *                rejects gets lock-mode treatment for its session file.
+ *   terminal mode OMP_IDE_BRIDGE_SOCK, OMP_IDE_TERMINAL_PTY, OMP_IDE_TERMINAL_TOKEN and OMP_IDE_DAEMON_PID are set (no
+ *                session key) and that daemon is alive: the user typed `omp` into one of omp IDE's terminals, whose
+ *                shell ompd started with the terminal's credentials. Same as daemon mode, except that the hello names
+ *                the terminal (`ptyId` and its token) instead of a session key, so ompd adopts this omp as a session
+ *                shown in the IDE; there is no parent check (the shell is in between). ompd rejects a second omp in
+ *                the same terminal (one started by the adopted omp inherits the variables) and a `--resume` of a file
+ *                another session owns; a rejected process gets lock-mode treatment, exactly as above.
  *   lock mode    otherwise; installed as <agentDir>/extensions/omp-ide-bridge.ts so every omp loads it. Refuses to
  *                open a session file the daemon owns: SIGKILL at load (argv --resume/-r/--session), SIGKILL at
  *                `session_start`, `{cancel: true}` from `session_before_switch`. SIGKILL is the only exit that neither
  *                omp's load guard blocks nor appends `session_exit` to the owned JSONL.
- * Both modes veto `session_before_switch` into a daemon-owned file, so a session TUI's `/resume` cannot open another
- * IDE session's file.
+ * All modes veto `session_before_switch` into a daemon-owned file, so a session TUI's `/resume` cannot open another
+ * IDE session's file; terminal mode also applies lock mode's load-time argv check.
  *
  * Ownership: ompd holds flock(LOCK_EX) on $APP_SUPPORT/run/owned-sessions/<sha256(canonical sessionFile)>.lock for
  * every session it owns; APP_SUPPORT = $OMPD_HOME or ~/Library/Application Support/omp-ide. The bridge probes it with
@@ -26,6 +33,7 @@
  * Wire: JSON lines over the unix socket.
  *   bridge -> ompd  {t:"hello", v:1, sessionKey, token, pid, ompVersion, capabilities, session:{id, file, onDisk,
  *                    leafId, cwd, artifactsDir, title, paused, pausedBy}}             first frame, exactly once
+ *                   (terminal mode: ptyId and the terminal's token in place of sessionKey and token)
  *                   {t:"res", id, ok:true, result} | {t:"res", id, ok:false, error}  one per req
  *                   {t:"evt", seq, ts, agentId, kind, data}                           only after welcome
  *                   {t:"gap", ts, from, to, dropped}                                  evts from..to were dropped
@@ -208,24 +216,43 @@ const omp = ompModule as unknown as OmpRootLike;
 const MAIN_AGENT_ID = omp.MAIN_AGENT_ID ?? "Main";
 const EVAL_ID = crypto.randomUUID();
 
-interface DaemonEnv {
-	sock: string;
-	sessionKey: string;
-	token: string;
-}
+/** How this process reaches ompd (see header): as the omp ompd spawned for a session, or as an omp the user started in
+ *  one of the IDE's terminals. Undefined is lock mode. */
+type Wiring =
+	| { mode: "daemon"; sock: string; sessionKey: string; token: string }
+	| { mode: "terminal"; sock: string; ptyId: string; token: string };
 
-/** The daemon wiring, if ompd itself spawned this process (see header); otherwise lock mode. */
-function daemonEnv(): DaemonEnv | undefined {
+function resolveWiring(): Wiring | undefined {
 	const sock = process.env.OMP_IDE_BRIDGE_SOCK;
+	const daemonPid = process.env.OMP_IDE_DAEMON_PID;
 	const sessionKey = process.env.OMP_IDE_SESSION_KEY;
 	const token = process.env.OMP_IDE_BRIDGE_TOKEN;
-	const daemonPid = process.env.OMP_IDE_DAEMON_PID;
-	if (!sock || !sessionKey || !token || !daemonPid) {
-		if (sock || sessionKey || token || daemonPid) writeStderr("ide-bridge: incomplete OMP_IDE_* environment; lock mode");
-		return undefined;
+	const ptyId = process.env.OMP_IDE_TERMINAL_PTY;
+	const terminalToken = process.env.OMP_IDE_TERMINAL_TOKEN;
+	if (sock && daemonPid && sessionKey && token) {
+		// Inherited by a process this daemon-spawned omp started: it must not pose as the session's bridge.
+		return String(process.ppid) === daemonPid ? { mode: "daemon", sock, sessionKey, token } : undefined;
 	}
-	// Inherited by a process this daemon-spawned omp started: it must not pose as the session's bridge.
-	return String(process.ppid) === daemonPid ? { sock, sessionKey, token } : undefined;
+	if (sock && daemonPid && ptyId && terminalToken && !sessionKey && !token) {
+		// The terminal's shell outlives daemons: variables of a dead ompd (its pid no longer exists) mean lock mode.
+		return daemonAlive(daemonPid) ? { mode: "terminal", sock, ptyId, token: terminalToken } : undefined;
+	}
+	if (sock || daemonPid || sessionKey || token || ptyId || terminalToken) {
+		writeStderr("ide-bridge: incomplete OMP_IDE_* environment; lock mode");
+	}
+	return undefined;
+}
+
+/** Signal 0 probes for the process; EPERM means it exists but is not ours (not the case for our own ompd). */
+function daemonAlive(pid: string): boolean {
+	const number = Number(pid);
+	if (!Number.isInteger(number) || number <= 1) return false;
+	try {
+		process.kill(number, 0);
+		return true;
+	} catch (e) {
+		return isRecord(e) && e.code === "EPERM";
+	}
 }
 
 function appSupportDir(): string {
@@ -239,7 +266,7 @@ function appSupportDir(): string {
 
 const OWNED_DIR = path.join(appSupportDir(), "run", "owned-sessions");
 
-const DAEMON = daemonEnv();
+const WIRING = resolveWiring();
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Duplicate-load guard. A daemon-spawned omp usually loads this file twice: the lock-mode copy from the agent's
@@ -250,8 +277,9 @@ const DAEMON = daemonEnv();
 // unconditionally when they evaluate; an accessor ignores such writes, so a stale global copy never wins over ompd's.
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** Bumped whenever the daemon-mode behavior changes (2: TUI sessions: shutdown, activity, title; 3: pause). */
-const BRIDGE_REVISION = 3;
+/** Bumped whenever the daemon-mode behavior changes (2: TUI sessions: shutdown, activity, title; 3: pause; 4: terminal
+ *  mode). */
+const BRIDGE_REVISION = 4;
 
 interface GuardSlot {
 	/** The evaluation of this file that serves the process. */
@@ -309,9 +337,10 @@ function writeStderr(line: string): void {
 	}
 }
 
-/** Daemon-mode diagnostics; ompd captures omp's stderr. Lock mode stays silent (it may be inside a TUI). */
+/** Daemon-mode diagnostics; ompd captures omp's stderr. Lock and terminal modes stay silent (they may be, and in
+ *  terminal mode always are, inside a TUI on the user's terminal). */
 function log(message: string): void {
-	if (DAEMON) writeStderr(`ide-bridge: ${message}`);
+	if (WIRING?.mode === "daemon") writeStderr(`ide-bridge: ${message}`);
 }
 
 function attempt<T>(read: () => T, fallback: T): T {
@@ -455,7 +484,7 @@ function refuse(sessionFile: string, where: string): void {
 	process.kill(process.pid, "SIGKILL");
 }
 
-if (!DAEMON) {
+if (WIRING?.mode !== "daemon") {
 	// Load time: extensions load before the session is created, so nothing has been written yet.
 	try {
 		const target = argvResumeTarget();
@@ -775,7 +804,8 @@ function onReject(reason: string): void {
 	if (S.phase !== "connecting") return;
 	log(`the omp IDE daemon rejected this process: ${reason}`);
 	endConnection("rejected");
-	// Not the process ompd spawned (it got OMP_IDE_* from somewhere other than ompd): same rule as lock mode.
+	// Not the process ompd spawned (it got OMP_IDE_* from somewhere other than ompd), or an omp in a terminal ompd
+	// turned away (another omp already runs there, or its file is another session's): same rule as lock mode.
 	const file = attempt(() => S.main?.ctx?.sessionManager.getSessionFile(), undefined);
 	if (isDaemonOwned(file)) refuse(file, "rejected by the omp IDE daemon");
 }
@@ -869,7 +899,7 @@ function settleCheck(ctx: CtxLike): void {
 }
 
 /** Dials the daemon and sends `hello`; events queue from here until the verdict. */
-async function connectDaemon(daemon: DaemonEnv, ctx: CtxLike): Promise<void> {
+async function connectDaemon(wiring: Wiring, ctx: CtxLike): Promise<void> {
 	S.phase = "connecting";
 	const slot = guardSlots[GUARD];
 	if (slot && slot.owner === EVAL_ID) slot.connected = true;
@@ -886,7 +916,7 @@ async function connectDaemon(daemon: DaemonEnv, ctx: CtxLike): Promise<void> {
 	if (pauseGate) subscribePause(pauseGate);
 	let sock: net.Socket;
 	try {
-		sock = net.createConnection({ path: daemon.sock });
+		sock = net.createConnection({ path: wiring.sock });
 	} catch (e) {
 		log(`cannot dial the daemon: ${errText(e)}`);
 		endConnection("closed");
@@ -933,8 +963,8 @@ async function connectDaemon(daemon: DaemonEnv, ctx: CtxLike): Promise<void> {
 		frame({
 			t: "hello",
 			v: WIRE_VERSION,
-			sessionKey: daemon.sessionKey,
-			token: daemon.token,
+			...(wiring.mode === "daemon" ? { sessionKey: wiring.sessionKey } : { ptyId: wiring.ptyId }),
+			token: wiring.token,
 			pid: process.pid,
 			ompVersion: omp.VERSION ?? "unknown",
 			capabilities,
@@ -1302,7 +1332,7 @@ function registerLockMode(on: On): void {
 	on("session_before_switch", async (event, rawCtx) => (owns() ? vetoOwnedSwitch(event, rawCtx) : undefined));
 }
 
-function registerDaemonMode(on: On, daemon: DaemonEnv): void {
+function registerDaemonMode(on: On, wiring: Wiring): void {
 	const inst: Instance = { isMain: false };
 
 	on("session_start", async (_event, rawCtx) => {
@@ -1320,7 +1350,7 @@ function registerDaemonMode(on: On, daemon: DaemonEnv): void {
 					return;
 				}
 				// Not awaited: omp's startup waits for session_start handlers; the hello does not need the verdict.
-				connectDaemon(daemon, ctx).catch((e: unknown) => {
+				connectDaemon(wiring, ctx).catch((e: unknown) => {
 					log(`daemon connection failed: ${errText(e)}`);
 					endConnection("closed");
 				});
@@ -1415,6 +1445,6 @@ export default function ideBridge(pi: ExtensionAPI): void {
 	const api = pi as unknown as { on: On; setLabel?: (label: string) => void };
 	const on = api.on;
 	attempt(() => api.setLabel?.("omp IDE bridge"), undefined);
-	if (DAEMON) registerDaemonMode(on, DAEMON);
+	if (WIRING) registerDaemonMode(on, WIRING);
 	else registerLockMode(on);
 }

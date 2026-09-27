@@ -1,9 +1,10 @@
 import Foundation
 import IDEProtocol
 
-/// The part of the ide-bridge control plane a `SessionSupervisor` uses: per-spawn
-/// credentials, the `hello` handshake, request/response calls and the event push stream of one omp process.
-/// `BridgeServer` is the production implementation; tests substitute a scripted bridge.
+/// The part of the ide-bridge control plane a `SessionSupervisor` and the daemon use:
+/// per-spawn credentials, the `hello` handshake, request/response calls and the event push stream of one omp process,
+/// and the adoption of omps the user starts in the IDE's terminals. `BridgeServer` is the production implementation;
+/// tests substitute a scripted bridge.
 public protocol SessionBridgeLink: Sendable {
     /// Registers the spawn that is about to happen; the credentials' environment goes into the omp child's.
     func expect(sessionKey: SessionKey) async -> BridgeCredentials
@@ -23,6 +24,23 @@ public protocol SessionBridgeLink: Sendable {
 
     /// Drops everything the bridge holds for `sessionKey` (its omp exited).
     func forget(_ sessionKey: SessionKey) async
+
+    /// Credentials for the program of terminal PTY `ptyId` (its environment), so an omp the user starts there can say
+    /// hello in terminal mode; good until `forgetTerminal`.
+    func expectTerminal(ptyId: PTYID) async -> TerminalCredentials
+
+    /// The terminal PTY is gone; its credentials are void.
+    func forgetTerminal(ptyId: PTYID) async
+
+    /// Authenticated terminal-mode hellos awaiting the daemon's verdict. Single consumer.
+    func terminalHellos() async -> AsyncStream<TerminalHello>
+
+    /// Adopts the omp of `hello` as the bridge of `sessionKey`: `welcome`, then `waitForHello`, `call`, `events` and
+    /// `forget` serve it by that key. Nil when the omp went away before the verdict.
+    func adoptTerminalHello(_ hello: TerminalHello, as sessionKey: SessionKey) async -> BridgeHello?
+
+    /// Rejects the omp of `hello`.
+    func refuseTerminalHello(_ hello: TerminalHello, reason: String) async
 }
 
 extension BridgeServer: SessionBridgeLink {}

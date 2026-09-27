@@ -290,6 +290,67 @@ struct BridgeOmpIntegrationTests {
         await server.stop()
     }
 
+    /// Terminal mode: an omp started with a terminal's credentials (`TerminalCredentials`, no session key, no parent
+    /// check) says hello naming the terminal; adopted, it is served like a spawned omp; refused, it runs on in lock mode
+    /// and dials nobody. Credentials of a dead daemon (a pid nobody has) mean lock mode from the start.
+    @Test func terminalModeDialsTheDaemonAndFallsBackToLockModeWhenRefused() async throws {
+        let omp = try #require(ompExecutable)
+        let sandbox = try Sandbox()
+        let server = BridgeServer(socketPath: bridgeSocketPath())
+        try await server.start()
+        let hellos = Box<[TerminalHello]>([])
+        let taking = Task { for await hello in await server.terminalHellos() { hellos.mutate { $0.append(hello) } } }
+        defer { taking.cancel() }
+        let credentials = await server.expectTerminal(ptyId: "term-1")
+        let global = try BridgeInstaller.installGlobal(agentDir: sandbox.dir.url.appending(path: "agent", directoryHint: .isDirectory))
+        // As in a terminal: only the globally installed copy loads (ompd passes no `-e`).
+        let adoptee = try sandbox.spawn(omp, extensions: [global], adding: credentials.environment)
+        defer { adoptee.killIfRunning() }
+        do {
+            let request = try await eventuallyValue("the terminal hello", timeout: .seconds(60)) { hellos.value.first }
+            #expect(request.ptyId == "term-1" && request.hello.pid == adoptee.pid && request.hello.sessionKey.isEmpty)
+            #expect(request.hello.capabilities["session.pause"] == true && request.hello.capabilities["session.shutdown"] == true)
+            let accepted = try #require(await server.adoptTerminalHello(request, as: "adopted"))
+            #expect(accepted.sessionKey == "adopted")
+            let info = try await server.call("adopted", method: "session.info")
+            #expect(info["file"]?.stringValue == accepted.sessionFile)
+            #expect(try await server.call("adopted", method: "session.pause")["paused"] == true)
+            #expect(try await server.call("adopted", method: "session.resume", params: ["ifPausedBy": "daemon"])["paused"] == false)
+            adoptee.closeStdin()
+            #expect(try await adoptee.waitForExit() == .init(status: 0, reason: .exit))
+            let events = try await bridgeCollect(server.events("adopted"))
+            #expect(events.first?["kind"] == "session_start" && events.contains { $0["kind"] == "session_shutdown" })
+            #expect(events.filter { $0["kind"] == "pause" }.count == 2)
+            #expect(!adoptee.stderrText.contains("ide-bridge"), "terminal mode stays silent: \(adoptee.stderrText)")
+
+            // Refused (a second omp in the same terminal): lock mode, and a fresh session file is nobody's, so it runs on.
+            let refused = try sandbox.spawn(omp, extensions: [global], adding: credentials.environment)
+            defer { refused.killIfRunning() }
+            let second = try await eventuallyValue("the second terminal hello", timeout: .seconds(60)) { hellos.value.count > 1 ? hellos.value[1] : nil }
+            await server.refuseTerminalHello(second, reason: "terminal term-1 already runs omp session adopted")
+            _ = try await refused.frame("ready") { $0["type"] == "ready" }
+            try refused.send(["id": "state", "type": "get_state"])
+            _ = try await refused.frame("get_state response", seconds: 10) { $0["id"] == "state" }
+            refused.closeStdin()
+            #expect(try await refused.waitForExit() == .init(status: 0, reason: .exit))
+            #expect(!refused.stderrText.contains("ide-bridge"), "\(refused.stderrText)")
+
+            // A dead daemon's credentials: lock mode from the start, no dialing.
+            var stale = credentials.environment
+            stale[BridgeCredentials.daemonPIDVariable] = "2147483000"
+            let orphan = try sandbox.spawn(omp, extensions: [global], adding: stale)
+            defer { orphan.killIfRunning() }
+            _ = try await orphan.frame("ready") { $0["type"] == "ready" }
+            orphan.closeStdin()
+            #expect(try await orphan.waitForExit() == .init(status: 0, reason: .exit))
+            #expect(hellos.value.count == 2)
+        } catch {
+            await server.stop()
+            throw error
+        }
+        await server.stop()
+    }
+
     @Test func lockModeRefusesSessionsTheDaemonOwns() async throws {
         let omp = try #require(ompExecutable)
         let sandbox = try Sandbox()

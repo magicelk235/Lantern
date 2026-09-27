@@ -7,6 +7,8 @@ import Observation
 /// omp moves to a new PTY whenever it is started again — after a crash, a daemon restart, or Resume — and the manifest
 /// then names the new one. The session follows: it stops the old PTY's stream, and the display starts over from the new
 /// PTY's screen at the display's size. While omp does not run for the session (no PTY) the display keeps what it showed.
+/// An adopted session's PTY is a terminal's (`entry.adopted`): the terminal's tab shows it, so the session shows nothing
+/// of its own until omp runs for it in a session PTY again.
 ///
 /// It is its PTY models' display, relaying to the display of the tab.
 @MainActor @Observable
@@ -43,7 +45,7 @@ public final class SessionTerminal: Identifiable {
 
     func update(entry: SessionManifestEntry?) {
         if entry != self.entry { self.entry = entry }
-        follow(entry?.ptyId)
+        follow(entry?.adopted == true ? nil : entry?.ptyId)
     }
 
     /// The tab closed: ompd stops streaming here and the PTY's model goes. omp keeps running.

@@ -61,7 +61,9 @@ private struct TabState: View {
                 SessionStatusBadge(status: status)
             }
         case .terminal(let ptyId):
-            if let model = app.terminals.model(ptyId) {
+            if let hosted = app.adoptedSession(on: ptyId) {
+                SessionStatusBadge(status: hosted.status)
+            } else if let model = app.terminals.model(ptyId) {
                 TerminalState(phase: model.phase, hasExited: model.hasExited)
             }
         case .editor(let path):
