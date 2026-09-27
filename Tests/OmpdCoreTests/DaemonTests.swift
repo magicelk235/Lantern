@@ -10,8 +10,8 @@ import Testing
 @Suite(.timeLimit(.minutes(2)))
 struct DaemonTests {
     static let allMethods = [
-        DaemonStatus.name, SessionCreate.name, SessionOpen.name, ListSessions.name, SessionClose.name, PTYOpen.name,
-        PTYAttach.name, PTYDetach.name, PTYWrite.name, PTYResize.name, PTYClose.name, PTYList.name,
+        DaemonStatus.name, SessionCreate.name, SessionOpen.name, ListSessions.name, SessionClose.name, SessionForget.name,
+        PTYOpen.name, PTYAttach.name, PTYDetach.name, PTYWrite.name, PTYResize.name, PTYClose.name, PTYList.name,
     ]
 
     @Test func routerServesEveryMethodAndSessionPTYsBehaveLikeTerminals() async throws {
@@ -65,6 +65,9 @@ struct DaemonTests {
         let closed = try await connected.entry(entry.sessionKey)
         #expect(closed.status == .closed && closed.closedByUser && closed.ptyId == nil)
         #expect(fixture.omp.lines("events") == ["graceful"])
+        _ = try await client.call(SessionForget.self, .init(sessionKey: entry.sessionKey))
+        served.insert(SessionForget.name)
+        #expect(try await client.call(ListSessions.self, Empty()).sessions.map(\.sessionKey) == [opened.sessionKey])
 
         let pty = try await client.call(PTYOpen.self, .init(cwd: fixture.workspace, command: ["/bin/sh", "-c", "printf ready; exec cat"], cols: 80, rows: 24))
         served.insert(PTYOpen.name)
@@ -108,6 +111,51 @@ struct DaemonTests {
         })
         #expect(listed < pointed && pointed < dropped)
         #expect(pushes.contains { if case .notice(let n) = $0 { n.sessionKey == entry.sessionKey && n.level == "warning" } else { false } })
+        await connected.close()
+        await fixture.daemon.shutdown()
+    }
+
+    @Test func forgetDropsAStoppedSessionAndRefusesARunningOne() async throws {
+        let fixture = try await DaemonFixture()
+        let connected = try await fixture.client()
+        let client = connected.client
+        let running = try await fixture.createSession(connected)
+        try await connected.waitForStatus(running.sessionKey, .idle)
+        // A session ompd gave up on: it holds its file's ownership lock and keeps the PTY of its last screen.
+        let gone = try await fixture.createSession(connected)
+        try await connected.waitForStatus(gone.sessionKey, .idle)
+        let file = try #require(try await connected.entry(gone.sessionKey).sessionFile)
+        let crashAtStart = fixture.omp.file("crash-at-start").path(percentEncoded: false)
+        FileManager.default.createFile(atPath: crashAtStart, contents: nil)
+        _ = try await client.call(PTYWrite.self, .init(ptyId: try #require(gone.ptyId), data: Data("crash\n".utf8)))
+        try await connected.waitForStatus(gone.sessionKey, .needsAttention)
+        try FileManager.default.removeItem(atPath: crashAtStart)
+        let lastScreen = try #require(try await connected.entry(gone.sessionKey).ptyId)
+        #expect(fixture.locks.held.contains(file))
+
+        let busy = await #expect(throws: DaemonError.self) { try await client.call(SessionForget.self, .init(sessionKey: running.sessionKey)) }
+        #expect(busy?.code == .sessionBusy)
+        let untouched = try await connected.entry(running.sessionKey)
+        #expect(untouched.status == .idle && untouched.ptyId == running.ptyId)
+
+        let before = connected.pushes.count
+        _ = try await client.call(SessionForget.self, .init(sessionKey: gone.sessionKey))
+        #expect(try await client.call(ListSessions.self, Empty()).sessions.map(\.sessionKey) == [running.sessionKey])
+        #expect(try fixture.manifestOnDisk().sessions.map(\.sessionKey) == [running.sessionKey])
+        try await eventually("a sessions push without the forgotten session") {
+            connected.pushes[before...].contains {
+                if case .sessions(let list) = $0 { list.sessions.map(\.sessionKey) == [running.sessionKey] } else { false }
+            }
+        }
+        #expect(!fixture.locks.held.contains(file))
+        #expect(try await client.call(PTYList.self, Empty()).ptys.map(\.ptyId) == [running.ptyId])
+        #expect(FileManager.default.fileExists(atPath: file))
+        let unknown = await #expect(throws: DaemonError.self) { try await client.call(SessionForget.self, .init(sessionKey: gone.sessionKey)) }
+        #expect(unknown?.code == .noSuchSession)
+
+        // Its file is nobody's now: opening it resumes it in a new session.
+        let reopened = try await client.call(SessionOpen.self, .init(sessionFile: file, workspace: fixture.workspace))
+        #expect(reopened.sessionKey != gone.sessionKey && reopened.ptyId != lastScreen)
         await connected.close()
         await fixture.daemon.shutdown()
     }

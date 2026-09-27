@@ -51,3 +51,25 @@ struct EditorCommands: Commands {
         }
     }
 }
+
+/// The Session menu: Resume, Close Session, Remove Session and Close Terminal for the tab on screen. Each asks the same
+/// way the tab's menu does.
+struct SessionCommands: Commands {
+    let app: AppState
+
+    var body: some Commands {
+        CommandMenu("Session") {
+            let entry = app.tabs.selection?.sessionKey.flatMap(app.entry(for:))
+            let ptyId = app.tabs.selection?.ptyId
+            Button("Resume Session") { if let entry { app.resumeSession(entry.sessionKey) } }
+                .disabled(!app.connection.isConnected || entry?.isResumable != true)
+            Button("Close Session…") { if let entry { app.requestCloseSession(entry.sessionKey) } }
+                .disabled(!app.connection.isConnected || entry == nil || entry?.isStopped == true)
+            Button("Remove Session…") { if let entry { app.requestForgetSession(entry.sessionKey) } }
+                .disabled(!app.connection.isConnected || entry?.isStopped != true)
+            Divider()
+            Button("Close Terminal…") { if let ptyId { app.requestCloseTerminal(ptyId) } }
+                .disabled(!app.connection.isConnected || ptyId == nil)
+        }
+    }
+}

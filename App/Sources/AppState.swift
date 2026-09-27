@@ -27,6 +27,8 @@ final class AppState {
     /// Width the sidebar column opens with: the one it had when the app last quit.
     let initialSidebarWidth: Double
     var alert: AlertMessage?
+    /// A Close Session / Close Terminal the user asked for, waiting for their confirmation in the window.
+    var pendingClose: CloseRequest?
 
     @ObservationIgnored private let persistence: StatePersistence
     @ObservationIgnored private var started = false
@@ -42,6 +44,21 @@ final class AppState {
         let id = UUID()
         let title: String
         let message: String
+    }
+
+    enum CloseRequest: Identifiable {
+        case session(SessionKey)
+        case terminal(PTYID)
+        /// Remove a stopped session from ompd's list.
+        case forget(SessionKey)
+
+        var id: String {
+            switch self {
+            case .session(let key): "session:\(key)"
+            case .terminal(let ptyId): "terminal:\(ptyId)"
+            case .forget(let key): "forget:\(key)"
+            }
+        }
     }
 
     init() {
@@ -65,6 +82,10 @@ final class AppState {
         observeSystemPower()
     }
 
+    /// launchd starts a registered ompd within a moment. A daemon still out of reach this long after launch has a
+    /// registration launchd cannot spawn (made by a bundle signed differently); it is redone once.
+    private static let daemonStartGrace: Duration = .seconds(12)
+
     /// Registers the LaunchAgent and connects to ompd. Runs at launch even when no window opens (the main window may
     /// have been closed when the app last quit); the window's `.task` calls it again, which is a no-op.
     func start() {
@@ -77,6 +98,15 @@ final class AppState {
                 title: "The window layout will not be remembered",
                 message: "omp IDE could not open its state database: \(reason)")
         }
+        Task {
+            try? await Task.sleep(for: Self.daemonStartGrace)
+            if !connection.isConnected { await agent.repair() }
+        }
+    }
+
+    /// The user asks for ompd again: the registration is redone.
+    func restartDaemon() {
+        Task { await agent.repair() }
     }
 
     // MARK: - Sessions and tabs
@@ -180,6 +210,12 @@ final class AppState {
         }
     }
 
+    /// Asks before ending omp for the session (the confirmation lives in the window).
+    func requestCloseSession(_ sessionKey: SessionKey) {
+        guard connection.isConnected, let entry = entry(for: sessionKey), entry.status != .closed else { return }
+        pendingClose = .session(sessionKey)
+    }
+
     /// Ends omp for the session gracefully; its tab stays, with the last screen and Resume.
     func closeSession(_ sessionKey: SessionKey) {
         Task {
@@ -191,11 +227,39 @@ final class AppState {
         }
     }
 
-    /// omp's title for the session, else the title its TUI set, else a short form of its key.
+    /// Asks before dropping a stopped session from the list (the confirmation lives in the window).
+    func requestForgetSession(_ sessionKey: SessionKey) {
+        guard connection.isConnected, let entry = entry(for: sessionKey), entry.isStopped else { return }
+        pendingClose = .forget(sessionKey)
+    }
+
+    /// Drops the session from ompd's list; its tab closes. The session file on disk stays.
+    func forgetSession(_ sessionKey: SessionKey) {
+        Task {
+            do {
+                try await connection.forgetSession(sessionKey)
+                if tabs.contains(.session(sessionKey)) {
+                    tabs.close(.session(sessionKey))
+                    terminals.releaseSession(sessionKey)
+                    saveWindow()
+                }
+            } catch {
+                alert = AlertMessage(title: "Could not remove the session", message: error.userMessage)
+            }
+        }
+    }
+
+    /// omp's name for the session, else what its TUI titles its window (without the `π >` glyph, and only when it
+    /// says more than the folder), else a short form of its key.
     func sessionTitle(_ sessionKey: SessionKey) -> String {
         let entry = entry(for: sessionKey)
         if let title = entry?.title, !title.isEmpty { return title }
-        if let title = connection.openSessions[sessionKey]?.programTitle, !title.isEmpty { return title }
+        if let program = connection.openSessions[sessionKey]?.programTitle {
+            var title = program.trimmingCharacters(in: .whitespaces)
+            if title.hasPrefix("π >") { title = String(title.dropFirst(3)).trimmingCharacters(in: .whitespaces) }
+            let folder = entry.map { URL(filePath: $0.workspace, directoryHint: .isDirectory).lastPathComponent }
+            if !title.isEmpty, title != folder { return title }
+        }
         return entry?.displayTitle ?? "Session \(sessionKey.prefix(8))"
     }
 
@@ -214,7 +278,7 @@ final class AppState {
     private func newTabSize() -> TerminalSize {
         guard var area = tabContentArea?.size else { return terminals.lastSize ?? .standard }
         // A first tab brings the strip along.
-        if tabContentArea?.belowStrip == false { area.height -= TabStrip.height }
+        if tabContentArea?.belowStrip == false { area.height -= Chrome.tabStripHeight }
         return terminals.cells(fitting: TerminalPane.emulatorSize(in: area))
     }
 
@@ -247,6 +311,12 @@ final class AppState {
             tabs.open(.terminal(ptyId), in: workspace)
         }
         saveWindow()
+    }
+
+    /// Ends the PTY at once when its program ended, else asks first (the confirmation lives in the window).
+    func requestCloseTerminal(_ ptyId: PTYID) {
+        guard connection.isConnected else { return }
+        if terminals.model(ptyId)?.hasExited == true { closeTerminal(ptyId) } else { pendingClose = .terminal(ptyId) }
     }
 
     /// Ends the PTY and everything running on it; its tab closes.
@@ -381,4 +451,9 @@ extension NSRect {
     init(_ frame: WindowFrame) {
         self.init(x: frame.x, y: frame.y, width: frame.width, height: frame.height)
     }
+}
+
+extension SessionManifestEntry {
+    /// ompd can resume the session and its session file is still on disk.
+    var isResumable: Bool { canResume && !sessionFileIsGone }
 }

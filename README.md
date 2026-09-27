@@ -20,6 +20,8 @@ Native macOS IDE for [omp](https://github.com/can1357/oh-my-pi) (Swift 6, SwiftU
 
 The checkout lives in an iCloud-synced folder, where build products pick up extended attributes that break codesign. Keep build output outside it: `.build` is a symlink to `~/Library/Developer/omp-ide/main-build`.
 
+The app must be signed with a real identity, even locally: Background Task Management refuses to spawn a bundled LaunchAgent whose executable has no Team ID (`Bundle identifiers from launchd plist ignored because the executable doesn't have a Team ID`, then `Unable to update LWCR with smd: 22`), so an ad-hoc signed ompd never starts and the app only ever shows "ompd is not reachable". `App/project.yml` signs with the Apple Development identity of team `V8K8L3ZSD5`; change `DEVELOPMENT_TEAM` for another team. Rebuilds keep the registration (launchd binds it to the Team ID and signing identifier); a registration launchd cannot spawn (left by an ad-hoc build) is redone by the app 12 s after launch and by the notice's Restart ompd.
+
 ```sh
 xcodebuild -downloadComponent MetalToolchain   # once; SwiftTerm compiles Metal shaders
 swift build && swift test                      # package + tests
@@ -52,4 +54,4 @@ With `OMPD_HOME` set, the app does not register the production LaunchAgent (`com
 | 4 Agent supervision UX (agent tree, jobs, director, session picker) | not started |
 | 5 Hardening (upgrades, disk pressure) | not started |
 
-Known gaps: production `SMAppService` registration hasn't run with a Developer ID build.
+Known gaps: production `SMAppService` registration hasn't run with a Developer ID build. A bundled ompd that changed (rebuild, update) keeps running as the old process until launchd restarts it (`launchctl kickstart -k gui/$UID/com.omp-ide.ompd`).

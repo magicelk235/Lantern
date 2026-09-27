@@ -19,6 +19,8 @@ struct OmpIDEApp: App {
                 }
         }
         .defaultSize(width: 1100, height: 760)
+        // The tab strip and the sidebar name what is on screen; the toolbar holds only the actions.
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Session…") { app.newSession() }
@@ -27,8 +29,13 @@ struct OmpIDEApp: App {
                 Button("New Terminal") { app.newTerminal() }
                     .keyboardShortcut("`", modifiers: .control)
                     .disabled(!app.connection.isConnected)
+                Divider()
+                Button("Close Tab") { if let tab = app.tabs.selection { app.closeTab(tab) } }
+                    .keyboardShortcut("w")
+                    .disabled(app.tabs.selection == nil)
             }
             EditorCommands(app: app)
+            SessionCommands(app: app)
         }
 
         Settings {

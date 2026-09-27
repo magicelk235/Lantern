@@ -138,6 +138,14 @@ public final class DaemonConnection: TerminalBackend {
         _ = try await connectedClient().call(SessionClose.self, .init(sessionKey: sessionKey))
     }
 
+    /// Drops a stopped session from ompd's list (`session.forget`); its session file on disk stays. The `sessions`
+    /// push confirms, but the list here drops it right away.
+    public func forgetSession(_ sessionKey: SessionKey) async throws {
+        _ = try await connectedClient().call(SessionForget.self, .init(sessionKey: sessionKey))
+        release(sessionKey)
+        sessions.removeAll { $0.sessionKey == sessionKey }
+    }
+
     /// A session a call returned. A `sessions` push may already have brought it, or a newer state of it: that stays.
     private func adopt(_ entry: SessionManifestEntry) {
         guard !sessions.contains(where: { $0.sessionKey == entry.sessionKey }) else { return }
@@ -272,7 +280,15 @@ extension SessionManifestEntry {
         return "Session \(sessionKey.prefix(8))"
     }
 
-    /// omp does not run for the session (closed, or given up on after crashing again and again) and ompd can start it
-    /// again from its session file (`session.open`).
-    public var canResume: Bool { (status == .closed || status == .needsAttention) && sessionFile != nil }
+    /// omp does not run for the session: closed, or given up on after crashing again and again.
+    public var isStopped: Bool { status == .closed || status == .needsAttention }
+
+    /// omp does not run for the session and ompd knows a session file to start it again from (`session.open`).
+    public var canResume: Bool { isStopped && sessionFile != nil }
+
+    /// ompd knows the session's file, but it is no longer on disk: omp cannot resume it.
+    public var sessionFileIsGone: Bool {
+        guard let sessionFile else { return false }
+        return !FileManager.default.fileExists(atPath: sessionFile)
+    }
 }

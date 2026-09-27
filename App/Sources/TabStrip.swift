@@ -1,47 +1,35 @@
+import AppKit
 import IDEModel
 import IDEState
 import SwiftUI
 
-/// The tabs of the workspace on screen, above the detail area. Selecting a tab shows it; closing one leaves its omp
-/// session or terminal running, and closing an editor with unsaved edits asks first.
+/// The tabs of the workspace on screen, above the detail area: flat, hairline-separated, the selected one attached
+/// to the content by sharing its canvas. Selecting a tab shows it; closing one leaves its omp session or terminal
+/// running, and closing an editor with unsaved edits asks first.
 struct TabStrip: View {
-    static let height: CGFloat = 32
-
     let app: AppState
     let strip: TabLayout.Strip
 
     var body: some View {
-        HStack(spacing: 0) {
-            Label(workspaceName, systemImage: "folder")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.horizontal, 10)
-                .help(strip.workspace)
+        ZStack(alignment: .bottom) {
             Divider()
-                .frame(height: 16)
             ScrollView(.horizontal) {
-                HStack(spacing: 2) {
+                HStack(spacing: 0) {
                     ForEach(strip.tabs, id: \.self) { tab in
                         TabItem(
-                            tab: tab, title: title(of: tab), status: tab.sessionKey.flatMap(app.entry(for:))?.status,
+                            tab: tab, title: title(of: tab), entry: tab.sessionKey.flatMap(app.entry(for:)),
                             terminalExited: tab.ptyId.map { app.terminals.model($0)?.hasExited == true },
                             document: tab.editorPath.flatMap(app.editors.document(for:)),
-                            isSelected: app.tabs.selection == tab, select: { app.selectTab(tab) }, close: { app.closeTab(tab) })
+                            isSelected: app.tabs.selection == tab, select: { app.selectTab(tab) }, close: { app.closeTab(tab) }
+                        )
+                        .contextMenu { TabMenu(app: app, tab: tab) }
                     }
                 }
-                .padding(.horizontal, 6)
             }
             .scrollIndicators(.never)
         }
-        .frame(height: Self.height)
-        .background(.bar)
-        .overlay(alignment: .bottom) { Divider() }
-    }
-
-    private var workspaceName: String {
-        let name = URL(filePath: strip.workspace, directoryHint: .isDirectory).lastPathComponent
-        return name.isEmpty ? strip.workspace : name
+        .frame(height: Chrome.tabStripHeight)
+        .background(Chrome.surface)
     }
 
     private func title(of tab: TabKind) -> String {
@@ -53,11 +41,33 @@ struct TabStrip: View {
     }
 }
 
+/// Close Tab, and what the tab's kind allows: Resume or Close Session, Close Terminal, Reveal in Finder.
+private struct TabMenu: View {
+    let app: AppState
+    let tab: TabKind
+
+    var body: some View {
+        Button("Close Tab") { app.closeTab(tab) }
+        Divider()
+        switch tab {
+        case .session(let key):
+            if let entry = app.entry(for: key) {
+                SessionMenu(app: app, entry: entry)
+            }
+        case .terminal(let ptyId):
+            Button("Close Terminal…") { app.requestCloseTerminal(ptyId) }
+                .disabled(!app.connection.isConnected)
+        case .editor(let path):
+            Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: path)]) }
+        }
+    }
+}
+
 private struct TabItem: View {
     let tab: TabKind
     let title: String
-    /// The session's status, for a session tab.
-    let status: SessionStatus?
+    /// The session, for a session tab.
+    let entry: SessionManifestEntry?
     /// Whether the program ended, for a terminal tab.
     let terminalExited: Bool?
     /// The file an editor tab shows.
@@ -71,20 +81,13 @@ private struct TabItem: View {
         HStack(spacing: 6) {
             Button(action: select) {
                 HStack(spacing: 6) {
-                    if let terminalExited {
-                        Image(systemName: "terminal")
-                            .font(.system(size: 10))
-                            .foregroundStyle(terminalExited ? .tertiary : .secondary)
-                    } else if let document {
-                        EditorTabIndicator(document: document)
-                    } else {
-                        TabStatusIndicator(status: status)
-                    }
+                    indicator
+                        .frame(width: 12)
                     Text(title)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                .frame(maxWidth: 220)
+                .frame(maxWidth: 200, maxHeight: .infinity)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -94,53 +97,47 @@ private struct TabItem: View {
             Button(action: close) {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .semibold))
-                    .frame(width: 14, height: 14)
+                    .frame(width: 16, height: 16)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(isSelected || hovering ? .secondary : .tertiary)
+            .foregroundStyle(.secondary)
+            .opacity(isSelected || hovering ? 1 : 0)
             .help(tab.ptyId != nil ? "Close Tab (the terminal keeps running)" : document != nil ? "Close Tab" : "Close Tab (the session keeps running)")
             .accessibilityLabel("Close Tab \(title)")
         }
-        .font(.callout)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(background, in: RoundedRectangle(cornerRadius: 6))
+        .font(.system(size: 12))
+        .foregroundStyle(isSelected ? .primary : .secondary)
+        .padding(.leading, 12)
+        .padding(.trailing, 6)
+        .frame(maxHeight: .infinity)
+        .background(isSelected ? Chrome.canvas : hovering ? Color.primary.opacity(0.04) : .clear)
+        .overlay(alignment: .trailing) { Chrome.hairline.frame(width: 1) }
         .onHover { hovering = $0 }
     }
 
-    private var background: Color {
-        if isSelected { return Color.accentColor.opacity(0.16) }
-        return hovering ? Color.secondary.opacity(0.1) : .clear
-    }
-}
-
-private struct TabStatusIndicator: View {
-    let status: SessionStatus?
-
-    var body: some View {
-        if let status, status.isInProgress {
-            ProgressView().controlSize(.mini)
-        } else {
-            Circle().fill(status?.dotColor ?? .secondary).frame(width: 7, height: 7)
-        }
-    }
-}
-
-/// A file icon, or a dot while the file has unsaved edits.
-private struct EditorTabIndicator: View {
-    let document: EditorDocument
-
-    var body: some View {
-        if document.isDirty {
-            Circle()
-                .fill(.primary)
-                .frame(width: 7, height: 7)
-                .help("Unsaved changes")
-        } else {
-            Image(systemName: "doc.text")
+    @ViewBuilder
+    private var indicator: some View {
+        if let terminalExited {
+            Image(systemName: "terminal")
                 .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(terminalExited ? .tertiary : .secondary)
+        } else if let document {
+            if document.isDirty {
+                Circle().fill(.primary).frame(width: 7, height: 7).help("Unsaved changes")
+            } else {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        } else if let status = entry?.status {
+            if status.isInProgress {
+                ProgressView().controlSize(.mini)
+            } else {
+                StatusDot(color: status.dotColor, hollow: status == .closed)
+            }
+        } else {
+            StatusDot(color: .secondary, hollow: true)
         }
     }
 }

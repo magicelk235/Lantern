@@ -1,4 +1,3 @@
-import AppKit
 import IDEModel
 import IDEState
 import SwiftUI
@@ -9,7 +8,6 @@ import SwiftUI
 struct SessionTabView: View {
     let app: AppState
     let sessionKey: SessionKey
-    @State private var confirmingClose = false
 
     var body: some View {
         if let session = app.connection.openSessions[sessionKey] {
@@ -24,27 +22,15 @@ struct SessionTabView: View {
                     }
                 }
                 if session.hasScreen, let notice {
-                    SessionBar(notice: notice, perform: perform)
-                }
-            }
-            .navigationTitle(app.sessionTitle(sessionKey))
-            .navigationSubtitle(session.entry.map { ($0.workspace as NSString).abbreviatingWithTildeInPath } ?? "")
-            .toolbar {
-                if let status = session.entry?.status {
-                    ToolbarItem(placement: .status) {
-                        SessionStatusBadge(status: status)
+                    NoticeBar(
+                        systemImage: notice.systemImage, tint: notice.tint, title: notice.title, message: notice.message,
+                        inProgress: notice.inProgress, rule: .top
+                    ) {
+                        ForEach(notice.actions, id: \.self) { action in
+                            Button(action.title) { perform(action) }
+                        }
                     }
                 }
-                ToolbarItem {
-                    Button("Close Session", systemImage: "stop.circle") { confirmingClose = true }
-                        .help("End omp for this session; Resume starts it again later")
-                        .disabled(!app.connection.isConnected || session.entry.map { $0.status == .closed } ?? true)
-                }
-            }
-            .confirmationDialog("Close this session?", isPresented: $confirmingClose) {
-                Button("Close Session", role: .destructive) { app.closeSession(sessionKey) }
-            } message: {
-                Text("omp exits. The conversation is kept, and Resume starts omp again where it left off.")
             }
         }
     }
@@ -52,7 +38,8 @@ struct SessionTabView: View {
     private func perform(_ action: SessionNotice.Action) {
         switch action {
         case .resume: app.resumeSession(sessionKey)
-        case .closeSession: confirmingClose = true
+        case .closeSession: app.requestCloseSession(sessionKey)
+        case .forget: app.requestForgetSession(sessionKey)
         case .closeTab: app.closeTab(.session(sessionKey))
         }
     }
@@ -61,12 +48,13 @@ struct SessionTabView: View {
 /// Why omp's TUI is not live in a session tab, and what the user can do about it.
 struct SessionNotice {
     enum Action: Hashable {
-        case resume, closeSession, closeTab
+        case resume, closeSession, forget, closeTab
 
         var title: String {
             switch self {
             case .resume: "Resume"
-            case .closeSession: "Close Session"
+            case .closeSession: "Close Session…"
+            case .forget: "Remove Session…"
             case .closeTab: "Close Tab"
             }
         }
@@ -98,8 +86,10 @@ struct SessionNotice {
         case .closed:
             self.init(
                 entry.closedByUser ? "Session Closed" : "omp Exited",
-                entry.canResume ? "Resume starts omp again with this conversation." : "ompd has no session file to resume it from.",
-                "stop.circle", .secondary, actions: entry.canResume ? [.resume, .closeTab] : [.closeTab])
+                entry.isResumable
+                    ? "Resume starts omp again with this conversation."
+                    : entry.sessionFileIsGone ? "Its session file is gone; it cannot be resumed." : "ompd has no session file to resume it from.",
+                "stop.circle", .secondary, actions: entry.isResumable ? [.resume, .closeTab] : [.forget, .closeTab])
         case .interrupted:
             self.init(
                 "omp Stopped Unexpectedly", "ompd is starting it again with this conversation.", "exclamationmark.triangle",
@@ -107,7 +97,7 @@ struct SessionNotice {
         case .needsAttention:
             self.init(
                 "omp Could Not Be Resumed", daemonMessage ?? "It stopped again right after every restart.",
-                "exclamationmark.octagon", .red, actions: entry.canResume ? [.resume, .closeSession] : [.closeSession])
+                "exclamationmark.octagon", .red, actions: entry.isResumable ? [.resume, .forget] : [.forget])
         case .resuming:
             self.init("Resuming…", "ompd is starting omp again with this conversation.", "arrow.clockwise", .secondary, inProgress: true)
         case .starting:
@@ -161,98 +151,7 @@ private struct SessionPlaceholder: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(Chrome.canvas)
     }
 }
 
-/// The notice under the session's last screen.
-private struct SessionBar: View {
-    let notice: SessionNotice
-    let perform: (SessionNotice.Action) -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            if notice.inProgress {
-                ProgressView().controlSize(.small)
-            } else {
-                Image(systemName: notice.systemImage).foregroundStyle(notice.tint)
-            }
-            VStack(alignment: .leading, spacing: 1) {
-                Text(notice.title).font(.callout.weight(.semibold))
-                if !notice.message.isEmpty {
-                    Text(notice.message).font(.callout).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            ForEach(notice.actions, id: \.self) { action in
-                Button(action.title) { perform(action) }
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
-        .overlay(alignment: .top) { Divider() }
-    }
-}
-
-extension SessionStatus {
-    /// One word for badges.
-    var label: String {
-        switch self {
-        case .starting: "starting"
-        case .busy: "working"
-        case .idle: "idle"
-        case .interrupted: "interrupted"
-        case .resuming: "resuming"
-        case .closed: "closed"
-        case .needsAttention: "attention"
-        case .paused: "paused"
-        }
-    }
-
-    /// One sentence for tooltips.
-    var explanation: String {
-        switch self {
-        case .starting: "omp is starting"
-        case .busy: "The agent is working"
-        case .idle: "omp is waiting for you"
-        case .interrupted: "omp stopped unexpectedly; ompd is resuming it"
-        case .resuming: "omp is resuming the session"
-        case .closed: "Closed: omp is not running for this session"
-        case .needsAttention: "omp kept stopping; ompd gave up resuming it"
-        case .paused: "Paused: the agents hold at their next step until you dismiss omp's pause screen"
-        }
-    }
-
-    /// Something runs that ends the status by itself: a spinner rather than a dot.
-    var isInProgress: Bool { self == .busy || self == .starting || self == .resuming }
-
-    var dotColor: Color {
-        switch self {
-        case .idle: .green
-        case .interrupted: .orange
-        case .needsAttention: .red
-        case .paused: .yellow
-        case .closed, .starting, .busy, .resuming: .secondary
-        }
-    }
-}
-
-/// A session's status: a spinner while omp works or starts, else a colored dot, and a word.
-struct SessionStatusBadge: View {
-    let status: SessionStatus
-
-    var body: some View {
-        HStack(spacing: 4) {
-            if status.isInProgress {
-                ProgressView().controlSize(.mini)
-            } else {
-                Circle().fill(status.dotColor).frame(width: 7, height: 7)
-            }
-            Text(status.label)
-        }
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-        .help(status.explanation)
-    }
-}

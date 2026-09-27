@@ -313,6 +313,21 @@ public actor SessionSupervisor {
         if let closing { try? await context.ptys.close(closing) }
     }
 
+    /// `session.forget`: the session is about to leave the manifest. Only while omp is not running and nothing will
+    /// start it again (`closed`, or `needs_attention`); a running, starting or respawning session is refused with
+    /// `sessionBusy`. Releases the ownership lock and closes the PTY kept for the last screen. Nothing starts omp again.
+    public func forget() async throws {
+        if let startTask { _ = try? await startTask.value }
+        guard pid == nil, status == .closed || status == .needsAttention else {
+            throw DaemonError(.sessionBusy, "session \(sessionKey) is \(status.rawValue); close it before forgetting it")
+        }
+        stopRequested = true
+        releaseLock()
+        let closing = ptyId
+        ptyId = nil
+        if let closing { try? await context.ptys.close(closing) }
+    }
+
     private func terminate() async {
         guard let ptyId else { return }
         let gate = exited

@@ -89,6 +89,17 @@ public enum SessionClose: DaemonMethod {
     public typealias Result = Empty
 }
 
+/// Drops a session whose omp is not running (closed, or given up on) from the manifest. The session file on disk is
+/// untouched. A session whose omp runs or is being respawned is refused (`sessionBusy`): close it first.
+public enum SessionForget: DaemonMethod {
+    public static let name = "session.forget"
+    public struct Params: Codable, Sendable, Equatable {
+        public var sessionKey: SessionKey
+        public init(sessionKey: SessionKey) { self.sessionKey = sessionKey }
+    }
+    public typealias Result = Empty
+}
+
 // MARK: - PTYs
 
 public struct PTYInfo: Codable, Sendable, Equatable {

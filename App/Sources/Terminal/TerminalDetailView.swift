@@ -3,46 +3,30 @@ import IDEModel
 import IDEState
 import SwiftUI
 
-/// A terminal tab: the emulator filling the detail area, "[process exited]" with a Restart button once its program
-/// ended, and Close Terminal (which ends the PTY) in the toolbar.
+/// A terminal tab: the emulator filling the detail area, and a bar with Restart once its program ended. Close
+/// Terminal (which ends the PTY) lives in the tab's menu and the Session menu.
 struct TerminalDetailView: View {
     let app: AppState
     let ptyId: PTYID
-    @State private var confirmingClose = false
 
     var body: some View {
         if let model = app.terminals.model(ptyId) {
             VStack(spacing: 0) {
                 if case .failed(let message) = model.phase {
-                    Banner(systemImage: "exclamationmark.triangle", tint: .orange, title: "ompd could not attach this terminal", message: message)
+                    NoticeBar(systemImage: "exclamationmark.triangle", tint: .orange, title: "ompd could not attach this terminal", message: message)
                 }
                 TerminalPane { app.terminals.emulator(for: ptyId) }
                 if model.hasExited {
-                    ExitedBar { app.restartTerminal(ptyId) }
-                }
-            }
-            .navigationTitle(app.terminals.title(for: ptyId))
-            .navigationSubtitle(model.info.map { ($0.cwd as NSString).abbreviatingWithTildeInPath } ?? "")
-            .toolbar {
-                ToolbarItem(placement: .status) {
-                    TerminalStatus(phase: model.phase, hasExited: model.hasExited)
-                }
-                ToolbarItem {
-                    Button("Close Terminal", systemImage: "xmark.circle") {
-                        if model.hasExited { app.closeTerminal(ptyId) } else { confirmingClose = true }
+                    NoticeBar(systemImage: "stop.circle", tint: .secondary, title: "The program exited", rule: .top) {
+                        Button("Restart") { app.restartTerminal(ptyId) }
+                            .help("Start the program again in the same folder, in this tab")
                     }
-                    .help("End the shell and everything running in it")
-                    .disabled(!app.connection.isConnected)
                 }
-            }
-            .confirmationDialog("Close this terminal?", isPresented: $confirmingClose) {
-                Button("Close Terminal", role: .destructive) { app.closeTerminal(ptyId) }
-            } message: {
-                Text("The shell and every program running in it are ended.")
             }
         } else {
             ContentUnavailableView("Terminal Closed", systemImage: "terminal", description: Text("ompd no longer has this terminal."))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Chrome.canvas)
         }
     }
 }
@@ -51,7 +35,7 @@ struct TerminalDetailView: View {
 /// so it keeps its screen, scrollback and selection while other tabs are shown.
 struct TerminalPane: View {
     /// Room around the emulator.
-    static let insets = EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 0)
+    static let insets = EdgeInsets(top: 8, leading: 10, bottom: 6, trailing: 0)
 
     /// The tab's emulator, made the first time the pane is shown.
     let emulator: @MainActor () -> TerminalTab
@@ -59,7 +43,7 @@ struct TerminalPane: View {
     var body: some View {
         TerminalHostView(emulator: emulator)
             .padding(Self.insets)
-            .background(Color(nsColor: .textBackgroundColor))
+            .background(Chrome.canvas)
     }
 
     /// The points an emulator gets in a pane `size` big.
@@ -105,47 +89,6 @@ final class TerminalHostingView: NSView {
     }
 }
 
-private struct ExitedBar: View {
-    let restart: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Text("[process exited]")
-                .font(.system(.callout, design: .monospaced))
-                .foregroundStyle(.secondary)
-            Spacer()
-            Button("Restart", systemImage: "arrow.clockwise", action: restart)
-                .help("Start the program again in the same folder, in this tab")
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
-        .overlay(alignment: .top) { Divider() }
-    }
-}
-
-private struct TerminalStatus: View {
-    let phase: TerminalSessionModel.Phase
-    let hasExited: Bool
-
-    var body: some View {
-        switch phase {
-        case .attached where hasExited:
-            Label("Exited", systemImage: "stop.circle").foregroundStyle(.secondary)
-        case .attached:
-            Label("Live", systemImage: "terminal").foregroundStyle(.secondary)
-        case .attaching:
-            Label("Attaching…", systemImage: "arrow.clockwise").foregroundStyle(.secondary)
-        case .detached:
-            Label("Offline", systemImage: "wifi.slash").foregroundStyle(.secondary)
-        case .failed(let message):
-            Label("Unavailable", systemImage: "exclamationmark.triangle").foregroundStyle(.orange).help(message)
-        case .gone:
-            Label("Closed", systemImage: "xmark.circle").foregroundStyle(.secondary)
-        }
-    }
-}
-
 // MARK: - Sidebar
 
 /// A workspace's terminals in the sidebar, selectable as their tab.
@@ -158,7 +101,7 @@ struct TerminalRows: View {
             TerminalRow(info: info, title: app.terminals.title(for: info.ptyId))
                 .tag(TabKind.terminal(info.ptyId))
                 .contextMenu {
-                    Button("Close Terminal") { app.closeTerminal(info.ptyId) }
+                    Button("Close Terminal…") { app.requestCloseTerminal(info.ptyId) }
                         .disabled(!app.connection.isConnected)
                 }
         }
@@ -172,34 +115,19 @@ private struct TerminalRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "terminal")
+                .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .lineLimit(1)
-                Text(info.running ? (info.cwd as NSString).abbreviatingWithTildeInPath : "exited")
-                    .font(.caption)
+                .frame(width: 14)
+            Text(title)
+                .lineLimit(1)
+            Spacer(minLength: 6)
+            if !info.running {
+                Text("Exited")
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
             }
         }
-        .opacity(info.running ? 1 : 0.55)
+        .opacity(info.running ? 1 : 0.6)
         .help(info.cwd)
-    }
-}
-
-/// Header of a sidebar workspace that has terminals but no sessions.
-struct TerminalWorkspaceHeader: View {
-    let app: AppState
-    let path: String
-
-    var body: some View {
-        let name = URL(filePath: path, directoryHint: .isDirectory).lastPathComponent
-        Label(name.isEmpty ? path : name, systemImage: "folder")
-            .help(path)
-            .contextMenu {
-                Button("New Terminal Here") { app.newTerminal(in: path) }
-                    .disabled(!app.connection.isConnected)
-            }
     }
 }

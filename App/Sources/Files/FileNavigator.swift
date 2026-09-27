@@ -14,9 +14,14 @@ struct WorkspaceFiles: View {
         DisclosureGroup(isExpanded: expansion(of: tree.root, in: tree)) {
             FileRows(app: app, tree: tree, folder: tree.root)
         } label: {
-            Label("Files", systemImage: "folder")
-                .contentShape(Rectangle())
-                .onTapGesture { tree.setExpanded(tree.root, !tree.isExpanded(tree.root)) }
+            Label {
+                Text("Files")
+            } icon: {
+                Image(systemName: "folder")
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { tree.setExpanded(tree.root, !tree.isExpanded(tree.root)) }
         }
     }
 }
@@ -130,13 +135,18 @@ private struct FileRow: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Label(entry.name, systemImage: symbol)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            Label {
+                Text(entry.name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } icon: {
+                Image(systemName: symbol)
+                    .foregroundStyle(.secondary)
+            }
             if isDirty {
                 Spacer(minLength: 4)
                 Circle()
-                    .fill(.secondary)
+                    .fill(.primary)
                     .frame(width: 6, height: 6)
                     .help("Unsaved changes")
             }

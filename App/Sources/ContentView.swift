@@ -10,10 +10,10 @@ struct ContentView: View {
             SidebarView(app: app)
                 .onGeometryChange(for: Double.self) { $0.size.width } action: { app.sidebarWidthChanged($0) }
                 // Outermost: the split view reads the column width from the column's root view.
-                .navigationSplitViewColumnWidth(min: 220, ideal: app.initialSidebarWidth, max: 420)
+                .navigationSplitViewColumnWidth(min: 200, ideal: app.initialSidebarWidth, max: 420)
         } detail: {
             VStack(spacing: 0) {
-                StatusBanners(connection: app.connection, agent: app.agent)
+                StatusBanners(app: app)
                 if let strip = app.tabs.selectedStrip {
                     TabStrip(app: app, strip: strip)
                 }
@@ -28,32 +28,23 @@ struct ContentView: View {
                         EditorView(app: app, document: document)
                             .id(path)
                     } else {
-                        ContentUnavailableView {
-                            Label("No Session", systemImage: "terminal")
-                        } description: {
-                            Text("Pick a session in the sidebar, or start omp in a workspace folder.")
-                        } actions: {
-                            Button("New Session…") { app.newSession() }
-                                .disabled(!app.connection.isConnected)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        EmptyDetail(app: app)
                     }
                 }
                 // Where a new tab's emulator will go: its PTY starts at that size.
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { app.tabContentSizeChanged($0) }
+                StatusBar(app: app)
             }
         }
+        // Not drawn in the compact toolbar; names the window in the Window menu and Mission Control.
+        .navigationTitle(windowTitle)
+        // Painted, not material: the compact toolbar would otherwise mirror the selected tab's canvas as a block above it.
+        .toolbarBackground(Chrome.surface, for: .windowToolbar)
+        .toolbarBackground(.visible, for: .windowToolbar)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    app.newSession()
-                } label: {
-                    Label("New Session…", systemImage: "plus.bubble")
-                }
-                .help("Start omp in a workspace folder")
-                .disabled(!app.connection.isConnected)
-            }
-            ToolbarItem(placement: .primaryAction) {
+            // Flexible space: with no title in the compact toolbar, the actions would otherwise sit at the sidebar.
+            ToolbarItem(placement: .principal) { Spacer() }
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     app.newTerminal()
                 } label: {
@@ -61,11 +52,73 @@ struct ContentView: View {
                 }
                 .help("Open a terminal in the workspace on screen (⌃`)")
                 .disabled(!app.connection.isConnected)
+                Button {
+                    app.newSession()
+                } label: {
+                    Label("New Session…", systemImage: "plus")
+                }
+                .help("Start omp in a workspace folder (⌘N)")
+                .disabled(!app.connection.isConnected)
             }
         }
         .alert(item: $app.alert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message))
         }
+        .confirmationDialog(
+            closeTitle, isPresented: Binding(get: { app.pendingClose != nil }, set: { if !$0 { app.pendingClose = nil } }),
+            presenting: app.pendingClose
+        ) { request in
+            switch request {
+            case .session(let key):
+                Button("Close Session", role: .destructive) { app.closeSession(key) }
+            case .terminal(let ptyId):
+                Button("Close Terminal", role: .destructive) { app.closeTerminal(ptyId) }
+            case .forget(let key):
+                Button("Remove Session", role: .destructive) { app.forgetSession(key) }
+            }
+        } message: { request in
+            switch request {
+            case .session:
+                Text("omp exits. The conversation is kept, and Resume starts omp again where it left off.")
+            case .terminal:
+                Text("The shell and every program running in it are ended.")
+            case .forget:
+                Text("ompd forgets the session and its tab closes. The conversation file on disk is kept.")
+            }
+        }
+    }
+
+    private var windowTitle: String {
+        guard let strip = app.tabs.selectedStrip else { return "omp IDE" }
+        let name = URL(filePath: strip.workspace, directoryHint: .isDirectory).lastPathComponent
+        return name.isEmpty ? strip.workspace : name
+    }
+
+    private var closeTitle: String {
+        switch app.pendingClose {
+        case .session: "Close this session?"
+        case .terminal: "Close this terminal?"
+        case .forget: "Remove this session from the list?"
+        case nil: ""
+        }
+    }
+}
+
+/// The detail area with no tab on screen.
+private struct EmptyDetail: View {
+    let app: AppState
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("No Session Open", systemImage: "terminal")
+        } description: {
+            Text("Start omp in a workspace folder, or pick a session in the sidebar.")
+        } actions: {
+            Button("New Session…") { app.newSession() }
+                .disabled(!app.connection.isConnected)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Chrome.canvas)
     }
 }
 
@@ -81,24 +134,12 @@ struct SidebarView: View {
                     ForEach(workspace.sessions, id: \.sessionKey) { entry in
                         SessionRow(entry: entry, title: app.sessionTitle(entry.sessionKey))
                             .tag(TabKind.session(entry.sessionKey))
-                            .contextMenu {
-                                if entry.canResume {
-                                    Button("Resume Session") { app.resumeSession(entry.sessionKey) }
-                                        .disabled(!app.connection.isConnected)
-                                }
-                                Button("Close Session") { app.closeSession(entry.sessionKey) }
-                                    .disabled(!app.connection.isConnected || entry.status == .closed)
-                            }
+                            .contextMenu { SessionMenu(app: app, entry: entry) }
                     }
                     TerminalRows(app: app, terminals: terminals[workspace.path] ?? [])
                     WorkspaceFiles(app: app, workspace: workspace.path)
                 } header: {
-                    Label(workspace.name, systemImage: "folder")
-                        .help(workspace.path)
-                        .contextMenu {
-                            Button("New Terminal Here") { app.newTerminal(in: workspace.path) }
-                                .disabled(!app.connection.isConnected)
-                        }
+                    WorkspaceHeader(app: app, path: workspace.path)
                 }
             }
             ForEach(terminals.keys.filter { !sessionWorkspaces.contains($0) }.sorted(), id: \.self) { path in
@@ -106,19 +147,51 @@ struct SidebarView: View {
                     TerminalRows(app: app, terminals: terminals[path] ?? [])
                     WorkspaceFiles(app: app, workspace: path)
                 } header: {
-                    TerminalWorkspaceHeader(app: app, path: path)
+                    WorkspaceHeader(app: app, path: path)
                 }
             }
         }
         .listStyle(.sidebar)
         .fileNavigatorActions(app)
-        .overlay {
-            if app.connection.sessions.isEmpty, app.connection.terminals.terminals.isEmpty, app.connection.isConnected {
-                ContentUnavailableView("No Sessions", systemImage: "tray", description: Text("⌘N starts one."))
+    }
+}
+
+/// A workspace folder's name over its rows.
+struct WorkspaceHeader: View {
+    let app: AppState
+    let path: String
+
+    var body: some View {
+        let name = URL(filePath: path, directoryHint: .isDirectory).lastPathComponent
+        Text(name.isEmpty ? path : name)
+            .lineLimit(1)
+            .help(path)
+            .contextMenu {
+                Button("New Terminal Here") { app.newTerminal(in: path) }
+                    .disabled(!app.connection.isConnected)
+                Button("Reveal in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: path, directoryHint: .isDirectory)])
+                }
             }
+    }
+}
+
+/// Resume, Close Session and Remove Session, for a session's row and tab.
+struct SessionMenu: View {
+    let app: AppState
+    let entry: SessionManifestEntry
+
+    var body: some View {
+        if entry.isResumable {
+            Button("Resume Session") { app.resumeSession(entry.sessionKey) }
+                .disabled(!app.connection.isConnected)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            ConnectionFooter(status: app.connection.status)
+        if entry.isStopped {
+            Button("Remove Session…") { app.requestForgetSession(entry.sessionKey) }
+                .disabled(!app.connection.isConnected)
+        } else {
+            Button("Close Session…") { app.requestCloseSession(entry.sessionKey) }
+                .disabled(!app.connection.isConnected)
         }
     }
 }
@@ -129,114 +202,84 @@ struct SessionRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .lineLimit(1)
-                Text(entry.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
-                    .font(.caption)
+            Group {
+                if entry.status.isInProgress {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    StatusDot(color: entry.status.dotColor, hollow: entry.status == .closed)
+                }
+            }
+            .frame(width: 14)
+            Text(title)
+                .lineLimit(1)
+            Spacer(minLength: 6)
+            if entry.status != .idle, !entry.status.isInProgress {
+                Text(entry.status.label)
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
-            Spacer(minLength: 4)
-            SessionStatusBadge(status: entry.status)
         }
-        .opacity(entry.status == .closed ? 0.55 : 1)
-    }
-}
-
-struct ConnectionFooter: View {
-    let status: DaemonConnection.Status
-
-    var body: some View {
-        HStack(spacing: 6) {
-            switch status {
-            case .connecting:
-                ProgressView().controlSize(.mini)
-                Text("Connecting to ompd…")
-            case .connected(let welcome):
-                Circle().fill(.green).frame(width: 7, height: 7)
-                Text("ompd \(welcome.daemonVersion)")
-            case .daemonUnavailable:
-                Circle().fill(.orange).frame(width: 7, height: 7)
-                Text("ompd unavailable")
-            }
-            Spacer()
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .opacity(entry.status == .closed ? 0.6 : 1)
+        .help("\(entry.status.explanation). Started \(entry.createdAt.formatted(date: .abbreviated, time: .shortened))")
     }
 }
 
 /// Connection, daemon-notice and daemon-registration problems, above the detail pane.
 struct StatusBanners: View {
-    let connection: DaemonConnection
-    let agent: DaemonAgent
+    let app: AppState
+
+    private var connection: DaemonConnection { app.connection }
+    private var agent: DaemonAgent { app.agent }
 
     var body: some View {
         VStack(spacing: 0) {
             if case .daemonUnavailable(let reason) = connection.status {
-                Banner(
+                NoticeBar(
                     systemImage: "bolt.horizontal.circle", tint: .orange, title: "ompd is not reachable",
-                    message: "\(reason) Retrying automatically; running agents are not affected by this window.")
+                    message: agent.isRepairing ? "Registering ompd with launchd again." : "\(reason) Retrying; running agents are not affected.",
+                    inProgress: agent.isRepairing
+                ) {
+                    if agent.state == .enabled {
+                        Button("Restart ompd", action: app.restartDaemon)
+                            .disabled(agent.isRepairing)
+                    }
+                }
             }
             if let notice = connection.latestNotice {
-                Banner(
+                NoticeBar(
                     systemImage: notice.level == "info" ? "info.circle" : "exclamationmark.triangle",
                     tint: notice.level == "error" ? .red : notice.level == "warning" ? .orange : .blue,
-                    title: "Message from ompd", message: notice.message, actionTitle: "Dismiss", action: connection.dismissNotices)
+                    title: "ompd", message: notice.message
+                ) {
+                    Button("Dismiss", action: connection.dismissNotices)
+                }
             }
             switch agent.state {
             case .requiresApproval:
-                Banner(
+                NoticeBar(
                     systemImage: "lock.shield", tint: .yellow, title: "Allow omp IDE to run in the background",
-                    message: "ompd keeps your agents running while the app is closed. Turn it on in System Settings › General › Login Items.",
-                    actionTitle: "Open Login Items", action: agent.openLoginItemsSettings)
+                    message: "ompd keeps your agents running while the app is closed. Turn it on in System Settings › General › Login Items."
+                ) {
+                    Button("Open Login Items", action: agent.openLoginItemsSettings)
+                }
             case .failed(let message):
-                Banner(
-                    systemImage: "exclamationmark.triangle", tint: .red, title: "Could not register ompd",
-                    message: message, actionTitle: "Open Login Items", action: agent.openLoginItemsSettings)
+                NoticeBar(systemImage: "exclamationmark.triangle", tint: .red, title: "Could not register ompd", message: message) {
+                    Button("Open Login Items", action: agent.openLoginItemsSettings)
+                }
             case .notRegistered:
-                Banner(
+                NoticeBar(
                     systemImage: "exclamationmark.triangle", tint: .orange, title: "ompd is not registered",
-                    message: "The background daemon is not set up to run.", actionTitle: "Register", action: agent.registerIfNeeded)
+                    message: "The background daemon is not set up to run."
+                ) {
+                    Button("Register", action: agent.registerIfNeeded)
+                }
             case .notFound:
-                Banner(
+                NoticeBar(
                     systemImage: "exclamationmark.triangle", tint: .red, title: "ompd is missing from the app",
                     message: "Contents/Library/LaunchAgents/com.omp-ide.ompd.plist was not found in the app bundle. Reinstall omp IDE.")
             case .unknown, .external, .enabled:
                 EmptyView()
             }
         }
-    }
-}
-
-struct Banner: View {
-    let systemImage: String
-    let tint: Color
-    let title: String
-    let message: String
-    var actionTitle: String?
-    var action: (() -> Void)?
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.title3)
-                .foregroundStyle(tint)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.headline)
-                // No vertical fixedSize: in the window's minimum-size pass that reports the text's height at zero
-                // width and grows the window past the screen.
-                Text(message).font(.callout).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 8)
-            if let actionTitle, let action {
-                Button(actionTitle, action: action)
-            }
-        }
-        .padding(12)
-        .background(tint.opacity(0.12))
-        .overlay(alignment: .bottom) { Divider() }
     }
 }

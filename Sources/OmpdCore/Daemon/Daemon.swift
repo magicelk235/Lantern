@@ -342,6 +342,25 @@ public actor Daemon {
         return Empty()
     }
 
+    /// Drops a session whose omp is not running from the manifest (the session file on disk stays), with its supervisor,
+    /// ownership lock and last-screen PTY. Undone if the manifest cannot be written.
+    private func forgetSession(_ params: SessionForget.Params) async throws -> Empty {
+        try ensureAcceptingWork()
+        let key = params.sessionKey
+        let supervisor = try supervisor(key)
+        try await supervisor.forget()
+        supervisors[key] = nil
+        do {
+            try await manifest.update { $0.sessions.removeAll { $0.sessionKey == key } }
+        } catch {
+            supervisors[key] = supervisor
+            persistenceFailed(error)
+            throw DaemonError(.internal, "cannot write the session manifest: \(error)")
+        }
+        await ptys.discardSessionScreens(keeping: Set(supervisors.keys))
+        return Empty()
+    }
+
     // MARK: - Routes
 
     private nonisolated func registerRoutes() {
@@ -359,6 +378,9 @@ public actor Daemon {
         }
         router.on(SessionClose.self) { [weak self] params, _ in
             try await Self.alive(self).closeSession(params)
+        }
+        router.on(SessionForget.self) { [weak self] params, _ in
+            try await Self.alive(self).forgetSession(params)
         }
         router.on(PTYOpen.self) { [weak self] params, _ in
             try await Self.alive(self).ptys.open(params)

@@ -11,12 +11,15 @@ settings:
     SWIFT_VERSION: "6.0"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
     ENABLE_HARDENED_RUNTIME: YES
-    # Xcode only adds `--options runtime` for real identities; keep ad-hoc local builds hardened too.
+    # Xcode only adds `--options runtime` for real identities; keep every build hardened.
     OTHER_CODE_SIGN_FLAGS: --options=runtime
-    # Ad-hoc signing for local builds; release builds override with the Developer ID identity.
-    CODE_SIGN_STYLE: Manual
-    CODE_SIGN_IDENTITY: "-"
-    DEVELOPMENT_TEAM: ""
+    # A real identity is required: Background Task Management refuses to spawn a bundled LaunchAgent whose executable
+    # has no Team ID (`Bundle identifiers from launchd plist ignored because the executable doesn't have a Team ID`,
+    # then `Unable to update LWCR with smd: 22`), so an ad-hoc signed ompd never starts. Release builds override the
+    # identity with Developer ID.
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: Apple Development
+    DEVELOPMENT_TEAM: V8K8L3ZSD5
     DEAD_CODE_STRIPPING: YES
 packages:
   OmpIDE:
