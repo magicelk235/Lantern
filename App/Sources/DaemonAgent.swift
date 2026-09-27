@@ -42,18 +42,60 @@ final class DaemonAgent {
         }
     }
 
-    /// Registers again: launchd drops the job it could not spawn and takes this bundle's plist and signature.
-    func repair() async {
+    /// Registers again until `healthy()` (the app connected to ompd): launchd drops the job it could not spawn and
+    /// takes this bundle's plist and signature.
+    ///
+    /// `SMAppService.unregister()` alone leaves the unspawnable job loaded ("spawn scheduled", bound to the old
+    /// Background Task Management record), and `register()` then reuses that record, LWCR failure included; the job
+    /// is booted out of the gui domain in between. Even so, the first pass can bind launchd to a record BTM only
+    /// replaces with a fresh one (Team ID and all) a few seconds later, so the pass repeats, `repairAttempts` times.
+    func repair(untilHealthy healthy: @MainActor () -> Bool) async {
         guard !isRepairing, state == .enabled else { return }
         isRepairing = true
         defer { isRepairing = false }
-        do {
-            try await service.unregister()
-        } catch {
-            state = .failed(error.localizedDescription)
-            return
+        for _ in 0..<Self.repairAttempts {
+            do {
+                try await service.unregister()
+            } catch {
+                state = .failed(error.localizedDescription)
+                return
+            }
+            await Self.bootOut()
+            register()
+            guard state == .enabled else { return }
+            try? await Task.sleep(for: Self.repairGrace)
+            if healthy() { return }
         }
-        register()
+    }
+
+    private static let repairAttempts = 3
+    /// How long a freshly registered ompd gets to come up before the next pass.
+    private static let repairGrace: Duration = .seconds(6)
+
+    private static let label = "com.omp-ide.ompd"
+
+    /// `launchctl bootout gui/<uid>/com.omp-ide.ompd`, then waits (3 s at most) until launchd no longer lists the job.
+    /// launchctl answers "Bad request" for a job in that state and removes it anyway.
+    private static func bootOut() async {
+        let target = "gui/\(getuid())/\(label)"
+        await Task.detached { _ = launchctl("bootout", target) }.value
+        for _ in 0..<15 {
+            let loaded = await Task.detached { launchctl("print", target) == 0 }.value
+            guard loaded else { return }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+    }
+
+    /// Exit status of `/bin/launchctl <arguments>`; -1 when it could not run.
+    private nonisolated static func launchctl(_ arguments: String...) -> Int32 {
+        let process = Process()
+        process.executableURL = URL(filePath: "/bin/launchctl")
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return -1 }
+        process.waitUntilExit()
+        return process.terminationStatus
     }
 
     private func register() {

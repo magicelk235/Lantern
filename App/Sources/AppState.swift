@@ -100,13 +100,17 @@ final class AppState {
         }
         Task {
             try? await Task.sleep(for: Self.daemonStartGrace)
-            if !connection.isConnected { await agent.repair() }
+            if !connection.isConnected { await repairDaemon() }
         }
     }
 
     /// The user asks for ompd again: the registration is redone.
     func restartDaemon() {
-        Task { await agent.repair() }
+        Task { await repairDaemon() }
+    }
+
+    private func repairDaemon() async {
+        await agent.repair { [connection] in connection.isConnected }
     }
 
     // MARK: - Sessions and tabs
