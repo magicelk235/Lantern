@@ -48,6 +48,13 @@ enum StateSchema {
         migrator.registerMigration("drop_session_ui") { db in
             try db.drop(table: "session_ui")
         }
+        migrator.registerMigration("projects") { db in
+            try db.alter(table: WindowRecord.databaseTableName) { table in
+                table.add(column: "filesVisible", .boolean).notNull().defaults(to: true)
+                // JSON array of absolute folder paths.
+                table.add(column: "projects", .text).notNull().defaults(to: "[]")
+            }
+        }
         return migrator
     }()
 }
@@ -73,8 +80,10 @@ struct WindowRecord: FetchableRecord, PersistableRecord {
             stateLog.error("window \(id, privacy: .public): unreadable tabs, starting without tabs: \(String(describing: error), privacy: .public)")
             tabs = TabLayout()
         }
+        let projects = (try? JSONDecoder().decode([String].self, from: Data((row["projects"] as String).utf8))) ?? []
         state = WindowState(
-            id: id, frame: frame, sidebarWidth: row["sidebarWidth"], sidebarVisible: row["sidebarVisible"], tabs: tabs)
+            id: id, frame: frame, sidebarWidth: row["sidebarWidth"], sidebarVisible: row["sidebarVisible"],
+            filesVisible: row["filesVisible"], projects: projects, tabs: tabs)
     }
 
     func encode(to container: inout PersistenceContainer) throws {
@@ -85,6 +94,8 @@ struct WindowRecord: FetchableRecord, PersistableRecord {
         container["frameHeight"] = state.frame?.height
         container["sidebarWidth"] = state.sidebarWidth
         container["sidebarVisible"] = state.sidebarVisible
+        container["filesVisible"] = state.filesVisible
+        container["projects"] = String(decoding: try JSONEncoder().encode(state.projects), as: UTF8.self)
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         container["tabs"] = String(decoding: try encoder.encode(state.tabs), as: UTF8.self)

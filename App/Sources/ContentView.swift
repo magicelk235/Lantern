@@ -2,15 +2,17 @@ import IDEModel
 import IDEState
 import SwiftUI
 
+/// The window: projects in the sidebar, the open tabs in the middle, the project's files in the
+/// trailing Files panel.
 struct ContentView: View {
     @Bindable var app: AppState
 
     var body: some View {
         NavigationSplitView(columnVisibility: $app.columnVisibility) {
-            SidebarView(app: app)
+            ProjectsSidebar(app: app)
                 .onGeometryChange(for: Double.self) { $0.size.width } action: { app.sidebarWidthChanged($0) }
                 // Outermost: the split view reads the column width from the column's root view.
-                .navigationSplitViewColumnWidth(min: 200, ideal: app.initialSidebarWidth, max: 420)
+                .navigationSplitViewColumnWidth(min: 220, ideal: app.initialSidebarWidth, max: 420)
         } detail: {
             VStack(spacing: 0) {
                 StatusBanners(app: app)
@@ -35,6 +37,10 @@ struct ContentView: View {
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { app.tabContentSizeChanged($0) }
                 StatusBar(app: app)
             }
+            .inspector(isPresented: $app.filesVisible) {
+                FilesPanel(app: app)
+                    .inspectorColumnWidth(min: 220, ideal: 280, max: 520)
+            }
         }
         // Not drawn in the compact toolbar; names the window in the Window menu and Mission Control.
         .navigationTitle(windowTitle)
@@ -50,15 +56,21 @@ struct ContentView: View {
                 } label: {
                     Label("New Terminal", systemImage: "terminal")
                 }
-                .help("Open a terminal in the workspace on screen (⌃`)")
+                .help("Open a terminal in \(app.currentProject.map(AppState.projectName) ?? "your home folder") (⌃`)")
                 .disabled(!app.connection.isConnected)
                 Button {
-                    app.newSession()
+                    if let project = app.currentProject { app.newSession(in: project) } else { app.newSession() }
                 } label: {
-                    Label("New Session…", systemImage: "plus")
+                    Label("New Session", systemImage: "plus")
                 }
-                .help("Start omp in a workspace folder (⌘N)")
+                .help("Start omp in \(app.currentProject.map(AppState.projectName) ?? "a project folder") (⌘N)")
                 .disabled(!app.connection.isConnected)
+                Button {
+                    app.filesVisible.toggle()
+                } label: {
+                    Label("Files", systemImage: "sidebar.trailing")
+                }
+                .help("Show or hide the Files panel (⌥⌘0)")
             }
         }
         .alert(item: $app.alert) { alert in
@@ -90,8 +102,7 @@ struct ContentView: View {
 
     private var windowTitle: String {
         guard let strip = app.tabs.selectedStrip else { return "omp IDE" }
-        let name = URL(filePath: strip.workspace, directoryHint: .isDirectory).lastPathComponent
-        return name.isEmpty ? strip.workspace : name
+        return AppState.projectName(strip.workspace)
     }
 
     private var closeTitle: String {
@@ -104,75 +115,207 @@ struct ContentView: View {
     }
 }
 
-/// The detail area with no tab on screen.
+/// The detail area with no tab on screen: what to do first.
 private struct EmptyDetail: View {
     let app: AppState
 
     var body: some View {
         ContentUnavailableView {
-            Label("No Session Open", systemImage: "terminal")
+            if let project = app.currentProject {
+                Label(AppState.projectName(project), systemImage: "folder")
+            } else {
+                Label("No Projects", systemImage: "folder.badge.plus")
+            }
         } description: {
-            Text("Start omp in a workspace folder, or pick a session in the sidebar.")
+            if app.currentProject != nil {
+                Text("Start omp here, or open a terminal. Sessions keep running after you close their tab or quit.")
+            } else {
+                Text("Add a project folder to start omp in it, open terminals, and browse its files.")
+            }
         } actions: {
-            Button("New Session…") { app.newSession() }
-                .disabled(!app.connection.isConnected)
+            if let project = app.currentProject {
+                Button("New Session") { app.newSession(in: project) }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!app.connection.isConnected)
+                Button("New Terminal") { app.newTerminal(in: project) }
+                    .disabled(!app.connection.isConnected)
+            } else {
+                Button("Add Project…") { app.addProject() }
+                    .keyboardShortcut(.defaultAction)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Chrome.canvas)
     }
 }
 
-struct SidebarView: View {
+// MARK: - Sidebar
+
+/// The projects, each with its sessions and terminals. A search field narrows the rows by title.
+struct ProjectsSidebar: View {
     @Bindable var app: AppState
+    @State private var query = ""
 
     var body: some View {
         let terminals = app.terminals.byWorkspace(among: app.knownWorkspaces)
-        let sessionWorkspaces = Set(app.connection.workspaces.map(\.path))
-        List(selection: Binding(get: { app.sidebarSelection }, set: { app.selectInSidebar($0) })) {
-            ForEach(app.connection.workspaces) { workspace in
-                Section {
-                    ForEach(workspace.sessions, id: \.sessionKey) { entry in
-                        SessionRow(entry: entry, title: app.sessionTitle(entry.sessionKey))
-                            .tag(TabKind.session(entry.sessionKey))
-                            .contextMenu { SessionMenu(app: app, entry: entry) }
+        let filtering = !query.trimmingCharacters(in: .whitespaces).isEmpty
+        List(selection: Binding(get: { app.tabs.selection }, set: { if let tab = $0 { app.showTab(tab) } })) {
+            ForEach(app.projects, id: \.self) { project in
+                let sessions = (app.connection.workspaces.first { $0.path == project }?.sessions ?? [])
+                    .filter { matches(app.sessionTitle($0.sessionKey)) }
+                let ptys = (terminals[project] ?? []).filter { matches(app.terminals.title(for: $0.ptyId)) }
+                if !filtering || !sessions.isEmpty || !ptys.isEmpty {
+                    Section {
+                        ForEach(sessions, id: \.sessionKey) { entry in
+                            SessionRow(entry: entry, title: app.sessionTitle(entry.sessionKey))
+                                .tag(TabKind.session(entry.sessionKey))
+                                .contextMenu { SessionMenu(app: app, entry: entry) }
+                        }
+                        TerminalRows(app: app, terminals: ptys)
+                        if sessions.isEmpty, ptys.isEmpty {
+                            StartHereRow(app: app, project: project)
+                        }
+                    } header: {
+                        ProjectHeader(app: app, project: project)
                     }
-                    TerminalRows(app: app, terminals: terminals[workspace.path] ?? [])
-                    WorkspaceFiles(app: app, workspace: workspace.path)
-                } header: {
-                    WorkspaceHeader(app: app, path: workspace.path)
-                }
-            }
-            ForEach(terminals.keys.filter { !sessionWorkspaces.contains($0) }.sorted(), id: \.self) { path in
-                Section {
-                    TerminalRows(app: app, terminals: terminals[path] ?? [])
-                    WorkspaceFiles(app: app, workspace: path)
-                } header: {
-                    WorkspaceHeader(app: app, path: path)
                 }
             }
         }
         .listStyle(.sidebar)
-        .fileNavigatorActions(app)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 8) {
+                TextField("Search sessions", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                HStack {
+                    Text("Projects")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        app.addProject()
+                    } label: {
+                        Image(systemName: "folder.badge.plus")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Add a project folder (⌘O)")
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+        }
+        .overlay {
+            if app.projects.isEmpty {
+                ContentUnavailableView {
+                    Text("No Projects")
+                } description: {
+                    Text("Add a folder to start.")
+                } actions: {
+                    Button("Add Project…") { app.addProject() }
+                        .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private func matches(_ title: String) -> Bool {
+        let query = query.trimmingCharacters(in: .whitespaces)
+        return query.isEmpty || title.localizedCaseInsensitiveContains(query)
     }
 }
 
-/// A workspace folder's name over its rows.
-struct WorkspaceHeader: View {
+/// A project's name over its rows, with New Session on hover and everything else in a menu.
+struct ProjectHeader: View {
     let app: AppState
-    let path: String
+    let project: String
+    @State private var hovering = false
 
     var body: some View {
-        let name = URL(filePath: path, directoryHint: .isDirectory).lastPathComponent
-        Text(name.isEmpty ? path : name)
-            .lineLimit(1)
-            .help(path)
-            .contextMenu {
-                Button("New Terminal Here") { app.newTerminal(in: path) }
-                    .disabled(!app.connection.isConnected)
-                Button("Reveal in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: path, directoryHint: .isDirectory)])
-                }
+        HStack(spacing: 6) {
+            Image(systemName: "folder")
+                .foregroundStyle(.secondary)
+            Text(AppState.projectName(project))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
+            Button {
+                app.newSession(in: project)
+            } label: {
+                Image(systemName: "plus")
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .opacity(hovering ? 1 : 0)
+            .disabled(!app.connection.isConnected)
+            .help("Start omp in \(AppState.projectName(project))")
+            Menu {
+                ProjectMenu(app: app, project: project)
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .foregroundStyle(.secondary)
+            .opacity(hovering ? 1 : 0)
+        }
+        .textCase(nil)
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .help(project)
+        .contextMenu { ProjectMenu(app: app, project: project) }
+    }
+}
+
+/// What a project offers: New Session, New Terminal, its files, Finder, and Remove once nothing of it is open.
+struct ProjectMenu: View {
+    let app: AppState
+    let project: String
+
+    var body: some View {
+        Button("New Session") { app.newSession(in: project) }
+            .disabled(!app.connection.isConnected)
+        Button("New Terminal") { app.newTerminal(in: project) }
+            .disabled(!app.connection.isConnected)
+        Button("Show Files") {
+            app.filesProject = project
+            app.filesVisible = true
+        }
+        Divider()
+        Button("Reveal in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: project, directoryHint: .isDirectory)])
+        }
+        Divider()
+        Button("Remove Project") { app.removeProject(project) }
+            .disabled(!app.canRemoveProject(project))
+    }
+}
+
+/// The one row of a project with nothing running: starts omp there.
+private struct StartHereRow: View {
+    let app: AppState
+    let project: String
+
+    var body: some View {
+        Button {
+            app.newSession(in: project)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle")
+                    .font(.system(size: 11))
+                    .frame(width: 14)
+                Text("Start omp here")
+            }
+            .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .disabled(!app.connection.isConnected)
+        .selectionDisabled()
     }
 }
 
@@ -196,6 +339,8 @@ struct SessionMenu: View {
     }
 }
 
+/// A session: its state as a dot or spinner, its title, and when it was last active (a status word instead when
+/// something needs the user).
 struct SessionRow: View {
     let entry: SessionManifestEntry
     let title: String
@@ -213,14 +358,20 @@ struct SessionRow: View {
             Text(title)
                 .lineLimit(1)
             Spacer(minLength: 6)
-            if entry.status != .idle, !entry.status.isInProgress {
-                Text(entry.status.label)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
+            Text(trailing)
+                .font(.system(size: 11))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
         }
         .opacity(entry.status == .closed ? 0.6 : 1)
         .help("\(entry.status.explanation). Started \(entry.createdAt.formatted(date: .abbreviated, time: .shortened))")
+    }
+
+    private var trailing: String {
+        switch entry.status {
+        case .paused, .interrupted, .needsAttention, .starting, .resuming: entry.status.label
+        case .idle, .busy, .closed: AppState.age(of: entry)
+        }
     }
 }
 

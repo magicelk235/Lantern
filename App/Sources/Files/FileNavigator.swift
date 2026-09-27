@@ -3,31 +3,95 @@ import IDEEditorModel
 import IDEState
 import SwiftUI
 
-/// The "Files" row of a workspace in the sidebar: the folder's outline, each folder listed when first expanded. A
-/// click highlights a file; Return or a double-click opens it in the workspace's tab strip.
-struct WorkspaceFiles: View {
-    let app: AppState
-    let workspace: String
+/// The Files panel, trailing the detail area: one project's folder as an outline (each folder listed when first
+/// expanded), or, while the find field has text, the files whose path contains it. A click highlights a file; Return
+/// or a double-click opens it in the project's tab strip.
+struct FilesPanel: View {
+    @Bindable var app: AppState
+    @State private var query = ""
+    @State private var index = FileIndex()
 
     var body: some View {
-        let tree = app.editors.tree(for: workspace)
-        DisclosureGroup(isExpanded: expansion(of: tree.root, in: tree)) {
-            FileRows(app: app, tree: tree, folder: tree.root)
-        } label: {
-            Label {
-                Text("Files")
-            } icon: {
-                Image(systemName: "folder")
-                    .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            if let project = app.filesProject {
+                header(project)
+                TextField("Find files", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 8)
+                Divider()
+                let tree = app.editors.tree(for: project)
+                List(selection: Binding(get: { app.filesSelection }, set: { app.selectInFiles($0) })) {
+                    if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                        FileRows(app: app, tree: tree, folder: tree.root)
+                    } else {
+                        FindResults(app: app, tree: tree, matches: index.matches(query))
+                    }
+                }
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
+                .environment(\.defaultMinListRowHeight, 22)
+                .fileNavigatorActions(app)
+                .task(id: project) {
+                    tree.setExpanded(tree.root, true)
+                    await index.load(root: project)
+                }
+            } else {
+                ContentUnavailableView {
+                    Text("No Project")
+                } description: {
+                    Text("Add a project to browse its files.")
+                } actions: {
+                    Button("Add Project…") { app.addProject() }
+                        .controlSize(.small)
+                }
             }
-            .contentShape(Rectangle())
-            .onTapGesture { tree.setExpanded(tree.root, !tree.isExpanded(tree.root)) }
         }
+        .background(Chrome.surface)
+    }
+
+    /// The project's name; a menu of the projects when there are several, and Finder.
+    private func header(_ project: String) -> some View {
+        HStack(spacing: 6) {
+            if app.projects.count > 1 {
+                Menu {
+                    ForEach(app.projects, id: \.self) { candidate in
+                        Button(AppState.projectName(candidate)) { app.filesProject = candidate }
+                    }
+                } label: {
+                    Text(AppState.projectName(project))
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            } else {
+                Text(AppState.projectName(project))
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 4)
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: project, directoryHint: .isDirectory)])
+            } label: {
+                Image(systemName: "arrow.up.forward.app")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Reveal in Finder")
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+        .help(project)
     }
 }
 
 extension View {
-    /// Return and double-click open the files selected in the sidebar list; right-click offers Open and Reveal in
+    /// Return and double-click open the files selected in the Files panel; right-click offers Open and Reveal in
     /// Finder for them.
     func fileNavigatorActions(_ app: AppState) -> some View {
         modifier(FileNavigatorActions(app: app))
@@ -44,16 +108,15 @@ private struct FileNavigatorActions: ViewModifier {
             .contextMenu(forSelectionType: TabKind.self) { items in
                 let paths = items.compactMap(\.editorPath).sorted()
                 if !paths.isEmpty {
-                    Button("Open") { app.openFromSidebar(items) }
+                    Button("Open") { app.openFromFiles(items) }
                     Button("Reveal in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting(paths.map { URL(filePath: $0) })
                     }
                 }
             } primaryAction: { items in
-                app.openFromSidebar(items)
+                app.openFromFiles(items)
             }
-            // A click on a file only highlights it: the list takes the keyboard (from the composer, say) so that
-            // Return opens it.
+            // A click on a file only highlights it: the list takes the keyboard so that Return opens it.
             .onChange(of: app.editors.highlight) { _, highlight in
                 if highlight != nil { focused = true }
             }
@@ -61,29 +124,22 @@ private struct FileNavigatorActions: ViewModifier {
 }
 
 extension AppState {
-    /// The sidebar row to highlight: a file clicked once in the navigator (until another tab shows), else the tab on
-    /// screen.
-    var sidebarSelection: TabKind? {
+    /// The file row to highlight: a file clicked once (until another tab shows), else the editor tab on screen.
+    var filesSelection: TabKind? {
         if let highlight = editors.highlight, highlight.over == tabs.selection { return .editor(path: highlight.path) }
-        return tabs.selection
+        return tabs.selection?.editorPath.map { .editor(path: $0) }
     }
 
-    /// A click in the sidebar: a session or terminal shows at once; a file is only highlighted, Return or a
-    /// double-click opens it.
-    func selectInSidebar(_ tab: TabKind?) {
-        guard let tab else { return }
-        if case .editor(let path) = tab {
-            editors.highlight = Editors.Highlight(path: path, over: tabs.selection)
-        } else {
-            editors.highlight = nil
-            showTab(tab)
-        }
+    /// A click on a file only highlights it; Return or a double-click opens it.
+    func selectInFiles(_ tab: TabKind?) {
+        guard case .editor(let path) = tab else { return }
+        editors.highlight = Editors.Highlight(path: path, over: tabs.selection)
     }
 
-    /// Return or a double-click in the sidebar: opens the files among `items` in their workspace's strip.
-    func openFromSidebar(_ items: Set<TabKind>) {
+    /// Return or a double-click in the Files panel: opens the files among `items` in their project's strip.
+    func openFromFiles(_ items: Set<TabKind>) {
         for path in items.compactMap(\.editorPath).sorted() {
-            guard let workspace = editors.workspace(containing: path) else { continue }
+            guard let workspace = editors.workspace(containing: path) ?? filesProject else { continue }
             openEditor(path, in: workspace)
         }
     }
@@ -111,13 +167,13 @@ private struct FileRows: View {
                 DisclosureGroup(isExpanded: expansion(of: entry.path, in: tree)) {
                     FileRows(app: app, tree: tree, folder: entry.path)
                 } label: {
-                    FileRow(entry: entry, isIgnored: tree.isIgnored(entry.path), isDirty: false)
+                    FileRow(name: entry.name, path: entry.path, isDirectory: true, isIgnored: tree.isIgnored(entry.path), isDirty: false)
                         .contentShape(Rectangle())
                         .onTapGesture { tree.setExpanded(entry.path, !tree.isExpanded(entry.path)) }
                 }
             } else {
                 FileRow(
-                    entry: entry, isIgnored: tree.isIgnored(entry.path),
+                    name: entry.name, path: entry.path, isDirectory: false, isIgnored: tree.isIgnored(entry.path),
                     isDirty: app.editors.document(for: entry.path)?.isDirty ?? false
                 )
                 .tag(TabKind.editor(path: entry.path))
@@ -126,22 +182,57 @@ private struct FileRows: View {
     }
 }
 
+/// Files whose path matches the find field, shown with their folder.
+private struct FindResults: View {
+    let app: AppState
+    let tree: FileTree
+    let matches: [String]
+
+    var body: some View {
+        if matches.isEmpty {
+            Text("No matching files")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        ForEach(matches, id: \.self) { path in
+            let relative = String(path.dropFirst(tree.root.count + 1))
+            let folder = (relative as NSString).deletingLastPathComponent
+            FileRow(
+                name: (path as NSString).lastPathComponent, path: path, isDirectory: false,
+                isIgnored: tree.isIgnored(path), isDirty: app.editors.document(for: path)?.isDirty ?? false,
+                detail: folder.isEmpty ? nil : folder
+            )
+            .tag(TabKind.editor(path: path))
+        }
+    }
+}
+
 private struct FileRow: View {
-    let entry: FileEntry
+    let name: String
+    let path: String
+    let isDirectory: Bool
     /// Git ignores it: dimmed.
     let isIgnored: Bool
     /// Open with unsaved edits.
     let isDirty: Bool
+    /// The folder, for find results.
+    var detail: String?
 
     var body: some View {
         HStack(spacing: 4) {
-            Label {
-                Text(entry.name)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            } icon: {
-                Image(systemName: symbol)
+            Image(systemName: symbol)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text(name)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if let detail {
+                Text(detail)
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
             }
             if isDirty {
                 Spacer(minLength: 4)
@@ -152,13 +243,13 @@ private struct FileRow: View {
             }
         }
         .opacity(isIgnored ? 0.5 : 1)
-        .help(entry.path)
-        .accessibilityLabel(entry.name + (isDirty ? ", edited" : ""))
+        .help(path)
+        .accessibilityLabel(name + (isDirty ? ", edited" : ""))
     }
 
     private var symbol: String {
-        if entry.isDirectory { return "folder" }
-        switch (entry.name as NSString).pathExtension.lowercased() {
+        if isDirectory { return "folder" }
+        switch (name as NSString).pathExtension.lowercased() {
         case "swift": return "swift"
         case "md", "markdown", "txt", "rtf": return "doc.plaintext"
         case "json", "yml", "yaml", "toml", "plist", "xml": return "curlybraces"
@@ -166,5 +257,57 @@ private struct FileRow: View {
         case "sh", "zsh", "bash", "fish": return "terminal"
         default: return "doc.text"
         }
+    }
+}
+
+/// Every file under a project (hidden folders, `.git`, `node_modules` and build output skipped, at most
+/// `limit` entries), for the find field. Listed off the main thread when the panel shows the project.
+@MainActor @Observable
+final class FileIndex {
+    private(set) var root = ""
+    private(set) var paths: [String] = []
+
+    nonisolated static let limit = 50_000
+    nonisolated static let skippedFolders: Set<String> = [".git", "node_modules", ".build", "DerivedData", "dist", "out"]
+
+    func load(root: String) async {
+        let paths = await Task.detached(priority: .utility) { Self.list(root) }.value
+        guard !Task.isCancelled else { return }
+        self.root = root
+        self.paths = paths
+    }
+
+    /// Paths containing `query` (case-insensitive), file names matching first, at most 200.
+    func matches(_ query: String) -> [String] {
+        let query = query.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return [] }
+        var byName: [String] = []
+        var byPath: [String] = []
+        for path in paths {
+            let relative = path.dropFirst(root.count + 1)
+            guard relative.localizedCaseInsensitiveContains(query) else { continue }
+            let name = (path as NSString).lastPathComponent
+            if name.localizedCaseInsensitiveContains(query) { byName.append(path) } else { byPath.append(path) }
+            if byName.count >= 200 { break }
+        }
+        return Array((byName + byPath).prefix(200))
+    }
+
+    private nonisolated static func list(_ root: String) -> [String] {
+        var result: [String] = []
+        let url = URL(filePath: root, directoryHint: .isDirectory)
+        guard let enumerator = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey], options: [.skipsPackageDescendants])
+        else { return [] }
+        for case let file as URL in enumerator {
+            guard let values = try? file.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey]) else { continue }
+            if values.isDirectory == true {
+                if skippedFolders.contains(file.lastPathComponent) || values.isHidden == true { enumerator.skipDescendants() }
+                continue
+            }
+            result.append(file.path(percentEncoded: false))
+            if result.count >= limit { break }
+        }
+        return result
     }
 }

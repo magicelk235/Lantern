@@ -24,6 +24,13 @@ final class AppState {
     var columnVisibility: NavigationSplitViewVisibility {
         didSet { if columnVisibility != oldValue { saveWindow() } }
     }
+    /// The Files panel, trailing the detail area, is shown.
+    var filesVisible: Bool {
+        didSet { if filesVisible != oldValue { saveWindow() } }
+    }
+    /// Project folders the user added, in the order added. `projects` (below) also lists folders that have sessions
+    /// or tabs.
+    private(set) var addedProjects: [String]
     /// Width the sidebar column opens with: the one it had when the app last quit.
     let initialSidebarWidth: Double
     var alert: AlertMessage?
@@ -68,6 +75,8 @@ final class AppState {
         tabs = restored?.tabs ?? TabLayout()
         terminals = TerminalsController(registry: connection.terminals)
         columnVisibility = restored?.sidebarVisible == false ? .detailOnly : .all
+        filesVisible = restored?.filesVisible ?? true
+        addedProjects = restored?.projects ?? []
         initialSidebarWidth = restored?.sidebarWidth ?? 270
         sidebarWidth = restored?.sidebarWidth
         windowFrame = restored?.frame
@@ -187,19 +196,87 @@ final class AppState {
         if let selection { tabs.select(selection) }
     }
 
-    /// Picks a workspace folder and asks ompd to start omp's TUI there, with the default approval mode, at the size
-    /// the new tab will have.
+    /// Asks for a project folder and starts omp there (the folder joins the projects).
     func newSession() {
-        guard let folder = WorkspacePicker.choose() else { return }
+        guard let folder = WorkspacePicker.choose(prompt: "Start Session") else { return }
+        newSession(in: folder.standardizedFileURL.path(percentEncoded: false))
+    }
+
+    /// Asks ompd to start omp's TUI in `workspace`, with the default approval mode, at the size the new tab will have.
+    func newSession(in workspace: String) {
+        let workspace = Self.normalized(workspace)
+        addProject(workspace)
         let mode = UserDefaults.standard.string(forKey: AppSettings.defaultApprovalModeKey).flatMap(ApprovalMode.init(rawValue:))
         let size = newTabSize()
         Task {
             do {
-                show(try await connection.createSession(workspace: folder, approvalMode: mode, size: size))
+                let entry = try await connection.createSession(
+                    workspace: URL(filePath: workspace, directoryHint: .isDirectory), approvalMode: mode, size: size)
+                show(entry)
             } catch {
                 alert = AlertMessage(title: "Could not start a session", message: error.userMessage)
             }
         }
+    }
+
+    // MARK: - Projects
+
+    /// Every project folder the sidebar lists: the ones added, then those with sessions or tabs, by name.
+    var projects: [String] {
+        var seen = Set(addedProjects)
+        var all = addedProjects
+        for workspace in connection.workspaces.map(\.path) + tabs.strips.map(\.workspace) where seen.insert(workspace).inserted {
+            all.append(workspace)
+        }
+        return all
+    }
+
+    /// The project the detail area shows, else the first one.
+    var currentProject: String? { tabs.selectedStrip?.workspace ?? projects.first }
+
+    /// Asks for a folder and adds it as a project; the Files panel shows it.
+    func addProject() {
+        guard let folder = WorkspacePicker.choose(prompt: "Add Project") else { return }
+        let workspace = Self.normalized(folder.standardizedFileURL.path(percentEncoded: false))
+        addProject(workspace)
+        filesVisible = true
+        filesProject = workspace
+    }
+
+    func addProject(_ workspace: String) {
+        let workspace = Self.normalized(workspace)
+        guard !addedProjects.contains(workspace) else { return }
+        addedProjects.append(workspace)
+        saveWindow()
+    }
+
+    /// Whether the project can leave the sidebar: nothing of it is open or running.
+    func canRemoveProject(_ workspace: String) -> Bool {
+        !connection.workspaces.contains { $0.path == workspace } && !tabs.strips.contains { $0.workspace == workspace }
+    }
+
+    func removeProject(_ workspace: String) {
+        guard canRemoveProject(workspace) else { return }
+        addedProjects.removeAll { $0 == workspace }
+        if filesProject == workspace { filesProject = nil }
+        saveWindow()
+    }
+
+    /// The project whose files the Files panel shows: the one picked there, else the project on screen.
+    var filesProject: String? {
+        get { filesProjectOverride.flatMap { projects.contains($0) ? $0 : nil } ?? currentProject }
+        set { filesProjectOverride = newValue }
+    }
+    private var filesProjectOverride: String?
+
+    /// `path` without a trailing slash (a folder's identity everywhere in the app).
+    static func normalized(_ path: String) -> String {
+        path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
+    }
+
+    static func projectName(_ path: String) -> String {
+        let name = URL(filePath: path, directoryHint: .isDirectory).lastPathComponent
+        return name.isEmpty ? path : name
     }
 
     /// Starts omp again for a closed session from its session file; its tab follows omp to the new PTY.
@@ -254,17 +331,24 @@ final class AppState {
     }
 
     /// omp's name for the session, else what its TUI titles its window (without the `π >` glyph, and only when it
-    /// says more than the folder), else a short form of its key.
+    /// says more than the folder), else "New session".
     func sessionTitle(_ sessionKey: SessionKey) -> String {
         let entry = entry(for: sessionKey)
         if let title = entry?.title, !title.isEmpty { return title }
         if let program = connection.openSessions[sessionKey]?.programTitle {
             var title = program.trimmingCharacters(in: .whitespaces)
             if title.hasPrefix("π >") { title = String(title.dropFirst(3)).trimmingCharacters(in: .whitespaces) }
-            let folder = entry.map { URL(filePath: $0.workspace, directoryHint: .isDirectory).lastPathComponent }
+            let folder = entry.map { Self.projectName($0.workspace) }
             if !title.isEmpty, title != folder { return title }
         }
-        return entry?.displayTitle ?? "Session \(sessionKey.prefix(8))"
+        return "New session"
+    }
+
+    /// How long ago the session was last active (else started): "6h ago".
+    static func age(of entry: SessionManifestEntry, now: Date = Date()) -> String {
+        let date = entry.lastActiveAt ?? entry.createdAt
+        if now.timeIntervalSince(date) < 60 { return "now" }
+        return date.formatted(.relative(presentation: .numeric, unitsStyle: .narrow))
     }
 
     private func show(_ entry: SessionManifestEntry) {
@@ -291,7 +375,8 @@ final class AppState {
     /// Opens the login shell on a new PTY in `workspace` (default: the workspace on screen, else the home folder), in a
     /// new tab of that workspace's strip.
     func newTerminal(in workspace: String? = nil) {
-        let workspace = workspace ?? tabs.selectedStrip?.workspace ?? NSHomeDirectory()
+        let workspace = Self.normalized(workspace ?? currentProject ?? NSHomeDirectory())
+        addProject(workspace)
         let size = newTabSize()
         Task {
             do {
@@ -349,10 +434,8 @@ final class AppState {
         }
     }
 
-    /// Workspaces the sidebar knows: those with sessions and those with tabs.
-    var knownWorkspaces: [String] {
-        connection.workspaces.map(\.path) + tabs.strips.map(\.workspace)
-    }
+    /// Workspaces the sidebar knows: the projects.
+    var knownWorkspaces: [String] { projects }
 
     /// ompd no longer has the PTY: its tab goes.
     private func terminalGone(_ ptyId: PTYID) {
@@ -418,7 +501,8 @@ final class AppState {
         persistence.save(
             WindowState(
                 id: Self.mainWindowID, frame: windowFrame, sidebarWidth: sidebarWidth,
-                sidebarVisible: columnVisibility != .detailOnly, tabs: tabs))
+                sidebarVisible: columnVisibility != .detailOnly, filesVisible: filesVisible, projects: addedProjects,
+                tabs: tabs))
     }
 
     private func observeSystemPower() {

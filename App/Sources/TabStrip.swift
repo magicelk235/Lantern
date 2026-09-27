@@ -24,6 +24,21 @@ struct TabStrip: View {
                         )
                         .contextMenu { TabMenu(app: app, tab: tab) }
                     }
+                    Menu {
+                        Button("New Session") { app.newSession(in: strip.workspace) }
+                        Button("New Terminal") { app.newTerminal(in: strip.workspace) }
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 11, weight: .medium))
+                            .frame(width: 28, height: Chrome.tabStripHeight)
+                            .contentShape(Rectangle())
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .foregroundStyle(.secondary)
+                    .disabled(!app.connection.isConnected)
+                    .help("New session or terminal in \(AppState.projectName(strip.workspace))")
                 }
             }
             .scrollIndicators(.never)

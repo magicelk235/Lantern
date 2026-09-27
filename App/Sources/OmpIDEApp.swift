@@ -23,16 +23,22 @@ struct OmpIDEApp: App {
         .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Session…") { app.newSession() }
+                Button("New Session") { if let project = app.currentProject { app.newSession(in: project) } else { app.newSession() } }
                     .keyboardShortcut("n")
                     .disabled(!app.connection.isConnected)
                 Button("New Terminal") { app.newTerminal() }
                     .keyboardShortcut("`", modifiers: .control)
                     .disabled(!app.connection.isConnected)
+                Button("Add Project…") { app.addProject() }
+                    .keyboardShortcut("o")
                 Divider()
                 Button("Close Tab") { if let tab = app.tabs.selection { app.closeTab(tab) } }
                     .keyboardShortcut("w")
                     .disabled(app.tabs.selection == nil)
+            }
+            CommandGroup(after: .sidebar) {
+                Button(app.filesVisible ? "Hide Files" : "Show Files") { app.filesVisible.toggle() }
+                    .keyboardShortcut("0", modifiers: [.command, .option])
             }
             EditorCommands(app: app)
             SessionCommands(app: app)
@@ -95,11 +101,12 @@ enum AppSettings {
 
 @MainActor
 enum WorkspacePicker {
-    static func choose() -> URL? {
+    /// Asks for a project folder; `prompt` names the default button.
+    static func choose(prompt: String) -> URL? {
         let panel = NSOpenPanel()
-        panel.title = "New Session"
-        panel.message = "Choose the workspace folder omp will work in."
-        panel.prompt = "Start Session"
+        panel.title = prompt
+        panel.message = "Choose the project folder omp will work in."
+        panel.prompt = prompt
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
