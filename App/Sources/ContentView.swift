@@ -2,18 +2,21 @@ import IDEModel
 import IDEState
 import SwiftUI
 
-/// The window: the project in focus in the sidebar (its files or changes, and the menu that switches
-/// projects), its open tabs in the middle. Every session and terminal of a project is one of its tabs.
+/// The window: an activity bar on the left (Files, Changes, Projects), the pane it picked next to it
+/// (hidden again by clicking the same icon), and the project's open tabs on the right. Every session and terminal of
+/// a project is one of its tabs.
 struct ContentView: View {
     @Bindable var app: AppState
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $app.columnVisibility) {
-            ProjectPanel(app: app)
-                .onGeometryChange(for: Double.self) { $0.size.width } action: { app.sidebarWidthChanged($0) }
-                // Outermost: the split view reads the column width from the column's root view.
-                .navigationSplitViewColumnWidth(min: 220, ideal: app.initialSidebarWidth, max: 480)
-        } detail: {
+        HStack(spacing: 0) {
+            ActivityBar(app: app)
+            Chrome.hairline.frame(width: 1)
+            if app.sidebarVisible {
+                SidebarPaneView(app: app)
+                    .frame(width: app.sidebarWidth)
+                SidebarResizeHandle(app: app)
+            }
             VStack(spacing: 0) {
                 StatusBanners(app: app)
                 if let strip = app.currentStrip {
@@ -37,7 +40,9 @@ struct ContentView: View {
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { app.tabContentSizeChanged($0) }
                 StatusBar(app: app)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .background(Chrome.surface)
         // Not drawn in the compact toolbar; names the window in the Window menu and Mission Control.
         .navigationTitle(windowTitle)
         // Painted, not material: the compact toolbar would otherwise mirror the selected tab's canvas as a block above it.
@@ -80,6 +85,106 @@ struct ContentView: View {
         case .forget: "Remove this session from the list?"
         case nil: ""
         }
+    }
+}
+
+/// The column of icons at the window's left edge: Files, Changes (badged with the count of changed files) and
+/// Projects. A click shows the pane; a click on the pane already showing hides the sidebar. Its own look, not an
+/// activity bar copied from elsewhere: 16pt outline symbols, the current one on a filled rounded square.
+struct ActivityBar: View {
+    let app: AppState
+
+    static let width: CGFloat = 44
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ForEach(SidebarPane.allCases, id: \.self) { pane in
+                ActivityButton(
+                    pane: pane, isCurrent: app.sidebarVisible && app.pane == pane,
+                    badge: pane == .changes ? changeCount : 0
+                ) {
+                    app.togglePane(pane)
+                }
+            }
+            Spacer()
+        }
+        .padding(.top, 6)
+        .frame(width: Self.width)
+        .frame(maxHeight: .infinity)
+        .background(Chrome.surface)
+    }
+
+    /// Changed files in the project in focus.
+    private var changeCount: Int {
+        guard let project = app.currentProject else { return 0 }
+        let repository = app.editors.repositories.repository(for: project)
+        return repository.isRepository ? repository.changes.count : 0
+    }
+}
+
+private struct ActivityButton: View {
+    let pane: SidebarPane
+    let isCurrent: Bool
+    let badge: Int
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: pane.symbol)
+                .font(.system(size: 15, weight: .medium))
+                .frame(width: 32, height: 32)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(isCurrent ? Color.primary.opacity(0.12) : hovering ? Color.primary.opacity(0.06) : .clear))
+                .contentShape(Rectangle())
+                .overlay(alignment: .bottomTrailing) {
+                    if badge > 0 {
+                        Text(badge > 99 ? "99+" : String(badge))
+                            .font(.system(size: 9, weight: .semibold))
+                            .monospacedDigit()
+                            .padding(.horizontal, 4)
+                            .frame(minWidth: 15, minHeight: 15)
+                            .background(Color.accentColor, in: Capsule())
+                            .foregroundStyle(.white)
+                            .offset(x: 2, y: 2)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isCurrent ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+        .onHover { hovering = $0 }
+        .help("\(pane.title) (\(pane.shortcut))")
+        .accessibilityLabel(pane.title)
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+    }
+}
+
+/// The hairline between the sidebar and the tabs; dragging it resizes the sidebar.
+private struct SidebarResizeHandle: View {
+    let app: AppState
+    @State private var startWidth: Double?
+
+    var body: some View {
+        Chrome.hairline
+            .frame(width: 1)
+            .frame(maxHeight: .infinity)
+            .overlay {
+                Color.clear
+                    .frame(width: 9)
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { value in
+                                if startWidth == nil { startWidth = app.sidebarWidth }
+                                app.sidebarWidth = (startWidth ?? app.sidebarWidth) + value.translation.width
+                            }
+                            .onEnded { _ in startWidth = nil }
+                    )
+            }
     }
 }
 

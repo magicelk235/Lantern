@@ -20,24 +20,34 @@ final class AppState {
     /// Detail-area tabs, one strip per workspace. The selected tab is what the detail area shows and what the sidebar
     /// highlights.
     private(set) var tabs: TabLayout
-    /// `.detailOnly` while the user hid the sidebar.
-    var columnVisibility: NavigationSplitViewVisibility {
-        didSet { if columnVisibility != oldValue { saveWindow() } }
+    /// The sidebar (the pane next to the activity bar) is shown.
+    var sidebarVisible: Bool {
+        didSet { if sidebarVisible != oldValue { saveWindow() } }
+    }
+    /// Width of the sidebar pane, dragged at its trailing edge.
+    var sidebarWidth: Double {
+        didSet {
+            sidebarWidth = min(max(sidebarWidth, Self.minimumSidebarWidth), Self.maximumSidebarWidth)
+            if sidebarWidth != oldValue { saveWindow() }
+        }
+    }
+    static let minimumSidebarWidth = 200.0
+    static let maximumSidebarWidth = 520.0
+    /// The pane the activity bar shows: Files, Changes or Projects. Kept in the defaults.
+    var pane: SidebarPane {
+        didSet { if pane != oldValue { UserDefaults.standard.set(pane.rawValue, forKey: SidebarPane.defaultsKey) } }
     }
     /// The project chosen while none of its tabs is on screen (it has none, or the user left the detail area empty).
     private var focusedProjectChoice: String?
     /// Project folders the user added, in the order added. `projects` (below) also lists folders that have sessions
     /// or tabs.
     private(set) var addedProjects: [String]
-    /// Width the sidebar column opens with: the one it had when the app last quit.
-    let initialSidebarWidth: Double
     var alert: AlertMessage?
     /// A Close Session / Close Terminal the user asked for, waiting for their confirmation in the window.
     var pendingClose: CloseRequest?
 
     @ObservationIgnored private let persistence: StatePersistence
     @ObservationIgnored private var started = false
-    @ObservationIgnored private var sidebarWidth: Double?
     /// Last frame of the window outside full screen; applied to a window that attaches.
     @ObservationIgnored private var windowFrame: WindowFrame?
     @ObservationIgnored private weak var window: NSWindow?
@@ -70,10 +80,10 @@ final class AppState {
         editors = Editors(persistence: persistence)
         tabs = restored?.tabs ?? TabLayout()
         terminals = TerminalsController(registry: connection.terminals)
-        columnVisibility = restored?.sidebarVisible == false ? .detailOnly : .all
+        sidebarVisible = restored?.sidebarVisible ?? true
+        sidebarWidth = restored?.sidebarWidth ?? 270
+        pane = UserDefaults.standard.string(forKey: SidebarPane.defaultsKey).flatMap(SidebarPane.init(rawValue:)) ?? .files
         addedProjects = restored?.projects ?? []
-        initialSidebarWidth = restored?.sidebarWidth ?? 270
-        sidebarWidth = restored?.sidebarWidth
         windowFrame = restored?.frame
         // Regime A: each restored session tab attaches to omp's TUI once connected; nothing is sent to omp.
         for sessionKey in tabs.tabs.compactMap(\.sessionKey) { connection.open(sessionKey) }
@@ -516,11 +526,15 @@ final class AppState {
         }
     }
 
-    func sidebarWidthChanged(_ width: Double) {
-        // Hiding the sidebar animates its column down to nothing; keep the width it is shown with.
-        guard columnVisibility != .detailOnly, width >= 200, width != sidebarWidth else { return }
-        sidebarWidth = width
-        saveWindow()
+    /// Shows `pane` in the sidebar.
+    func showPane(_ pane: SidebarPane) {
+        self.pane = pane
+        sidebarVisible = true
+    }
+
+    /// The activity bar's click: the pane shows, or, when it is the one showing, the sidebar hides.
+    func togglePane(_ pane: SidebarPane) {
+        if sidebarVisible, self.pane == pane { sidebarVisible = false } else { showPane(pane) }
     }
 
     /// Captures everything not saved on change and writes it all now: on resign key, window close, sleep, power off
@@ -544,7 +558,7 @@ final class AppState {
         persistence.save(
             WindowState(
                 id: Self.mainWindowID, frame: windowFrame, sidebarWidth: sidebarWidth,
-                sidebarVisible: columnVisibility != .detailOnly, projects: addedProjects,
+                sidebarVisible: sidebarVisible, projects: addedProjects,
                 tabs: tabs))
     }
 

@@ -36,6 +36,14 @@ struct OmpIDEApp: App {
                     .keyboardShortcut("w")
                     .disabled(app.tabs.selection == nil)
             }
+            CommandGroup(replacing: .sidebar) {
+                Button(app.sidebarVisible ? "Hide Sidebar" : "Show Sidebar") { app.sidebarVisible.toggle() }
+                    .keyboardShortcut("s", modifiers: [.command, .control])
+                Button("Files") { app.showPane(.files) }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                Button("Projects") { app.showPane(.projects) }
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
+            }
             EditorCommands(app: app)
             SessionCommands(app: app)
             SourceControlCommands(app: app)

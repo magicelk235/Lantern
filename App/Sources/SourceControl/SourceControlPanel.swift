@@ -431,8 +431,7 @@ extension AppState {
     /// Source Control › Show Changes and Commit…: the trailing panel opens on its Changes side for the project on
     /// screen; Commit… also puts the caret in the commit message.
     func showChanges(focusingCommitMessage: Bool = false) {
-        columnVisibility = .all
-        FilesPanelTab.select(.changes)
+        showPane(.changes)
         if focusingCommitMessage { editors.repositories.commitFocusPending = true }
     }
 }
