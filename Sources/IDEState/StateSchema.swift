@@ -50,7 +50,6 @@ enum StateSchema {
         }
         migrator.registerMigration("projects") { db in
             try db.alter(table: WindowRecord.databaseTableName) { table in
-                table.add(column: "filesVisible", .boolean).notNull().defaults(to: true)
                 // JSON array of absolute folder paths.
                 table.add(column: "projects", .text).notNull().defaults(to: "[]")
             }
@@ -83,7 +82,7 @@ struct WindowRecord: FetchableRecord, PersistableRecord {
         let projects = (try? JSONDecoder().decode([String].self, from: Data((row["projects"] as String).utf8))) ?? []
         state = WindowState(
             id: id, frame: frame, sidebarWidth: row["sidebarWidth"], sidebarVisible: row["sidebarVisible"],
-            filesVisible: row["filesVisible"], projects: projects, tabs: tabs)
+            projects: projects, tabs: tabs)
     }
 
     func encode(to container: inout PersistenceContainer) throws {
@@ -94,7 +93,6 @@ struct WindowRecord: FetchableRecord, PersistableRecord {
         container["frameHeight"] = state.frame?.height
         container["sidebarWidth"] = state.sidebarWidth
         container["sidebarVisible"] = state.sidebarVisible
-        container["filesVisible"] = state.filesVisible
         container["projects"] = String(decoding: try JSONEncoder().encode(state.projects), as: UTF8.self)
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys

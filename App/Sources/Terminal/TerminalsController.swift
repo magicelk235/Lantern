@@ -162,12 +162,6 @@ final class TerminalsController {
         return containing.max { $0.count < $1.count } ?? info.cwd
     }
 
-    /// ompd's terminals (not the session TUIs, nor the terminals in `hosting` — those an adopted session runs in, listed
-    /// as sessions) by the workspace they belong to, each in creation order.
-    func byWorkspace(among workspaces: [String], hosting: Set<PTYID>) -> [String: [PTYInfo]] {
-        Dictionary(grouping: registry.terminals.filter { !hosting.contains($0.ptyId) }) { workspace(of: $0, among: workspaces) }
-    }
-
     private func makeEmulator(_ endpoint: any TerminalEndpoint, optionAsMeta: Bool) -> TerminalTab {
         TerminalTab(endpoint: endpoint, font: TerminalSettings.font(size: fontSize), optionAsMeta: optionAsMeta) {
             [weak self] size in self?.lastSize = size

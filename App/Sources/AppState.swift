@@ -24,10 +24,8 @@ final class AppState {
     var columnVisibility: NavigationSplitViewVisibility {
         didSet { if columnVisibility != oldValue { saveWindow() } }
     }
-    /// The Files panel, trailing the detail area, is shown.
-    var filesVisible: Bool {
-        didSet { if filesVisible != oldValue { saveWindow() } }
-    }
+    /// The project chosen while none of its tabs is on screen (it has none, or the user left the detail area empty).
+    private var focusedProjectChoice: String?
     /// Project folders the user added, in the order added. `projects` (below) also lists folders that have sessions
     /// or tabs.
     private(set) var addedProjects: [String]
@@ -73,7 +71,6 @@ final class AppState {
         tabs = restored?.tabs ?? TabLayout()
         terminals = TerminalsController(registry: connection.terminals)
         columnVisibility = restored?.sidebarVisible == false ? .detailOnly : .all
-        filesVisible = restored?.filesVisible ?? true
         addedProjects = restored?.projects ?? []
         initialSidebarWidth = restored?.sidebarWidth ?? 270
         sidebarWidth = restored?.sidebarWidth
@@ -132,27 +129,6 @@ final class AppState {
         connection.sessions.first { $0.adopted && $0.ptyId == ptyId }
     }
 
-    /// Terminals whose omp is an adopted session: listed as sessions, not as terminals.
-    var adoptedTerminals: Set<PTYID> {
-        Set(connection.sessions.filter(\.adopted).compactMap(\.ptyId))
-    }
-
-    /// The tab a session is shown in: its own, or its terminal's for a session running in a terminal.
-    func tab(for entry: SessionManifestEntry) -> TabKind {
-        if entry.adopted, let ptyId = entry.ptyId { return .terminal(ptyId) }
-        return .session(entry.sessionKey)
-    }
-
-    /// Shows `sessionKey` in its tab, opening one at the end of its workspace's strip first if needed.
-    func showSession(_ sessionKey: SessionKey) {
-        guard let entry = entry(for: sessionKey) else { return }
-        if entry.adopted, let ptyId = entry.ptyId {
-            showTerminal(ptyId)
-        } else {
-            show(entry)
-        }
-    }
-
     func selectTab(_ tab: TabKind) {
         editors.highlight = nil
         tabs.select(tab)
@@ -184,20 +160,6 @@ final class AppState {
         terminals.releaseSession(sessionKey)
         connection.release(sessionKey)
         saveWindow()
-    }
-
-    /// Shows `tab`, opening it first if needed (sidebar selection).
-    func showTab(_ tab: TabKind) {
-        switch tab {
-        case .session(let sessionKey): showSession(sessionKey)
-        case .terminal(let ptyId): showTerminal(ptyId)
-        case .editor(let path):
-            if tabs.contains(tab) {
-                selectTab(tab)
-            } else if let workspace = editors.workspace(containing: path) {
-                openEditor(path, in: workspace)
-            }
-        }
     }
 
     /// Shows `path` in its editor tab, opening one at the end of `workspace`'s strip first if needed.
@@ -257,16 +219,36 @@ final class AppState {
         return all
     }
 
-    /// The project the detail area shows, else the first one.
-    var currentProject: String? { tabs.selectedStrip?.workspace ?? projects.first }
+    /// The project in focus: the one whose tab is on screen, else the one chosen, else the first.
+    var currentProject: String? {
+        tabs.selectedStrip?.workspace ?? focusedProjectChoice.flatMap { projects.contains($0) ? $0 : nil } ?? projects.first
+    }
 
-    /// Asks for a folder and adds it as a project; the Files panel shows it.
+    /// The tabs of the project in focus.
+    var currentStrip: TabLayout.Strip? {
+        guard let project = currentProject else { return nil }
+        return tabs.strips.first { $0.workspace == project }
+    }
+
+    /// Puts `workspace` in focus: its first tab shows, or nothing does when it has none.
+    func showProject(_ workspace: String) {
+        let workspace = Self.normalized(workspace)
+        focusedProjectChoice = workspace
+        if let tab = tabs.strips.first(where: { $0.workspace == workspace })?.tabs.first {
+            selectTab(tab)
+        } else {
+            editors.highlight = nil
+            tabs.deselect()
+            saveWindow()
+        }
+    }
+
+    /// Asks for a folder, adds it as a project and puts it in focus.
     func addProject() {
         guard let folder = WorkspacePicker.choose(prompt: "Add Project") else { return }
         let workspace = Self.normalized(folder.standardizedFileURL.path(percentEncoded: false))
         addProject(workspace)
-        filesVisible = true
-        filesProject = workspace
+        showProject(workspace)
     }
 
     func addProject(_ workspace: String) {
@@ -276,7 +258,7 @@ final class AppState {
         saveWindow()
     }
 
-    /// Whether the project can leave the sidebar: nothing of it is open or running.
+    /// Whether the project can leave the list: nothing of it is open or running.
     func canRemoveProject(_ workspace: String) -> Bool {
         !connection.workspaces.contains { $0.path == workspace } && !tabs.strips.contains { $0.workspace == workspace }
     }
@@ -284,16 +266,31 @@ final class AppState {
     func removeProject(_ workspace: String) {
         guard canRemoveProject(workspace) else { return }
         addedProjects.removeAll { $0 == workspace }
-        if filesProject == workspace { filesProject = nil }
+        if focusedProjectChoice == workspace { focusedProjectChoice = nil }
         saveWindow()
     }
 
-    /// The project whose files the Files panel shows: the one picked there, else the project on screen.
-    var filesProject: String? {
-        get { filesProjectOverride.flatMap { projects.contains($0) ? $0 : nil } ?? currentProject }
-        set { filesProjectOverride = newValue }
+    /// Every session and terminal ompd lists gets a tab in its project's strip (the tabs are the only list of them);
+    /// a session running in a terminal is the terminal's tab. Nothing changes what is on screen.
+    func syncTabs() {
+        var changed = false
+        for entry in connection.sessions where !entry.adopted && !tabs.contains(.session(entry.sessionKey)) {
+            connection.open(entry.sessionKey)
+            tabs.add(.session(entry.sessionKey), in: entry.workspace)
+            changed = true
+        }
+        for info in connection.terminals.terminals where !tabs.contains(.terminal(info.ptyId)) {
+            let workspace = terminals.workspace(of: info, among: knownWorkspaces)
+            terminals.adopt(info.ptyId, workspace: workspace)
+            tabs.add(.terminal(info.ptyId), in: workspace)
+            changed = true
+        }
+        // The project in focus shows one of its tabs unless the user left its detail area empty on purpose.
+        if changed, tabs.selection == nil, focusedProjectChoice == nil, let tab = currentStrip?.tabs.first {
+            tabs.select(tab)
+        }
+        if changed { saveWindow() }
     }
-    private var filesProjectOverride: String?
 
     /// `path` without a trailing slash (a folder's identity everywhere in the app).
     static func normalized(_ path: String) -> String {
@@ -390,13 +387,6 @@ final class AppState {
             if !title.isEmpty, title != folder { return title }
         }
         return "New session"
-    }
-
-    /// How long ago the session was last active (else started): "6h ago".
-    static func age(of entry: SessionManifestEntry, now: Date = Date()) -> String {
-        let date = entry.lastActiveAt ?? entry.createdAt
-        if now.timeIntervalSince(date) < 60 { return "now" }
-        return date.formatted(.relative(presentation: .numeric, unitsStyle: .narrow))
     }
 
     private func show(_ entry: SessionManifestEntry) {
@@ -554,7 +544,7 @@ final class AppState {
         persistence.save(
             WindowState(
                 id: Self.mainWindowID, frame: windowFrame, sidebarWidth: sidebarWidth,
-                sidebarVisible: columnVisibility != .detailOnly, filesVisible: filesVisible, projects: addedProjects,
+                sidebarVisible: columnVisibility != .detailOnly, projects: addedProjects,
                 tabs: tabs))
     }
 

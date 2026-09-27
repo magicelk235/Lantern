@@ -23,8 +23,6 @@ public struct WindowState: Equatable, Sendable {
     /// Width of the sidebar column; nil until the user saw it.
     public var sidebarWidth: Double?
     public var sidebarVisible: Bool
-    /// The Files panel (trailing) is shown.
-    public var filesVisible: Bool
     /// Project folders the user added, in the order they were added (absolute paths). A folder with sessions or tabs
     /// is listed whether or not it is here.
     public var projects: [String]
@@ -33,13 +31,12 @@ public struct WindowState: Equatable, Sendable {
 
     public init(
         id: String, frame: WindowFrame? = nil, sidebarWidth: Double? = nil, sidebarVisible: Bool = true,
-        filesVisible: Bool = true, projects: [String] = [], tabs: TabLayout = TabLayout()
+        projects: [String] = [], tabs: TabLayout = TabLayout()
     ) {
         self.id = id
         self.frame = frame
         self.sidebarWidth = sidebarWidth
         self.sidebarVisible = sidebarVisible
-        self.filesVisible = filesVisible
         self.projects = projects
         self.tabs = tabs
     }

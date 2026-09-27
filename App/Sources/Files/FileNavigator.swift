@@ -17,16 +17,16 @@ enum FilesPanelTab: String, CaseIterable {
     }
 }
 
-/// The Files panel, trailing the detail area: one project's folder as an outline, each folder listed when first
-/// expanded, or, on its Changes side, the project's git changes. A click highlights a file; Return or a double-click
-/// opens it in the project's tab strip.
-struct FilesPanel: View {
+/// The sidebar: the project in focus, named by a menu that switches projects and adds one; below it, the project's
+/// folder as an outline (each folder listed when first expanded) or, on its Changes side, its git changes. A click
+/// highlights a file; Return or a double-click opens it in the project's tab strip.
+struct ProjectPanel: View {
     @Bindable var app: AppState
     @AppStorage(FilesPanelTab.defaultsKey) private var tab = FilesPanelTab.files
 
     var body: some View {
         VStack(spacing: 0) {
-            if let project = app.filesProject {
+            if let project = app.currentProject {
                 header(project)
                 Picker("Panel", selection: $tab) {
                     Text("Files").tag(FilesPanelTab.files)
@@ -44,19 +44,20 @@ struct FilesPanel: View {
                 case .changes:
                     SourceControlPanel(app: app, repository: app.editors.repositories.repository(for: project))
                         .id(project)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else {
                 ContentUnavailableView {
                     Text("No Project")
                 } description: {
-                    Text("Add a project to browse its files.")
+                    Text("Add a folder to start omp in it, open terminals, and browse its files.")
                 } actions: {
                     Button("Add Project…") { app.addProject() }
                         .controlSize(.small)
                 }
             }
         }
-        .background(Chrome.surface)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     /// The project's folder as an outline.
@@ -72,42 +73,41 @@ struct FilesPanel: View {
         .task(id: project) { tree.setExpanded(tree.root, true) }
     }
 
-    /// The project's name; a menu of the projects when there are several, and Finder.
+    /// The project's name as the switcher: the projects, Add Project, then what this project offers.
     private func header(_ project: String) -> some View {
         HStack(spacing: 6) {
-            if app.projects.count > 1 {
-                Menu {
-                    ForEach(app.projects, id: \.self) { candidate in
-                        Button(AppState.projectName(candidate)) { app.filesProject = candidate }
-                    }
-                } label: {
-                    Text(AppState.projectName(project))
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+            Menu {
+                ForEach(app.projects, id: \.self) { candidate in
+                    Toggle(AppState.projectName(candidate), isOn: Binding(
+                        get: { candidate == project }, set: { if $0 { app.showProject(candidate) } }))
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-            } else {
+                Divider()
+                Button("Add Project…") { app.addProject() }
+                Divider()
+                ProjectMenu(app: app, project: project)
+            } label: {
                 Text(AppState.projectName(project))
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help(project)
             Spacer(minLength: 4)
             Button {
-                NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: project, directoryHint: .isDirectory)])
+                app.newSession(in: project)
             } label: {
-                Image(systemName: "arrow.up.forward.app")
+                Image(systemName: "plus")
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Reveal in Finder")
+            .disabled(!app.connection.isConnected)
+            .help("Start omp in \(AppState.projectName(project)) (⌘N)")
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 6)
-        .help(project)
     }
 }
 
@@ -160,7 +160,7 @@ extension AppState {
     /// Return or a double-click in the Files panel: opens the files among `items` in their project's strip.
     func openFromFiles(_ items: Set<TabKind>) {
         for path in items.compactMap(\.editorPath).sorted() {
-            guard let workspace = editors.workspace(containing: path) ?? filesProject else { continue }
+            guard let workspace = editors.workspace(containing: path) ?? currentProject else { continue }
             openEditor(path, in: workspace)
         }
     }

@@ -115,20 +115,30 @@ public struct TabLayout: Equatable, Sendable {
     /// Shows `tab`. A tab that is not open yet is first appended to the strip of `workspace` (a new strip goes last);
     /// an open tab stays where it is.
     public mutating func open(_ tab: TabKind, in workspace: String) {
-        if !contains(tab) {
-            if let index = strips.firstIndex(where: { $0.workspace == workspace }) {
-                strips[index].tabs.append(tab)
-            } else {
-                strips.append(Strip(workspace: workspace, tabs: [tab]))
-            }
-        }
+        add(tab, in: workspace)
         selection = tab
+    }
+
+    /// Appends `tab` to the strip of `workspace` (a new strip goes last) without showing it; an open tab stays where
+    /// it is.
+    public mutating func add(_ tab: TabKind, in workspace: String) {
+        guard !contains(tab) else { return }
+        if let index = strips.firstIndex(where: { $0.workspace == workspace }) {
+            strips[index].tabs.append(tab)
+        } else {
+            strips.append(Strip(workspace: workspace, tabs: [tab]))
+        }
     }
 
     /// Shows an open tab; a tab that is not open is ignored.
     public mutating func select(_ tab: TabKind) {
         guard contains(tab) else { return }
         selection = tab
+    }
+
+    /// Leaves nothing on screen; the tabs stay open.
+    public mutating func deselect() {
+        selection = nil
     }
 
     /// Closes `tab`. When it was on screen its right neighbour in the strip takes its place, else its left one; closing

@@ -36,10 +36,6 @@ struct OmpIDEApp: App {
                     .keyboardShortcut("w")
                     .disabled(app.tabs.selection == nil)
             }
-            CommandGroup(after: .sidebar) {
-                Button(app.filesVisible ? "Hide Files" : "Show Files") { app.filesVisible.toggle() }
-                    .keyboardShortcut("0", modifiers: [.command, .option])
-            }
             EditorCommands(app: app)
             SessionCommands(app: app)
             SourceControlCommands(app: app)

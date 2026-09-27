@@ -2,21 +2,21 @@ import IDEModel
 import IDEState
 import SwiftUI
 
-/// The window: projects in the sidebar, the open tabs in the middle, the project's files in the
-/// trailing Files panel.
+/// The window: the project in focus in the sidebar (its files or changes, and the menu that switches
+/// projects), its open tabs in the middle. Every session and terminal of a project is one of its tabs.
 struct ContentView: View {
     @Bindable var app: AppState
 
     var body: some View {
         NavigationSplitView(columnVisibility: $app.columnVisibility) {
-            ProjectsSidebar(app: app)
+            ProjectPanel(app: app)
                 .onGeometryChange(for: Double.self) { $0.size.width } action: { app.sidebarWidthChanged($0) }
                 // Outermost: the split view reads the column width from the column's root view.
-                .navigationSplitViewColumnWidth(min: 220, ideal: app.initialSidebarWidth, max: 420)
+                .navigationSplitViewColumnWidth(min: 220, ideal: app.initialSidebarWidth, max: 480)
         } detail: {
             VStack(spacing: 0) {
                 StatusBanners(app: app)
-                if let strip = app.tabs.selectedStrip {
+                if let strip = app.currentStrip {
                     TabStrip(app: app, strip: strip)
                 }
                 Group {
@@ -37,28 +37,15 @@ struct ContentView: View {
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { app.tabContentSizeChanged($0) }
                 StatusBar(app: app)
             }
-            .inspector(isPresented: $app.filesVisible) {
-                FilesPanel(app: app)
-                    .inspectorColumnWidth(min: 220, ideal: 280, max: 520)
-            }
         }
         // Not drawn in the compact toolbar; names the window in the Window menu and Mission Control.
         .navigationTitle(windowTitle)
         // Painted, not material: the compact toolbar would otherwise mirror the selected tab's canvas as a block above it.
         .toolbarBackground(Chrome.surface, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
-        .toolbar {
-            // Flexible space: with no title, the action would otherwise sit at the sidebar.
-            ToolbarItem(placement: .principal) { Spacer() }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    app.filesVisible.toggle()
-                } label: {
-                    Label("Files", systemImage: "sidebar.trailing")
-                }
-                .help("Show or hide the Files panel (⌥⌘0)")
-            }
-        }
+        // The tabs are the list of sessions and terminals: whatever ompd lists gets one.
+        .onChange(of: app.connection.sessions, initial: true) { app.syncTabs() }
+        .onChange(of: app.connection.terminals.terminals) { app.syncTabs() }
         .alert(item: $app.alert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message))
         }
@@ -130,110 +117,7 @@ private struct EmptyDetail: View {
     }
 }
 
-// MARK: - Sidebar
-
-/// The projects, each with its rows: running sessions first, then terminals, then closed sessions. Add Project sits
-/// at the bottom.
-struct ProjectsSidebar: View {
-    @Bindable var app: AppState
-
-    var body: some View {
-        let terminals = app.terminals.byWorkspace(among: app.knownWorkspaces, hosting: app.adoptedTerminals)
-        List(selection: Binding(get: { app.tabs.selection }, set: { if let tab = $0 { app.showTab(tab) } })) {
-            ForEach(app.projects, id: \.self) { project in
-                let sessions = app.connection.workspaces.first { $0.path == project }?.sessions ?? []
-                let running = sessions.filter { !$0.isStopped }
-                let stopped = sessions.filter(\.isStopped)
-                let ptys = terminals[project] ?? []
-                Section {
-                    ForEach(running, id: \.sessionKey) { entry in
-                        // A session running in a terminal (the user typed `omp` there) is shown by that terminal's tab.
-                        SessionRow(entry: entry, title: app.sessionTitle(entry.sessionKey))
-                            .tag(app.tab(for: entry))
-                            .contextMenu { SessionMenu(app: app, entry: entry) }
-                    }
-                    TerminalRows(app: app, terminals: ptys)
-                    ForEach(stopped, id: \.sessionKey) { entry in
-                        SessionRow(entry: entry, title: app.sessionTitle(entry.sessionKey))
-                            .tag(app.tab(for: entry))
-                            .contextMenu { SessionMenu(app: app, entry: entry) }
-                    }
-                    if sessions.isEmpty, ptys.isEmpty {
-                        StartHereRow(app: app, project: project)
-                    }
-                } header: {
-                    ProjectHeader(app: app, project: project)
-                }
-            }
-        }
-        .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            Button {
-                app.addProject()
-            } label: {
-                Label("Add Project", systemImage: "plus")
-                    .font(.system(size: 12))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .help("Add a project folder (⌘O)")
-        }
-        .overlay {
-            if app.projects.isEmpty {
-                ContentUnavailableView {
-                    Text("No Projects")
-                } description: {
-                    Text("Add a folder to start.")
-                } actions: {
-                    Button("Add Project…") { app.addProject() }
-                        .controlSize(.small)
-                }
-            }
-        }
-    }
-}
-
-/// A project's name over its rows, with New Session on hover and everything else in a menu.
-struct ProjectHeader: View {
-    let app: AppState
-    let project: String
-    @State private var hovering = false
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "folder")
-                .foregroundStyle(.secondary)
-            Text(AppState.projectName(project))
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 4)
-            Button {
-                app.newSession(in: project)
-            } label: {
-                Image(systemName: "plus")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .opacity(hovering ? 1 : 0)
-            .disabled(!app.connection.isConnected)
-            .help("Start omp in \(AppState.projectName(project))")
-        }
-        .textCase(nil)
-        .padding(.vertical, 2)
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-        .help(project)
-        .contextMenu { ProjectMenu(app: app, project: project) }
-    }
-}
-
-/// What a project offers: New Session, New Terminal, its files, Finder, and Remove once nothing of it is open.
+/// What the project in focus offers: New Session, New Terminal, Finder, and Remove once nothing of it is open.
 struct ProjectMenu: View {
     let app: AppState
     let project: String
@@ -243,40 +127,12 @@ struct ProjectMenu: View {
             .disabled(!app.connection.isConnected)
         Button("New Terminal") { app.newTerminal(in: project) }
             .disabled(!app.connection.isConnected)
-        Button("Show Files") {
-            app.filesProject = project
-            app.filesVisible = true
-        }
         Divider()
         Button("Reveal in Finder") {
             NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: project, directoryHint: .isDirectory)])
         }
-        Divider()
         Button("Remove Project") { app.removeProject(project) }
             .disabled(!app.canRemoveProject(project))
-    }
-}
-
-/// The one row of a project with nothing running: starts omp there.
-private struct StartHereRow: View {
-    let app: AppState
-    let project: String
-
-    var body: some View {
-        Button {
-            app.newSession(in: project)
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "plus.circle")
-                    .font(.system(size: 11))
-                    .frame(width: 14)
-                Text("Start omp here")
-            }
-            .foregroundStyle(.secondary)
-        }
-        .buttonStyle(.plain)
-        .disabled(!app.connection.isConnected)
-        .selectionDisabled()
     }
 }
 
@@ -296,42 +152,6 @@ struct SessionMenu: View {
         } else {
             Button("Close Session") { app.requestCloseSession(entry.sessionKey) }
                 .disabled(!app.connection.isConnected)
-        }
-    }
-}
-
-/// A session: its state as a dot or spinner, its title, and a status word when something needs the user.
-struct SessionRow: View {
-    let entry: SessionManifestEntry
-    let title: String
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Group {
-                if entry.status.isInProgress {
-                    ProgressView().controlSize(.mini)
-                } else {
-                    StatusDot(color: entry.status.dotColor, hollow: entry.isStopped)
-                }
-            }
-            .frame(width: 14)
-            Text(title)
-                .lineLimit(1)
-            Spacer(minLength: 6)
-            if let trailing {
-                Text(trailing)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .opacity(entry.isStopped ? 0.6 : 1)
-        .help("\(entry.status.explanation). Last active \(AppState.age(of: entry)); started \(entry.createdAt.formatted(date: .abbreviated, time: .shortened))")
-    }
-
-    private var trailing: String? {
-        switch entry.status {
-        case .paused, .interrupted, .needsAttention: entry.status.label
-        case .idle, .busy, .closed, .starting, .resuming: nil
         }
     }
 }
