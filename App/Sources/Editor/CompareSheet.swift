@@ -94,7 +94,8 @@ private struct Legend: View {
     }
 }
 
-private struct DiffLineRow: View {
+/// One line of a unified diff: its old and new numbers, `−`/`+`, and a red or green wash (`DiffSheet`, `GitChangePeek`).
+struct DiffLineRow: View {
     let line: LineDiff.Line
 
     var body: some View {
