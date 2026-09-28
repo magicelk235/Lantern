@@ -51,6 +51,8 @@ final class AppState {
     /// Windows `attach(_:project:)` set up, until they close, and their observers.
     @ObservationIgnored private var windowsAttached: Set<ObjectIdentifier> = []
     @ObservationIgnored private var windowObservers: [ObjectIdentifier: [any NSObjectProtocol]] = [:]
+    /// Tells ompd the last window closed once `windowlessDelay` passed with none open.
+    @ObservationIgnored private var windowlessReport: Task<Void, Never>?
     @ObservationIgnored private var windowsByProject: [String: ObjectIdentifier] = [:]
     /// Size of the area below the tab strip, where a tab's content goes, and whether the strip was showing.
     @ObservationIgnored private var tabContentArea: (size: CGSize, belowStrip: Bool)?
@@ -555,6 +557,7 @@ final class AppState {
             },
         ]
         windowObservers[id] = observers
+        windowsChanged()
     }
 
     private func windowClosing(_ id: ObjectIdentifier, project: String) {
@@ -563,6 +566,35 @@ final class AppState {
         if windowsByProject[project] == id { windowsByProject[project] = nil }
         for observer in windowObservers.removeValue(forKey: id) ?? [] { NotificationCenter.default.removeObserver(observer) }
         if keyProject == project { keyProject = nil }
+        windowsChanged()
+    }
+
+    /// A window closing only to give way to another (the no-project window to the first project's) pauses nothing.
+    private static let windowlessDelay: Duration = .milliseconds(500)
+
+    /// ompd pauses every session while no omp IDE window is open and resumes them when one opens.
+    private func windowsChanged() {
+        windowlessReport?.cancel()
+        windowlessReport = nil
+        guard windowsAttached.isEmpty else {
+            connection.setHasWindow(true)
+            return
+        }
+        windowlessReport = Task { [connection] in
+            try? await Task.sleep(for: Self.windowlessDelay)
+            guard !Task.isCancelled else { return }
+            connection.setHasWindow(false)
+        }
+    }
+
+    /// Quitting: ompd pauses every session now instead of after it notices the app is gone. Waits for ompd a moment
+    /// at most.
+    func prepareToQuit() async {
+        flushState()
+        windowlessReport?.cancel()
+        windowlessReport = nil
+        connection.setHasWindow(false)
+        await connection.presenceReported(within: .milliseconds(500))
     }
 
     /// Shows `pane` in the sidebar.

@@ -6,7 +6,7 @@ import os
 
 /// ompd: owns every omp session (one `SessionSupervisor` per manifest entry, each running omp's TUI on a
 /// session PTY, or — adopted — in a terminal the user typed `omp` into) and every terminal (the PTY pool), and serves
-/// the IDE protocol on `$APP_SUPPORT/run/ompd.sock`. While no omp IDE window is connected, every session is paused.
+/// the IDE protocol on `$APP_SUPPORT/run/ompd.sock`. While no omp IDE window is open, every session is paused.
 ///
 /// Lifecycle: `start()` (manifest, supervisors, socket) → `restore()` (Regime B2: terminals from their snapshots,
 /// every session the user did not close respawned with `--resume`) → … → `shutdown()` (the graceful path).
@@ -68,9 +68,10 @@ public actor Daemon {
     private var shutdownTask: Task<Void, Never>?
     /// Serves the bridge's terminal-mode hellos (`adoptTerminal`).
     private var adoptionTask: Task<Void, Never>?
-    /// Connected omp IDE windows (`ClientKind.app`); `ompd status` and other cli clients do not count.
-    private var appConnections: Set<UUID> = []
-    /// Sleeps out `detachedPauseGrace` once no window is connected, then pauses every session; a grace that was cancelled
+    /// Connected omp IDE apps (`ClientKind.app`) and whether each has a window open; `ompd status` and other cli
+    /// clients do not count.
+    private var appConnections: [UUID: Bool] = [:]
+    /// Sleeps out `detachedPauseGrace` once no window is open, then pauses every session; a grace that was cancelled
     /// or superseded (its `id` no longer here) does nothing.
     private var detachedPause: (id: UUID, task: Task<Void, Never>)?
 
@@ -91,7 +92,7 @@ public actor Daemon {
     // MARK: - Lifecycle
 
     /// Loads the manifest (dropping the previous daemon's runtime state: no PTY and no omp survived it), creates a
-    /// supervisor per session, and starts serving clients. No window is connected yet: unless one connects within
+    /// supervisor per session, and starts serving clients. No window is open yet: unless one opens within
     /// `detachedPauseGrace`, the sessions are paused.
     public func start() async throws {
         precondition(server == nil && shutdownTask == nil, "Daemon.start() called twice")
@@ -124,7 +125,7 @@ public actor Daemon {
         try await server.start()
         self.server = server
         broadcaster.attach(server)
-        if appConnections.isEmpty { scheduleDetachedPause() }
+        windowsChanged(pauseAtOnce: false)
     }
 
     /// Regime B2: terminals come back from their snapshots, and every session the user did not close is
@@ -500,6 +501,10 @@ public actor Daemon {
         router.on(PTYList.self) { [weak self] _, _ in
             PTYList.Result(ptys: try await Self.alive(self).ptys.list())
         }
+        router.on(ClientPresence.self) { [weak self] params, connection in
+            try await Self.alive(self).presence(connection.id, hasWindow: params.hasWindow)
+            return Empty()
+        }
     }
 
     private static func alive(_ daemon: Daemon?) throws -> Daemon {
@@ -507,24 +512,52 @@ public actor Daemon {
         return daemon
     }
 
-    // MARK: - Paused while no window is connected
+    // MARK: - Paused while no window is open
 
-    private func appConnected(_ id: UUID) {
-        appConnections.insert(id)
-        detachedPause?.task.cancel()
-        detachedPause = nil
-        guard pauseDemand.set(false) else { return }
-        daemonLog.notice("an omp IDE window connected; resuming the sessions ompd paused")
-        syncPauses()
+    private var windowOpen: Bool { appConnections.values.contains(true) }
+
+    private func appConnected(_ id: UUID, hasWindow: Bool) {
+        appConnections[id] = hasWindow
+        windowsChanged(pauseAtOnce: false)
+    }
+
+    /// `client.presence`: the app's last window closed or the app is quitting (it says so: the pause is immediate), or
+    /// a window opened.
+    private func presence(_ id: UUID, hasWindow: Bool) {
+        guard appConnections[id] != nil else { return }
+        appConnections[id] = hasWindow
+        windowsChanged(pauseAtOnce: true)
     }
 
     private func appDisconnected(_ id: UUID) {
-        guard appConnections.remove(id) != nil, appConnections.isEmpty, shutdownTask == nil else { return }
-        scheduleDetachedPause()
+        guard appConnections.removeValue(forKey: id) != nil else { return }
+        windowsChanged(pauseAtOnce: false)
+    }
+
+    /// A window open in any app resumes what ompd paused. With none, every session pauses: right away when an app said
+    /// its last window closed, otherwise (a connection dropped, an app connected without a window, ompd started)
+    /// after `detachedPauseGrace`, so an app crash-relaunch or a reconnect blip pauses nothing.
+    private func windowsChanged(pauseAtOnce: Bool) {
+        guard shutdownTask == nil else { return }
+        if windowOpen {
+            cancelDetachedPause()
+            guard pauseDemand.set(false) else { return }
+            daemonLog.notice("an omp IDE window is open; resuming the sessions ompd paused")
+            syncPauses()
+        } else if pauseAtOnce {
+            cancelDetachedPause()
+            pauseEverySession(because: "the last omp IDE window closed")
+        } else if detachedPause == nil, !pauseDemand.isOn {
+            scheduleDetachedPause()
+        }
+    }
+
+    private func cancelDetachedPause() {
+        detachedPause?.task.cancel()
+        detachedPause = nil
     }
 
     private func scheduleDetachedPause() {
-        detachedPause?.task.cancel()
         let id = UUID()
         let grace = configuration.detachedPauseGrace
         detachedPause = (id, Task { [weak self] in
@@ -536,8 +569,13 @@ public actor Daemon {
     private func pauseDetached(_ id: UUID) {
         guard detachedPause?.id == id else { return } // cancelled or superseded meanwhile
         detachedPause = nil
-        guard appConnections.isEmpty, shutdownTask == nil, pauseDemand.set(true) else { return }
-        daemonLog.notice("no omp IDE window for \(self.configuration.detachedPauseGrace, privacy: .public); pausing every session")
+        guard !windowOpen, shutdownTask == nil else { return }
+        pauseEverySession(because: "no omp IDE window for \(configuration.detachedPauseGrace)")
+    }
+
+    private func pauseEverySession(because reason: String) {
+        guard pauseDemand.set(true) else { return }
+        daemonLog.notice("\(reason, privacy: .public); pausing every session")
         syncPauses()
     }
 
@@ -559,7 +597,7 @@ extension Daemon: IDERequestHandler {
     }
 
     public func connectionOpened(_ connection: IDEConnection, hello: Hello) async {
-        if hello.clientKind == .app { appConnected(connection.id) }
+        if hello.clientKind == .app { appConnected(connection.id, hasWindow: hello.hasWindow) }
     }
 
     public func connectionClosed(_ connection: IDEConnection) async {

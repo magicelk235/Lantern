@@ -32,6 +32,18 @@ public enum DaemonStatus: DaemonMethod {
     }
 }
 
+/// An `app` client's windows: `hasWindow` false once its last omp IDE window closed (or the app quits), true when one
+/// opens again. With no connected app holding a window, ompd pauses every session right away; a window
+/// resumes them.
+public enum ClientPresence: DaemonMethod {
+    public static let name = "client.presence"
+    public struct Params: Codable, Sendable, Equatable {
+        public var hasWindow: Bool
+        public init(hasWindow: Bool) { self.hasWindow = hasWindow }
+    }
+    public typealias Result = Empty
+}
+
 // MARK: - Sessions
 
 public enum SessionCreate: DaemonMethod {

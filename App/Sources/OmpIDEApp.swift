@@ -68,9 +68,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         app.addProject()
     }
 
+    /// ompd hears that no window is left (so it pauses every session) before the app goes.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        app.flushState()
-        return .terminateNow
+        Task {
+            await app.prepareToQuit()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

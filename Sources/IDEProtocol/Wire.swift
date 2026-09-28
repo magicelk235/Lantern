@@ -45,17 +45,24 @@ public struct Hello: Sendable, Equatable, Codable {
     public var clientVersion: String
     /// Contents of `$APP_SUPPORT/run/token` (0600).
     public var token: String
-    /// What connects. ompd pauses every session while no `app` client is connected.
+    /// What connects. Only an `app` with a window open keeps the sessions running.
     public var clientKind: ClientKind
+    /// An `app` client has an omp IDE window open. ompd pauses every session while no connected app has one; the app
+    /// reports changes through `ClientPresence`. A hello without it has one (apps before the field).
+    public var hasWindow: Bool
 
-    public init(protocolVersion: Int = ideProtocolVersion, clientVersion: String, token: String, clientKind: ClientKind = .app) {
+    public init(
+        protocolVersion: Int = ideProtocolVersion, clientVersion: String, token: String, clientKind: ClientKind = .app,
+        hasWindow: Bool = true
+    ) {
         self.protocolVersion = protocolVersion
         self.clientVersion = clientVersion
         self.token = token
         self.clientKind = clientKind
+        self.hasWindow = hasWindow
     }
 
-    private enum CodingKeys: String, CodingKey { case protocolVersion, clientVersion, token, clientKind }
+    private enum CodingKeys: String, CodingKey { case protocolVersion, clientVersion, token, clientKind, hasWindow }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -63,6 +70,7 @@ public struct Hello: Sendable, Equatable, Codable {
         clientVersion = try c.decode(String.self, forKey: .clientVersion)
         token = try c.decode(String.self, forKey: .token)
         clientKind = try c.decodeIfPresent(ClientKind.self, forKey: .clientKind) ?? .app
+        hasWindow = try c.decodeIfPresent(Bool.self, forKey: .hasWindow) ?? true
     }
 }
 

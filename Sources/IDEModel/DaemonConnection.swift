@@ -48,11 +48,18 @@ public final class DaemonConnection: TerminalBackend {
     public nonisolated static let noticeLimit = 50
     /// ompd's PTYs: the terminals, and the PTYs the session TUIs run on.
     public let terminals = TerminalRegistry()
+    /// This app has an omp IDE window open. ompd pauses every session while no connected app has one:
+    /// every (re)connect's hello carries it, and changes go to ompd as `client.presence`.
+    public private(set) var hasWindow = false
 
     @ObservationIgnored private var client: IDEClient?
     @ObservationIgnored private var runTask: Task<Void, Never>?
     /// `Welcome.daemonStartedAt` of the ompd the notices came from.
     @ObservationIgnored private var noticesDaemonStartedAt: Date?
+    /// What the current connection's ompd was told last (hello or `client.presence`).
+    @ObservationIgnored private var reportedHasWindow: Bool?
+    /// The latest `client.presence` report; each waits for the one before, so ompd gets them in order.
+    @ObservationIgnored private var presenceReport: Task<Void, Never>?
 
     public init(paths: AppSupportPaths = .standard, clientVersion: String, backoff: Backoff = Backoff()) {
         self.paths = paths
@@ -87,6 +94,46 @@ public final class DaemonConnection: TerminalBackend {
         runTask?.cancel()
         runTask = nil
         await client?.close()
+    }
+
+    /// A window of this app opened (`true`) or its last one closed. ompd hears of it now if connected, otherwise in
+    /// the next hello.
+    public func setHasWindow(_ hasWindow: Bool) {
+        guard hasWindow != self.hasWindow else { return }
+        self.hasWindow = hasWindow
+        queuePresenceReport()
+    }
+
+    /// Waits until ompd was told the latest `hasWindow` (or could not be: not connected, or an ompd from before
+    /// `client.presence`), at most `timeout`.
+    public func presenceReported(within timeout: Duration) async {
+        guard let report = presenceReport else { return }
+        let deadline = Task {
+            try? await Task.sleep(for: timeout)
+            report.cancel()
+        }
+        await report.value
+        deadline.cancel()
+    }
+
+    /// Tells ompd `hasWindow` after the reports before it; cancelling it cancels those too.
+    private func queuePresenceReport() {
+        let previous = presenceReport
+        presenceReport = Task {
+            await withTaskCancellationHandler {
+                await previous?.value
+            } onCancel: {
+                previous?.cancel()
+            }
+            await reportPresence()
+        }
+    }
+
+    private func reportPresence() async {
+        guard let client, reportedHasWindow != hasWindow else { return }
+        let hasWindow = hasWindow
+        reportedHasWindow = hasWindow
+        _ = try? await client.call(ClientPresence.self, .init(hasWindow: hasWindow))
     }
 
     // MARK: - Sessions
@@ -165,9 +212,12 @@ public final class DaemonConnection: TerminalBackend {
         while !Task.isCancelled {
             let client: IDEClient
             let welcome: Welcome
+            let hasWindow = hasWindow
             do {
                 let token = try readToken()
-                client = IDEClient(socketPath: paths.socket.path(percentEncoded: false), token: token, clientVersion: clientVersion)
+                client = IDEClient(
+                    socketPath: paths.socket.path(percentEncoded: false), token: token, clientVersion: clientVersion,
+                    hasWindow: hasWindow)
                 welcome = try await client.connect()
             } catch {
                 if Task.isCancelled { return }
@@ -177,15 +227,18 @@ public final class DaemonConnection: TerminalBackend {
                 continue
             }
             failures = 0
-            await serve(client, welcome: welcome)
+            await serve(client, welcome: welcome, hasWindow: hasWindow)
             if Task.isCancelled { return }
             status = .connecting
         }
     }
 
-    /// Serves one connection until it ends.
-    private func serve(_ client: IDEClient, welcome: Welcome) async {
+    /// Serves one connection until it ends. `hasWindow`: what its hello said.
+    private func serve(_ client: IDEClient, welcome: Welcome, hasWindow: Bool) async {
         self.client = client
+        reportedHasWindow = hasWindow
+        // A window opened or closed while the hello was on its way.
+        if hasWindow != self.hasWindow { queuePresenceReport() }
         status = .connected(welcome)
         if welcome.daemonStartedAt != noticesDaemonStartedAt {
             // A restarted ompd starts over (e.g. no longer read-only).

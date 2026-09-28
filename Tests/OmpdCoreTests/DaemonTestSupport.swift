@@ -51,10 +51,12 @@ struct DaemonFixture {
         try await DaemonFixture(temp: temp, omp: omp, pausable: pausable, pauseGrace: pauseGrace)
     }
 
-    /// An omp IDE window (`app`), or a command-line client like `ompd status` (`cli`).
-    func client(_ kind: ClientKind = .app) async throws -> Connected {
+    /// An omp IDE window (`app`; `hasWindow` false: an app whose windows are all closed), or a command-line client
+    /// like `ompd status` (`cli`).
+    func client(_ kind: ClientKind = .app, hasWindow: Bool = true) async throws -> Connected {
         let client = IDEClient(
-            socketPath: paths.socket.path(percentEncoded: false), token: token, clientVersion: "daemon-tests", clientKind: kind)
+            socketPath: paths.socket.path(percentEncoded: false), token: token, clientVersion: "daemon-tests", clientKind: kind,
+            hasWindow: hasWindow)
         let welcome = try await client.connect()
         return Connected(client: client, welcome: welcome)
     }

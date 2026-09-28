@@ -34,17 +34,20 @@ private let terminal = PTYInfo(ptyId: "t1", cwd: "/Users/me", command: ["/bin/zs
 @Suite struct ClientFrameContractTests {
     @Test func helloIsTheExactWireShape() throws {
         let hello = ClientFrame.hello(Hello(protocolVersion: 2, clientVersion: "0.1 (7)", token: "abc"))
-        #expect(try encode(hello) == #"{"clientKind":"app","clientVersion":"0.1 (7)","protocolVersion":2,"token":"abc","type":"hello"}"#)
+        #expect(try encode(hello) == #"{"clientKind":"app","clientVersion":"0.1 (7)","hasWindow":true,"protocolVersion":2,"token":"abc","type":"hello"}"#)
         #expect(try wire(hello).decoded == hello)
         let cli = ClientFrame.hello(Hello(clientVersion: "ompd-cli", token: "abc", clientKind: .cli))
         #expect(try wire(cli).json["clientKind"] == "cli")
         #expect(try wire(cli).decoded == cli)
     }
 
-    /// Only omp IDE windows keep the sessions running; a client that does not say what it is counts as one.
+    /// Only omp IDE windows keep the sessions running; a client that does not say what it is, or whether it has a
+    /// window, counts as an app with one (apps from before the fields).
     @Test func aHelloWithoutAClientKindIsAnAppWindow() throws {
         let frame = try decode(ClientFrame.self, #"{"type":"hello","protocolVersion":4,"clientVersion":"0.1","token":"abc"}"#)
-        #expect(frame == .hello(Hello(protocolVersion: 4, clientVersion: "0.1", token: "abc", clientKind: .app)))
+        #expect(frame == .hello(Hello(protocolVersion: 4, clientVersion: "0.1", token: "abc", clientKind: .app, hasWindow: true)))
+        let windowless = try decode(ClientFrame.self, #"{"type":"hello","protocolVersion":4,"clientVersion":"0.1","token":"abc","hasWindow":false}"#)
+        #expect(windowless == .hello(Hello(protocolVersion: 4, clientVersion: "0.1", token: "abc", hasWindow: false)))
         #expect(throws: DecodingError.self) {
             try decode(ClientFrame.self, #"{"type":"hello","protocolVersion":4,"clientVersion":"0.1","token":"abc","clientKind":"robot"}"#)
         }

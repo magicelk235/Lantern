@@ -59,6 +59,31 @@ struct DaemonPauseTests {
         await fixture.daemon.shutdown()
     }
 
+    @Test func anAppClosingItsLastWindowPausesEverySessionAtOnceAndAWindowResumesThem() async throws {
+        let fixture = try await DaemonFixture(pauseGrace: .seconds(30))
+        let app = try await fixture.client()
+        let key = try await fixture.createSession(app).sessionKey
+        try await app.waitForStatus(key, .idle)
+        await fixture.bridge.push("activity", ["state": "busy"], to: key)
+        try await app.waitForStatus(key, .busy)
+
+        _ = try await app.client.call(ClientPresence.self, .init(hasWindow: false))
+        try await app.waitForStatus(key, .paused, timeout: .seconds(5))
+        #expect(await fixture.bridge.pausedBy(key) == .daemon)
+
+        // Another app process connecting with no window open does not resume them.
+        let windowless = try await fixture.client(hasWindow: false)
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(try await windowless.entry(key).status == .paused)
+
+        _ = try await windowless.client.call(ClientPresence.self, .init(hasWindow: true))
+        try await app.waitForStatus(key, .busy)
+        #expect(await fixture.bridge.calls == ["session.pause", "session.resume"])
+        await windowless.close()
+        await app.close()
+        await fixture.daemon.shutdown()
+    }
+
     @Test func cliClientsNeitherKeepSessionsRunningNorResumeThem() async throws {
         let fixture = try await DaemonFixture(pauseGrace: .milliseconds(500))
         let window = try await fixture.client()

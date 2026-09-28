@@ -17,9 +17,9 @@ extension PauseOwner {
     }
 }
 
-/// Whether ompd wants every session paused: no omp IDE window (`ClientKind.app`) has been connected for the grace
-/// period. The daemon flips it; supervisors also read it when a bridge says hello, so an omp spawned while
-/// no window is open is paused right away.
+/// Whether ompd wants every session paused: no omp IDE window is open — an app said its last one closed,
+/// or no app with one has been connected for the grace period. The daemon flips it; supervisors also read it when a
+/// bridge says hello, so an omp spawned while no window is open is paused right away.
 public final class PauseDemand: Sendable {
     private let state = OSAllocatedUnfairLock(initialState: false)
 
