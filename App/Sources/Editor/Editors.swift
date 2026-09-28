@@ -66,6 +66,8 @@ final class Editors {
     /// Cancel in a sheet on `window`. The document is closed when the answer is yes.
     func closeIfConfirmed(_ path: String, window: NSWindow?) async -> Bool {
         guard let document = documents[path] else { return true }
+        // Autosave writes what it can first; what is left is a conflict or a vanished file, which the user decides.
+        document.autosaveNow()
         if document.isDirty {
             let alert = NSAlert()
             alert.messageText = "Do you want to save the changes you made to “\(document.name)”?"
@@ -114,8 +116,9 @@ final class Editors {
 
     /// Writes every hot-exit copy still waiting for typing to pause (quit, resign key, sleep).
     func flush() {
-        for document in documents.values where document.hotExitPending {
-            document.writeHotExit()
+        for document in documents.values {
+            document.autosaveNow()
+            if document.hotExitPending { document.writeHotExit() }
         }
     }
 

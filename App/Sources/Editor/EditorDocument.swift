@@ -58,6 +58,8 @@ final class EditorDocument {
     /// Take the keyboard focus when the view next appears (opened from the navigator).
     @ObservationIgnored var focusOnAppear = false
     @ObservationIgnored private var hotExitWrite: Task<Void, Never>?
+    /// The pending autosave: the edits are written to the file once typing pauses.
+    @ObservationIgnored private var autosave: Task<Void, Never>?
     /// When the oldest edit not in the hot-exit copy yet was made.
     @ObservationIgnored private var hotExitDueSince: ContinuousClock.Instant?
     /// `state.sqlite` holds a hot-exit copy for this path.
@@ -286,7 +288,32 @@ final class EditorDocument {
         buffer.textDidChange(utf16Count: textView.textStorage.length) { textView.string }
         self.buffer = buffer
         publish()
-        if isDirty { scheduleHotExit() } else { clearHotExit() }
+        if isDirty { scheduleHotExit(); scheduleAutosave() } else { clearHotExit(); autosave?.cancel() }
+    }
+
+    // MARK: - Autosave
+
+    /// Edits are saved by themselves once typing pauses for this long (hot-exit covers the gap).
+    static let autosaveDelay: Duration = .seconds(1)
+
+    /// Saves after `autosaveDelay` without edits, unless the file changed on disk underneath (then the conflict
+    /// notice decides) or is gone (Save puts it back on purpose).
+    private func scheduleAutosave() {
+        autosave?.cancel()
+        autosave = Task { [weak self] in
+            try? await Task.sleep(for: Self.autosaveDelay)
+            guard !Task.isCancelled, let self else { return }
+            autosaveNow()
+        }
+    }
+
+    /// Writes the edits now if nothing stands in the way (the window resigns key, the tab closes).
+    func autosaveNow() {
+        autosave?.cancel()
+        autosave = nil
+        guard isDirty, conflict == nil, gone == nil, content == .text else { return }
+        // A failed write keeps the edits (and their hot-exit copy); ⌘S reports the reason.
+        try? save()
     }
 
     fileprivate func selectionDidChange(_ positions: [CursorPosition]) {

@@ -41,6 +41,7 @@ struct ProjectWindow: View {
                         EmptyDetail(app: app, project: project.isEmpty ? nil : project)
                     }
                 }
+                .clipped()
                 // Where a new tab's emulator will go: its PTY starts at that size.
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { app.tabContentSizeChanged($0) }
                 StatusBar(app: app, project: project)

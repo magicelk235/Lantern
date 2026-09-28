@@ -137,8 +137,9 @@ private struct FilesOutline: View {
 
     var body: some View {
         let tree = app.editors.tree(for: project)
+        let marks = GitMarks(repository: app.editors.repositories.repository(for: project), root: project)
         List(selection: Binding(get: { app.filesSelection }, set: { app.selectInFiles($0) })) {
-            FileRows(app: app, tree: tree, folder: tree.root)
+            FileRows(app: app, tree: tree, folder: tree.root, marks: marks)
         }
         .listStyle(.inset)
         .scrollContentBackground(.hidden)
@@ -274,6 +275,7 @@ private struct FileRows: View {
     let app: AppState
     let tree: FileTree
     let folder: String
+    let marks: GitMarks
 
     var body: some View {
         if let failure = tree.failures[folder] {
@@ -284,9 +286,11 @@ private struct FileRows: View {
         ForEach(tree.children[folder] ?? []) { entry in
             if entry.isDirectory {
                 DisclosureGroup(isExpanded: expansion(of: entry.path, in: tree)) {
-                    FileRows(app: app, tree: tree, folder: entry.path)
+                    FileRows(app: app, tree: tree, folder: entry.path, marks: marks)
                 } label: {
-                    FileRow(name: entry.name, path: entry.path, isDirectory: true, isIgnored: tree.isIgnored(entry.path), isDirty: false)
+                    FileRow(
+                        name: entry.name, path: entry.path, isDirectory: true, isIgnored: tree.isIgnored(entry.path), isDirty: false,
+                        mark: marks.folders[entry.path])
                         .contentShape(Rectangle())
                         .onTapGesture { tree.setExpanded(entry.path, !tree.isExpanded(entry.path)) }
                         .contextMenu { FileItemMenu(app: app, project: tree.root, path: entry.path, isDirectory: true) }
@@ -295,7 +299,7 @@ private struct FileRows: View {
             } else {
                 FileRow(
                     name: entry.name, path: entry.path, isDirectory: false, isIgnored: tree.isIgnored(entry.path),
-                    isDirty: app.editors.document(for: entry.path)?.isDirty ?? false
+                    isDirty: app.editors.document(for: entry.path)?.isDirty ?? false, mark: marks.files[entry.path]
                 )
                 .tag(TabKind.editor(path: entry.path))
                 .listRowSeparator(.hidden)
@@ -312,8 +316,8 @@ private struct FileRow: View {
     let isIgnored: Bool
     /// Open with unsaved edits.
     let isDirty: Bool
-    /// The folder, for find results.
-    var detail: String?
+    /// What git says about it (or about something inside it).
+    var mark: GitMarks.Mark?
 
     var body: some View {
         HStack(spacing: 4) {
@@ -324,19 +328,20 @@ private struct FileRow: View {
             Text(name)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            if let detail {
-                Text(detail)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
-            }
+                .foregroundStyle(mark.map { AnyShapeStyle($0.color) } ?? AnyShapeStyle(.primary))
             if isDirty {
-                Spacer(minLength: 4)
                 Circle()
                     .fill(.primary)
                     .frame(width: 6, height: 6)
                     .help("Unsaved changes")
+            }
+            if let mark, !isDirectory {
+                Spacer(minLength: 4)
+                Text(mark.letter)
+                    .font(.system(size: 11, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(mark.color)
+                    .help(mark.explanation)
             }
         }
         .opacity(isIgnored ? 0.5 : 1)
@@ -358,6 +363,52 @@ enum FileSymbol {
         case "png", "jpg", "jpeg", "gif", "heic", "svg", "pdf", "icns": return "photo"
         case "sh", "zsh", "bash", "fish": return "terminal"
         default: return "doc.text"
+        }
+    }
+}
+
+/// What git says about the files of a project, for the Files pane: new files (untracked or added) in green,
+/// changed ones in yellow; a folder carries the mark of what it holds (changed wins).
+@MainActor
+struct GitMarks {
+    enum Mark {
+        case added, modified
+
+        var color: Color {
+            switch self {
+            case .added: Chrome.gitAdded
+            case .modified: Chrome.gitModified
+            }
+        }
+
+        var letter: String {
+            switch self {
+            case .added: "A"
+            case .modified: "M"
+            }
+        }
+
+        var explanation: String {
+            switch self {
+            case .added: "New to the repository"
+            case .modified: "Changed since the last commit"
+            }
+        }
+    }
+
+    private(set) var files: [String: Mark] = [:]
+    private(set) var folders: [String: Mark] = [:]
+
+    init(repository: GitRepository, root: String) {
+        guard repository.isRepository else { return }
+        for change in repository.changes {
+            let mark: Mark = change.isNewToHead ? .added : .modified
+            files[change.path] = mark
+            var folder = (change.path as NSString).deletingLastPathComponent
+            while folder.hasPrefix(root), folder != root {
+                if folders[folder] != .modified { folders[folder] = mark }
+                folder = (folder as NSString).deletingLastPathComponent
+            }
         }
     }
 }

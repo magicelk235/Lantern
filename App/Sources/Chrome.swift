@@ -10,6 +10,15 @@ enum Chrome {
     /// Reads a step behind the canvas in light and dark mode alike (`windowBackgroundColor` is nearly white in light).
     static let surface = Color(nsColor: .underPageBackgroundColor)
     static let hairline = Color(nsColor: .separatorColor)
+
+    /// Git marks in the Files pane: a file (or a folder holding one) new to the repository, or changed.
+    /// The system green and yellow in dark mode; darker in light mode, where those two fail against white.
+    static let gitAdded = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .systemGreen : NSColor(red: 0.12, green: 0.5, blue: 0.2, alpha: 1)
+    })
+    static let gitModified = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .systemYellow : NSColor(red: 0.62, green: 0.45, blue: 0, alpha: 1)
+    })
 }
 
 /// One line about a tab or the app, and what the user can do about it: why a session's TUI is not on screen, that a
