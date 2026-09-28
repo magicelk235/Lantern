@@ -9,6 +9,7 @@ import IDEState
 /// the tab is open, so undo, selection and scroll survive switching tabs; an `EditorBuffer` measures it against the file
 /// on disk. Unsaved text is copied to `state.sqlite` ~300 ms after typing pauses (hot-exit), and the file is
 /// re-read when FSEvents reports a change: a buffer without edits follows it silently, one with edits gets a conflict.
+/// A `GitGutterView` over the gutter marks what differs from HEAD.
 @MainActor @Observable
 final class EditorDocument {
     enum Content: Equatable {
@@ -46,11 +47,14 @@ final class EditorDocument {
     @ObservationIgnored private(set) var controller: TextViewController?
     @ObservationIgnored private var buffer: EditorBuffer?
     @ObservationIgnored private let persistence: StatePersistence
+    @ObservationIgnored private let repository: GitRepository
     /// The file as last read or written, to skip re-reading it when nothing touched it.
     @ObservationIgnored private var stamp: FileStamp?
     /// Receives the text view's changes; the controller only holds it weakly.
     @ObservationIgnored private var coordinator: Coordinator?
     @ObservationIgnored private var scrollObserver: (any NSObjectProtocol)?
+    /// Marks the gutter with what differs from HEAD; made with the controller and dropped with it.
+    @ObservationIgnored private var gitGutter: GitGutterView?
     /// Where the view scrolls when it first appears (restored from the previous run).
     @ObservationIgnored private var pendingScroll: CGPoint?
     /// Indentation the file uses, detected when it opened.
@@ -66,11 +70,16 @@ final class EditorDocument {
     @ObservationIgnored private var hotExitStored: Bool
 
     /// Opens `path` from disk, or from `restored` (its hot-exit copy), which wins: the unsaved text comes back even if
-    /// the file changed meanwhile. `savedUI` puts the selection and scroll position back.
-    init(path: String, workspace: String, restored: DirtyBuffer?, savedUI: EditorUIState?, persistence: StatePersistence) {
+    /// the file changed meanwhile. `savedUI` puts the selection and scroll position back; `repository` is the
+    /// project's, whose refreshes tell the gutter marks when HEAD moved.
+    init(
+        path: String, workspace: String, restored: DirtyBuffer?, savedUI: EditorUIState?, persistence: StatePersistence,
+        repository: GitRepository
+    ) {
         self.path = path
         self.workspace = workspace
         self.persistence = persistence
+        self.repository = repository
         hotExitStored = restored != nil
         content = .missing
         stamp = FileStamp(path: path)
@@ -90,6 +99,7 @@ final class EditorDocument {
         self.buffer = buffer
         publish()
         clearHotExit()
+        gitGutter?.textDidSave()
     }
 
     /// Throws the edits away for the file as it is on disk now (Revert to Saved, and Reload in a conflict).
@@ -213,19 +223,27 @@ final class EditorDocument {
             cursorPositions: selections, highlightProviders: [TreeSitterClient()], coordinators: [coordinator])
         self.coordinator = coordinator
         self.controller = controller
+        let gitGutter = GitGutterView(path: path, textView: controller.textView, repository: repository)
+        gitGutter.refresh()
+        self.gitGutter = gitGutter
         if let savedUI, savedUI.scrollX != 0 || savedUI.scrollY != 0 {
             pendingScroll = CGPoint(x: savedUI.scrollX, y: savedUI.scrollY)
         }
         scrollObserver = NotificationCenter.default.addObserver(
             forName: TextViewController.scrollPositionDidUpdateNotification, object: controller, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.saveUI() }
+            MainActor.assumeIsolated {
+                self?.saveUI()
+                self?.gitGutter?.needsDisplay = true
+            }
         }
     }
 
     private func tearDownController() {
         if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
         scrollObserver = nil
+        gitGutter?.detach()
+        gitGutter = nil
         controller = nil
         coordinator = nil
         caret = nil
@@ -288,6 +306,7 @@ final class EditorDocument {
         buffer.textDidChange(utf16Count: textView.textStorage.length) { textView.string }
         self.buffer = buffer
         publish()
+        gitGutter?.textDidChange()
         if isDirty { scheduleHotExit(); scheduleAutosave() } else { clearHotExit(); autosave?.cancel() }
     }
 
@@ -324,6 +343,7 @@ final class EditorDocument {
 
     fileprivate func controllerDidAppear() {
         guard let controller else { return }
+        gitGutter?.attach(to: controller)
         if let pendingScroll {
             self.pendingScroll = nil
             // After the first layout pass, which sizes the text view to its content.

@@ -47,7 +47,7 @@ final class Editors {
         if let document = documents[path] { return document }
         let document = EditorDocument(
             path: path, workspace: workspace, restored: restoredBuffers.removeValue(forKey: path),
-            savedUI: persistence.editorUI[path], persistence: persistence)
+            savedUI: persistence.editorUI[path], persistence: persistence, repository: repositories.repository(for: workspace))
         documents[path] = document
         watch(Self.watchRoot(for: path, in: workspace))
         return document
