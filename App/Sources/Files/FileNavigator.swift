@@ -143,7 +143,7 @@ private struct FilesOutline: View {
         .listStyle(.inset)
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 22)
-        .fileNavigatorActions(app)
+        .fileNavigatorActions(app, project: project)
         .task(id: project) { tree.setExpanded(tree.root, true) }
     }
 }
@@ -205,15 +205,16 @@ private struct ProjectsPane: View {
 }
 
 extension View {
-    /// Return and double-click open the files selected in the Files panel; right-click offers Open and Reveal in
-    /// Finder for them.
-    func fileNavigatorActions(_ app: AppState) -> some View {
-        modifier(FileNavigatorActions(app: app))
+    /// Return and double-click open the files selected in the Files pane; right-click offers `FileItemMenu` for one
+    /// file (Open and Reveal in Finder for several), and the project folder's own menu on the empty area.
+    func fileNavigatorActions(_ app: AppState, project: String) -> some View {
+        modifier(FileNavigatorActions(app: app, project: project))
     }
 }
 
 private struct FileNavigatorActions: ViewModifier {
     let app: AppState
+    let project: String
     @FocusState private var focused: Bool
 
     func body(content: Content) -> some View {
@@ -221,11 +222,15 @@ private struct FileNavigatorActions: ViewModifier {
             .focused($focused)
             .contextMenu(forSelectionType: TabKind.self) { items in
                 let paths = items.compactMap(\.editorPath).sorted()
-                if !paths.isEmpty {
+                if paths.count == 1, let path = paths.first {
+                    FileItemMenu(app: app, project: project, path: path, isDirectory: false)
+                } else if !paths.isEmpty {
                     Button("Open") { app.openFromFiles(items) }
                     Button("Reveal in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting(paths.map { URL(filePath: $0) })
                     }
+                } else {
+                    FileItemMenu(app: app, project: project, path: project, isDirectory: true)
                 }
             } primaryAction: { items in
                 app.openFromFiles(items)
@@ -284,6 +289,7 @@ private struct FileRows: View {
                     FileRow(name: entry.name, path: entry.path, isDirectory: true, isIgnored: tree.isIgnored(entry.path), isDirty: false)
                         .contentShape(Rectangle())
                         .onTapGesture { tree.setExpanded(entry.path, !tree.isExpanded(entry.path)) }
+                        .contextMenu { FileItemMenu(app: app, project: tree.root, path: entry.path, isDirectory: true) }
                 }
                 .listRowSeparator(.hidden)
             } else {

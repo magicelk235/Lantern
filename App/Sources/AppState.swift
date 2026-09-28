@@ -162,6 +162,17 @@ final class AppState {
         }
     }
 
+    /// Closes the editor tabs of `path` and of everything under it; false when the user kept an unsaved one.
+    func closeEditors(under path: String) async -> Bool {
+        for tab in tabs.tabs {
+            guard let open = tab.editorPath, open == path || open.hasPrefix(path + "/") else { continue }
+            guard await editors.closeIfConfirmed(open, window: NSApp.keyWindow) else { return false }
+            tabs.close(tab)
+            saveWindow()
+        }
+        return true
+    }
+
     /// Closes a session's tab without touching the session.
     private func dropSessionTab(_ sessionKey: SessionKey) {
         guard tabs.contains(.session(sessionKey)) else { return }
