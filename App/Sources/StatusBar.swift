@@ -6,18 +6,20 @@ import SwiftUI
 /// tab on screen (a session's status, a terminal's, the editor's caret and language). The only place these live.
 struct StatusBar: View {
     let app: AppState
+    /// The window's project; empty for the window of no project.
+    let project: String
 
     var body: some View {
         HStack(spacing: 14) {
-            if let strip = app.tabs.selectedStrip {
-                Text((strip.workspace as NSString).abbreviatingWithTildeInPath)
+            if !project.isEmpty {
+                Text((project as NSString).abbreviatingWithTildeInPath)
                     .lineLimit(1)
                     .truncationMode(.head)
-                    .help(strip.workspace)
+                    .help(project)
             }
             connection
             Spacer(minLength: 8)
-            if let tab = app.tabs.selection {
+            if !project.isEmpty, let tab = app.selectedTab(in: project) {
                 TabState(app: app, tab: tab)
             }
         }

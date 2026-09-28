@@ -26,6 +26,26 @@ import Testing
         #expect(layout.selectedSession == "a1")
     }
 
+    @Test func eachStripRemembersTheTabItShowedLastAcrossSwitchesClosesAndReloads() throws {
+        var layout = TabLayout()
+        for key in ["a1", "a2", "a3"] { layout.open(.session(key), in: "/w/a") }
+        layout.select(.session("a2"))
+        layout.open(.session("b1"), in: "/w/b")
+        #expect(layout.strips[0].preferredTab == .session("a2"), "the strip keeps a2 while b is on screen")
+        #expect(layout.strips[1].preferredTab == .session("b1"))
+
+        layout.deselect()
+        #expect(layout.selection == nil && layout.strips[1].preferredTab == .session("b1"), "an empty detail area forgets nothing")
+
+        layout.close(.session("a2"))
+        #expect(layout.strips[0].preferredTab == .session("a3"), "a closed remembered tab hands over to its neighbour")
+
+        let stored = try JSONDecoder().decode(TabLayout.self, from: try JSONEncoder().encode(layout))
+        #expect(stored.strips.map(\.preferredTab) == [.session("a3"), .session("b1")])
+        let old = Data(#"{"strips":[{"tabs":[{"id":"x","kind":"session"},{"id":"y","kind":"session"}],"workspace":"/w"}]}"#.utf8)
+        #expect(try JSONDecoder().decode(TabLayout.self, from: old).strips[0].preferredTab == .session("x"), "layouts without a remembered tab fall back to the first")
+    }
+
     @Test func closingTheShownTabShowsItsRightNeighbourElseItsLeftOne() {
         var layout = TabLayout()
         for key in ["a1", "a2", "a3"] { layout.open(.session(key), in: "/w/a") }

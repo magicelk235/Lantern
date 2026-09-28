@@ -71,8 +71,20 @@ public struct TabLayout: Equatable, Sendable {
         /// The workspace folder the strip's tabs belong to.
         public var workspace: String
         public var tabs: [TabKind]
+        /// The strip's tab that was on screen last: what the strip shows again when its workspace comes back into
+        /// focus. Always one of `tabs`, or nil.
+        public var lastSelected: TabKind?
 
         public var id: String { workspace }
+
+        public init(workspace: String, tabs: [TabKind], lastSelected: TabKind? = nil) {
+            self.workspace = workspace
+            self.tabs = tabs
+            self.lastSelected = tabs.contains { $0 == lastSelected } ? lastSelected : nil
+        }
+
+        /// The tab to show for the strip: the last one shown, else the first.
+        public var preferredTab: TabKind? { lastSelected ?? tabs.first }
     }
 
     public private(set) var strips: [Strip] = []
@@ -89,11 +101,21 @@ public struct TabLayout: Equatable, Sendable {
             let tabs = strip.tabs.filter { seen.insert($0).inserted }
             if let index = self.strips.firstIndex(where: { $0.workspace == strip.workspace }) {
                 self.strips[index].tabs += tabs
+                if self.strips[index].lastSelected == nil, tabs.contains(where: { $0 == strip.lastSelected }) {
+                    self.strips[index].lastSelected = strip.lastSelected
+                }
             } else if !tabs.isEmpty {
-                self.strips.append(Strip(workspace: strip.workspace, tabs: tabs))
+                self.strips.append(Strip(workspace: strip.workspace, tabs: tabs, lastSelected: strip.lastSelected))
             }
         }
         self.selection = selection.flatMap { seen.contains($0) ? $0 : nil }
+        remember(self.selection)
+    }
+
+    /// Notes `tab` as the last shown of its strip.
+    private mutating func remember(_ tab: TabKind?) {
+        guard let tab, let index = strips.firstIndex(where: { $0.tabs.contains(tab) }) else { return }
+        strips[index].lastSelected = tab
     }
 
     /// The strip of the tab on screen.
@@ -117,6 +139,7 @@ public struct TabLayout: Equatable, Sendable {
     public mutating func open(_ tab: TabKind, in workspace: String) {
         add(tab, in: workspace)
         selection = tab
+        remember(tab)
     }
 
     /// Appends `tab` to the strip of `workspace` (a new strip goes last) without showing it; an open tab stays where
@@ -134,6 +157,7 @@ public struct TabLayout: Equatable, Sendable {
     public mutating func select(_ tab: TabKind) {
         guard contains(tab) else { return }
         selection = tab
+        remember(tab)
     }
 
     /// Leaves nothing on screen; the tabs stay open.
@@ -149,9 +173,9 @@ public struct TabLayout: Equatable, Sendable {
         else { return }
         strips[stripIndex].tabs.remove(at: tabIndex)
         let remaining = strips[stripIndex].tabs
-        if selection == tab {
-            selection = remaining.isEmpty ? nil : remaining[min(tabIndex, remaining.count - 1)]
-        }
+        let neighbour = remaining.isEmpty ? nil : remaining[min(tabIndex, remaining.count - 1)]
+        if selection == tab { selection = neighbour }
+        if strips[stripIndex].lastSelected == tab { strips[stripIndex].lastSelected = neighbour }
         if remaining.isEmpty { strips.remove(at: stripIndex) }
     }
 
@@ -162,6 +186,7 @@ public struct TabLayout: Equatable, Sendable {
         else { return }
         strips[stripIndex].tabs[tabIndex] = new
         if selection == old { selection = new }
+        if strips[stripIndex].lastSelected == old { strips[stripIndex].lastSelected = new }
     }
 }
 
@@ -171,6 +196,8 @@ extension TabLayout: Codable {
     private struct StoredStrip: Codable {
         var workspace: String
         var tabs: [StoredTab]
+        /// Absent in layouts written before strips remembered their last tab.
+        var selected: StoredTab?
     }
 
     /// A tab that decodes to nil instead of failing when its kind is unknown (written by a newer build).
@@ -193,14 +220,15 @@ extension TabLayout: Codable {
         let strips = try container.decode([StoredStrip].self, forKey: .strips)
         let selection = try container.decodeIfPresent(StoredTab.self, forKey: .selection)?.tab
         self.init(
-            strips: strips.map { Strip(workspace: $0.workspace, tabs: $0.tabs.compactMap(\.tab)) },
+            strips: strips.map { Strip(workspace: $0.workspace, tabs: $0.tabs.compactMap(\.tab), lastSelected: $0.selected?.tab) },
             selection: selection)
     }
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(
-            strips.map { StoredStrip(workspace: $0.workspace, tabs: $0.tabs.map(StoredTab.init)) }, forKey: .strips)
+            strips.map { StoredStrip(workspace: $0.workspace, tabs: $0.tabs.map(StoredTab.init), selected: $0.lastSelected.map(StoredTab.init)) },
+            forKey: .strips)
         try container.encodeIfPresent(selection.map(StoredTab.init), forKey: .selection)
     }
 }

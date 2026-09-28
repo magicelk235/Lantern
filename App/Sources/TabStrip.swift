@@ -30,7 +30,7 @@ struct TabStrip: View {
                                 tab: tab, title: title(of: tab), entry: tab.sessionKey.flatMap(app.entry(for:)) ?? hosted,
                                 terminalExited: hosted == nil ? tab.ptyId.map { app.terminals.model($0)?.hasExited == true } : nil,
                                 document: tab.editorPath.flatMap(app.editors.document(for:)),
-                                isSelected: app.tabs.selection == tab, width: width,
+                                isSelected: strip.preferredTab == tab, width: width,
                                 select: { app.selectTab(tab) }, close: { app.closeTab(tab) }
                             )
                             .contextMenu { TabMenu(app: app, tab: tab) }

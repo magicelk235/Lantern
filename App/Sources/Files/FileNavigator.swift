@@ -41,12 +41,14 @@ enum SidebarPane: String, CaseIterable {
 /// adds one) with its files or its git changes, or the list of projects.
 struct SidebarPaneView: View {
     @Bindable var app: AppState
+    /// The window's project; empty for the window of no project.
+    let project: String
 
     var body: some View {
         VStack(spacing: 0) {
             switch app.pane {
             case .files:
-                if let project = app.currentProject {
+                if !project.isEmpty {
                     ProjectHeader(app: app, project: project)
                     Divider()
                     FilesOutline(app: app, project: project)
@@ -54,7 +56,7 @@ struct SidebarPaneView: View {
                     noProject
                 }
             case .changes:
-                if let project = app.currentProject {
+                if !project.isEmpty {
                     ProjectHeader(app: app, project: project)
                     Divider()
                     SourceControlPanel(app: app, repository: app.editors.repositories.repository(for: project))
@@ -64,7 +66,7 @@ struct SidebarPaneView: View {
                     noProject
                 }
             case .projects:
-                ProjectsPane(app: app)
+                ProjectsPane(app: app, project: project)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -146,9 +148,10 @@ private struct FilesOutline: View {
     }
 }
 
-/// The projects, the one in focus marked; a click puts a project in focus and shows its files.
+/// The projects, this window's marked; a click brings a project's window forward.
 private struct ProjectsPane: View {
     let app: AppState
+    let project: String
 
     var body: some View {
         HStack {
@@ -168,19 +171,19 @@ private struct ProjectsPane: View {
         .padding(.top, 8)
         .padding(.bottom, 6)
         Divider()
-        List(selection: Binding(get: { app.currentProject }, set: { if let project = $0 { app.showProject(project); app.showPane(.files) } })) {
-            ForEach(app.projects, id: \.self) { project in
+        List(selection: Binding(get: { project.isEmpty ? nil : project }, set: { if let chosen = $0 { app.showProject(chosen) } })) {
+            ForEach(app.projects, id: \.self) { candidate in
                 HStack(spacing: 8) {
                     Image(systemName: "folder")
                         .foregroundStyle(.secondary)
-                    Text(AppState.projectName(project))
+                    Text(AppState.projectName(candidate))
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                .tag(project)
+                .tag(candidate)
                 .listRowSeparator(.hidden)
-                .help(project)
-                .contextMenu { ProjectMenu(app: app, project: project) }
+                .help(candidate)
+                .contextMenu { ProjectMenu(app: app, project: candidate) }
             }
         }
         .listStyle(.inset)
@@ -237,14 +240,14 @@ private struct FileNavigatorActions: ViewModifier {
 extension AppState {
     /// The file row to highlight: a file clicked once (until another tab shows), else the editor tab on screen.
     var filesSelection: TabKind? {
-        if let highlight = editors.highlight, highlight.over == tabs.selection { return .editor(path: highlight.path) }
-        return tabs.selection?.editorPath.map { .editor(path: $0) }
+        if let highlight = editors.highlight, highlight.over == selectedTab { return .editor(path: highlight.path) }
+        return selectedTab?.editorPath.map { .editor(path: $0) }
     }
 
     /// A click on a file only highlights it; Return or a double-click opens it.
     func selectInFiles(_ tab: TabKind?) {
         guard case .editor(let path) = tab else { return }
-        editors.highlight = Editors.Highlight(path: path, over: tabs.selection)
+        editors.highlight = Editors.Highlight(path: path, over: selectedTab)
     }
 
     /// Return or a double-click in the Files panel: opens the files among `items` in their project's strip.

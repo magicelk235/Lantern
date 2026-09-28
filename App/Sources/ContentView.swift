@@ -2,55 +2,69 @@ import IDEModel
 import IDEState
 import SwiftUI
 
-/// The window: an activity bar on the left (Files, Changes, Projects), the pane it picked next to it
-/// (hidden again by clicking the same icon), and the project's open tabs on the right. Every session and terminal of
-/// a project is one of its tabs.
-struct ContentView: View {
+/// A project's window, one native tab of the window group per project: an activity bar on the
+/// left (Files, Changes, Projects), the pane it picked next to it (hidden again by clicking the same icon), and the
+/// project's open tabs on the right. Every session and terminal of the project is one of its tabs. The window of no
+/// project (`project` empty) only offers Add Project.
+struct ProjectWindow: View {
     @Bindable var app: AppState
+    let project: String
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
         HStack(spacing: 0) {
-            ActivityBar(app: app)
+            ActivityBar(app: app, project: project)
             Chrome.hairline.frame(width: 1)
             if app.sidebarVisible {
-                SidebarPaneView(app: app)
+                SidebarPaneView(app: app, project: project)
                     .frame(width: app.sidebarWidth)
                 SidebarResizeHandle(app: app)
             }
             VStack(spacing: 0) {
                 StatusBanners(app: app)
-                if let strip = app.currentStrip {
+                if let strip = app.strip(of: project) {
                     TabStrip(app: app, strip: strip)
                 }
                 Group {
-                    if let key = app.tabs.selection?.sessionKey {
+                    let selected = app.selectedTab(in: project)
+                    if let key = selected?.sessionKey {
                         SessionTabView(app: app, sessionKey: key)
                             .id(key)
-                    } else if let ptyId = app.tabs.selection?.ptyId {
+                    } else if let ptyId = selected?.ptyId {
                         TerminalDetailView(app: app, ptyId: ptyId)
                             .id(ptyId)
-                    } else if let path = app.tabs.selection?.editorPath, let document = app.editors.document(for: path) {
+                    } else if let path = selected?.editorPath, let document = app.editors.document(for: path) {
                         EditorView(app: app, document: document)
                             .id(path)
                     } else {
-                        EmptyDetail(app: app)
+                        EmptyDetail(app: app, project: project.isEmpty ? nil : project)
                     }
                 }
                 // Where a new tab's emulator will go: its PTY starts at that size.
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { app.tabContentSizeChanged($0) }
-                StatusBar(app: app)
+                StatusBar(app: app, project: project)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(Chrome.surface)
-        // Not drawn in the compact toolbar; names the window in the Window menu and Mission Control.
-        .navigationTitle(windowTitle)
-        // Painted, not material: the compact toolbar would otherwise mirror the selected tab's canvas as a block above it.
+        .background(WindowAccessor { app.attach($0, project: project) })
+        .navigationTitle(project.isEmpty ? "omp IDE" : AppState.projectName(project))
         .toolbarBackground(Chrome.surface, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
+        .task { app.start() }
+        // The scene owns opening and closing windows; the model asks through these.
+        .onAppear {
+            app.openProjectWindow = { openWindow(id: OmpIDEApp.projectWindowID, value: $0) }
+            app.closeProjectWindow = { dismissWindow(id: OmpIDEApp.projectWindowID, value: $0) }
+        }
         // The tabs are the list of sessions and terminals: whatever ompd lists gets one.
         .onChange(of: app.connection.sessions, initial: true) { app.syncTabs() }
         .onChange(of: app.connection.terminals.terminals) { app.syncTabs() }
+        // The no-project window gives way once a project exists.
+        .onChange(of: app.projects.isEmpty) { _, empty in
+            if project.isEmpty, !empty { dismissWindow(id: OmpIDEApp.projectWindowID, value: "") }
+        }
         .alert(item: $app.alert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message))
         }
@@ -74,11 +88,6 @@ struct ContentView: View {
         }
     }
 
-    private var windowTitle: String {
-        guard let strip = app.tabs.selectedStrip else { return "omp IDE" }
-        return AppState.projectName(strip.workspace)
-    }
-
     private var closeTitle: String {
         switch app.pendingClose {
         case .session: "Close this session while the agent works?"
@@ -93,6 +102,7 @@ struct ContentView: View {
 /// activity bar copied from elsewhere: 16pt outline symbols, the current one on a filled rounded square.
 struct ActivityBar: View {
     let app: AppState
+    let project: String
 
     static let width: CGFloat = 44
 
@@ -114,9 +124,9 @@ struct ActivityBar: View {
         .background(Chrome.surface)
     }
 
-    /// Changed files in the project in focus.
+    /// Changed files in the window's project.
     private var changeCount: Int {
-        guard let project = app.currentProject else { return 0 }
+        guard !project.isEmpty else { return 0 }
         let repository = app.editors.repositories.repository(for: project)
         return repository.isRepository ? repository.changes.count : 0
     }
@@ -191,22 +201,23 @@ private struct SidebarResizeHandle: View {
 /// The detail area with no tab on screen: what to do first.
 private struct EmptyDetail: View {
     let app: AppState
+    let project: String?
 
     var body: some View {
         ContentUnavailableView {
-            if let project = app.currentProject {
+            if let project {
                 Label(AppState.projectName(project), systemImage: "folder")
             } else {
                 Label("No Projects", systemImage: "folder.badge.plus")
             }
         } description: {
-            if app.currentProject != nil {
+            if project != nil {
                 Text("Start omp here, or open a terminal. Sessions keep running after you quit; closing a tab ends it.")
             } else {
                 Text("Add a project folder to start omp in it, open terminals, and browse its files.")
             }
         } actions: {
-            if let project = app.currentProject {
+            if let project {
                 Button("New Session") { app.newSession(in: project) }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!app.connection.isConnected)

@@ -8,18 +8,17 @@ struct OmpIDEApp: App {
 
     private var app: AppState { delegate.app }
 
+    /// The project windows: one per project path, native tabs of one group; "" is the window of no project.
+    static let projectWindowID = "project"
+
     var body: some Scene {
-        Window("omp IDE", id: AppState.mainWindowID) {
-            ContentView(app: app)
-                .background(WindowAccessor { app.attach($0) })
-                .task { app.start() }
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-                    // The user may have just allowed the agent in System Settings › Login Items.
-                    app.agent.refresh()
-                }
+        WindowGroup(id: Self.projectWindowID, for: String.self) { $project in
+            ProjectWindow(app: app, project: project)
+        } defaultValue: {
+            app.projects.first ?? ""
         }
         .defaultSize(width: 1100, height: 760)
-        // The tab strip and the sidebar name what is on screen and hold the actions; the toolbar only toggles Files.
+        // The strip and the pane name what is on screen and hold the actions; the titlebar holds the window tabs.
         .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -32,9 +31,9 @@ struct OmpIDEApp: App {
                 Button("Add Project…") { app.addProject() }
                     .keyboardShortcut("o")
                 Divider()
-                Button("Close Tab") { if let tab = app.tabs.selection { app.closeTab(tab) } }
+                Button("Close Tab") { if let tab = app.selectedTab { app.closeTab(tab) } }
                     .keyboardShortcut("w")
-                    .disabled(app.tabs.selection == nil)
+                    .disabled(app.selectedTab == nil)
             }
             CommandGroup(replacing: .sidebar) {
                 Button(app.sidebarVisible ? "Hide Sidebar" : "Show Sidebar") { app.sidebarVisible.toggle() }
@@ -62,6 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         app.start()
+    }
+
+    /// The + at the end of the window tab bar: a new project tab.
+    @objc func newWindowForTab(_ sender: Any?) {
+        app.addProject()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

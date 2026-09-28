@@ -4,7 +4,7 @@ import SwiftUI
 extension AppState {
     /// The document of the tab on screen, when it is an editor.
     var selectedEditor: EditorDocument? {
-        tabs.selection?.editorPath.flatMap(editors.document(for:))
+        selectedTab?.editorPath.flatMap(editors.document(for:))
     }
 
     /// File › Save (⌘S). A failure leaves the edits unsaved (and in hot-exit) and says why.
@@ -59,8 +59,8 @@ struct SessionCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Session") {
-            let entry = app.tabs.selection?.sessionKey.flatMap(app.entry(for:))
-            let ptyId = app.tabs.selection?.ptyId
+            let entry = app.selectedTab?.sessionKey.flatMap(app.entry(for:))
+            let ptyId = app.selectedTab?.ptyId
             Button("Resume Session") { if let entry { app.resumeSession(entry.sessionKey) } }
                 .disabled(!app.connection.isConnected || entry?.isResumable != true)
             Button("Close Session") { if let entry { app.requestCloseSession(entry.sessionKey) } }

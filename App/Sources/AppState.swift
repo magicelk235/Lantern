@@ -37,8 +37,8 @@ final class AppState {
     var pane: SidebarPane {
         didSet { if pane != oldValue { UserDefaults.standard.set(pane.rawValue, forKey: SidebarPane.defaultsKey) } }
     }
-    /// The project chosen while none of its tabs is on screen (it has none, or the user left the detail area empty).
-    private var focusedProjectChoice: String?
+    /// The project of the key window.
+    private var keyProject: String?
     /// Project folders the user added, in the order added. `projects` (below) also lists folders that have sessions
     /// or tabs.
     private(set) var addedProjects: [String]
@@ -48,10 +48,10 @@ final class AppState {
 
     @ObservationIgnored private let persistence: StatePersistence
     @ObservationIgnored private var started = false
-    /// Last frame of the window outside full screen; applied to a window that attaches.
-    @ObservationIgnored private var windowFrame: WindowFrame?
-    @ObservationIgnored private weak var window: NSWindow?
-    @ObservationIgnored private var windowObservers: [any NSObjectProtocol] = []
+    /// Windows `attach(_:project:)` set up, until they close, and their observers.
+    @ObservationIgnored private var windowsAttached: Set<ObjectIdentifier> = []
+    @ObservationIgnored private var windowObservers: [ObjectIdentifier: [any NSObjectProtocol]] = [:]
+    @ObservationIgnored private var windowsByProject: [String: ObjectIdentifier] = [:]
     /// Size of the area below the tab strip, where a tab's content goes, and whether the strip was showing.
     @ObservationIgnored private var tabContentArea: (size: CGSize, belowStrip: Bool)?
 
@@ -84,7 +84,6 @@ final class AppState {
         sidebarWidth = restored?.sidebarWidth ?? 270
         pane = UserDefaults.standard.string(forKey: SidebarPane.defaultsKey).flatMap(SidebarPane.init(rawValue:)) ?? .files
         addedProjects = restored?.projects ?? []
-        windowFrame = restored?.frame
         // Regime A: each restored session tab attaches to omp's TUI once connected; nothing is sent to omp.
         for sessionKey in tabs.tabs.compactMap(\.sessionKey) { connection.open(sessionKey) }
         restoreEditors()
@@ -156,7 +155,7 @@ final class AppState {
             requestCloseTerminal(ptyId)
         case .editor(let path):
             Task {
-                guard await editors.closeIfConfirmed(path, window: window) else { return }
+                guard await editors.closeIfConfirmed(path, window: NSApp.keyWindow) else { return }
                 tabs.close(tab)
                 saveWindow()
             }
@@ -178,6 +177,7 @@ final class AppState {
         editors.highlight = nil
         tabs.open(.editor(path: path), in: workspace)
         saveWindow()
+        showProject(workspace)
     }
 
     /// Reopens the documents of the restored editor tabs, and gives a tab to every unsaved buffer of the previous run
@@ -186,12 +186,10 @@ final class AppState {
         for strip in tabs.strips {
             for path in strip.tabs.compactMap(\.editorPath) { editors.open(path, in: strip.workspace) }
         }
-        let selection = tabs.selection
         for (path, workspace) in editors.unclaimedBuffers(workspaces: tabs.strips.map(\.workspace)) {
             editors.open(path, in: workspace)
-            tabs.open(.editor(path: path), in: workspace)
+            tabs.add(.editor(path: path), in: workspace)
         }
-        if let selection { tabs.select(selection) }
     }
 
     /// Asks for a project folder and starts omp there (the folder joins the projects).
@@ -229,28 +227,31 @@ final class AppState {
         return all
     }
 
-    /// The project in focus: the one whose tab is on screen, else the one chosen, else the first.
+    /// The project in focus: the key window's, else the first.
     var currentProject: String? {
-        tabs.selectedStrip?.workspace ?? focusedProjectChoice.flatMap { projects.contains($0) ? $0 : nil } ?? projects.first
+        keyProject.flatMap { projects.contains($0) ? $0 : nil } ?? projects.first
     }
 
-    /// The tabs of the project in focus.
-    var currentStrip: TabLayout.Strip? {
-        guard let project = currentProject else { return nil }
-        return tabs.strips.first { $0.workspace == project }
+    /// The tabs of `project`.
+    func strip(of project: String) -> TabLayout.Strip? {
+        tabs.strips.first { $0.workspace == project }
     }
 
-    /// Puts `workspace` in focus: its first tab shows, or nothing does when it has none.
+    /// The tab a project's window shows: the one it showed last (else its first).
+    func selectedTab(in project: String) -> TabKind? {
+        strip(of: project)?.preferredTab
+    }
+
+    /// The tab of the window in focus.
+    var selectedTab: TabKind? {
+        currentProject.flatMap(selectedTab(in:))
+    }
+
+    /// Brings `workspace`'s window forward (opening it as a tab of the group if needed).
     func showProject(_ workspace: String) {
         let workspace = Self.normalized(workspace)
-        focusedProjectChoice = workspace
-        if let tab = tabs.strips.first(where: { $0.workspace == workspace })?.tabs.first {
-            selectTab(tab)
-        } else {
-            editors.highlight = nil
-            tabs.deselect()
-            saveWindow()
-        }
+        guard projects.contains(workspace) else { return }
+        openProjectWindow?(workspace)
     }
 
     /// Asks for a folder, adds it as a project and puts it in focus.
@@ -276,8 +277,8 @@ final class AppState {
     func removeProject(_ workspace: String) {
         guard canRemoveProject(workspace) else { return }
         addedProjects.removeAll { $0 == workspace }
-        if focusedProjectChoice == workspace { focusedProjectChoice = nil }
         saveWindow()
+        closeProjectWindow?(workspace)
     }
 
     /// Every session and terminal ompd lists gets a tab in its project's strip (the tabs are the only list of them);
@@ -294,10 +295,6 @@ final class AppState {
             terminals.adopt(info.ptyId, workspace: workspace)
             tabs.add(.terminal(info.ptyId), in: workspace)
             changed = true
-        }
-        // The project in focus shows one of its tabs unless the user left its detail area empty on purpose.
-        if changed, tabs.selection == nil, focusedProjectChoice == nil, let tab = currentStrip?.tabs.first {
-            tabs.select(tab)
         }
         if changed { saveWindow() }
     }
@@ -403,11 +400,12 @@ final class AppState {
         connection.open(entry.sessionKey)
         tabs.open(.session(entry.sessionKey), in: entry.workspace)
         saveWindow()
+        showProject(entry.workspace)
     }
 
     /// The area below the tab strip changed size.
     func tabContentSizeChanged(_ size: CGSize) {
-        tabContentArea = (size, tabs.selectedStrip != nil)
+        tabContentArea = (size, currentProject.flatMap(strip(of:)) != nil)
     }
 
     /// The cells a new terminal or session tab's emulator gets: what fits the area below the tab strip.
@@ -431,6 +429,7 @@ final class AppState {
                 let ptyId = try await terminals.open(in: workspace, size: size)
                 tabs.open(.terminal(ptyId), in: workspace)
                 saveWindow()
+                showProject(workspace)
             } catch {
                 alert = AlertMessage(title: "Could not open a terminal", message: error.userMessage)
             }
@@ -448,6 +447,7 @@ final class AppState {
             tabs.open(.terminal(ptyId), in: workspace)
         }
         saveWindow()
+        if let workspace = tabs.strips.first(where: { $0.tabs.contains(.terminal(ptyId)) })?.workspace { showProject(workspace) }
     }
 
     /// Ends the PTY and everything on it; its tab closes.
@@ -498,32 +498,60 @@ final class AppState {
         saveWindow()
     }
 
-    // MARK: - Window
+    // MARK: - Windows
 
-    /// Called with the window hosting the main scene each time it (re)appears.
-    func attach(_ window: NSWindow) {
-        guard window !== self.window else { return }
-        self.window = window
-        // AppKit state restoration (SwiftUI's restoration class) keeps macOS "Reopen windows" and Stage Manager in
-        // step; the layout itself comes from state.sqlite. A frame macOS already restored equals the saved one, so
-        // the window is placed once.
+    /// Every project window is a native tab of one tab group (Terminal-style); the tab's title is the project.
+    static let windowTabbingIdentifier = "com.omp-ide.project"
+
+    /// Opens (or brings forward) the window of a project; set by the scene, which owns `openWindow`.
+    @ObservationIgnored var openProjectWindow: ((String) -> Void)?
+    /// Closes the window of a project; set by the scene.
+    @ObservationIgnored var closeProjectWindow: ((String) -> Void)?
+
+    /// Called with the window hosting `project`'s scene each time it (re)appears: it joins the tab group and, while
+    /// it is key, it is the project in focus.
+    func attach(_ window: NSWindow, project: String) {
+        guard windowsAttached.insert(ObjectIdentifier(window)).inserted else { return }
+        // One window per project: a second one (state restoration plus the default window, say) closes itself.
+        if !project.isEmpty, let existing = windowsByProject[project], existing != ObjectIdentifier(window) {
+            windowsAttached.remove(ObjectIdentifier(window))
+            DispatchQueue.main.async { window.close() }
+            return
+        }
+        windowsByProject[project] = ObjectIdentifier(window)
         window.isRestorable = true
-        if let saved = windowFrame {
-            let frame = Self.visibleFrame(for: NSRect(saved), in: window)
-            if frame != window.frame { window.setFrame(frame, display: true) }
+        window.tabbingMode = .preferred
+        window.tabbingIdentifier = Self.windowTabbingIdentifier
+        // A window SwiftUI opened on its own joins the group of the others as a tab.
+        if (window.tabGroup?.windows.count ?? 1) <= 1,
+           let group = NSApp.windows.first(where: { $0 !== window && $0.isVisible && $0.tabbingIdentifier == Self.windowTabbingIdentifier }) {
+            group.addTabbedWindow(window, ordered: .above)
+            window.makeKeyAndOrderFront(nil)
         }
+        if window.tabGroup?.isTabBarVisible == false { window.toggleTabBar(nil) }
+        if window.isKeyWindow { keyProject = project }
         let center = NotificationCenter.default
-        for observer in windowObservers { center.removeObserver(observer) }
-        windowObservers = [NSWindow.didMoveNotification, NSWindow.didResizeNotification].map { name in
-            center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.windowFrameChanged() }
-            }
-        }
-        windowObservers += [NSWindow.didResignKeyNotification, NSWindow.willCloseNotification].map { name in
-            center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+        let id = ObjectIdentifier(window)
+        let observers = [
+            center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.keyProject = project }
+            },
+            center.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.flushState() }
-            }
-        }
+            },
+            center.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.windowClosing(id, project: project) }
+            },
+        ]
+        windowObservers[id] = observers
+    }
+
+    private func windowClosing(_ id: ObjectIdentifier, project: String) {
+        flushState()
+        windowsAttached.remove(id)
+        if windowsByProject[project] == id { windowsByProject[project] = nil }
+        for observer in windowObservers.removeValue(forKey: id) ?? [] { NotificationCenter.default.removeObserver(observer) }
+        if keyProject == project { keyProject = nil }
     }
 
     /// Shows `pane` in the sidebar.
@@ -540,26 +568,17 @@ final class AppState {
     /// Captures everything not saved on change and writes it all now: on resign key, window close, sleep, power off
     /// and quit.
     func flushState() {
-        windowFrameChanged()
         editors.flush()
         saveWindow()
         persistence.flush()
     }
 
-    private func windowFrameChanged() {
-        guard let window, !window.styleMask.contains(.fullScreen), !window.isMiniaturized else { return }
-        let frame = WindowFrame(window.frame)
-        guard frame != windowFrame else { return }
-        windowFrame = frame
-        saveWindow()
-    }
-
+    /// The layout (window frames are AppKit's to restore, per project window).
     private func saveWindow() {
         persistence.save(
             WindowState(
-                id: Self.mainWindowID, frame: windowFrame, sidebarWidth: sidebarWidth,
-                sidebarVisible: sidebarVisible, projects: addedProjects,
-                tabs: tabs))
+                id: Self.mainWindowID, sidebarWidth: sidebarWidth, sidebarVisible: sidebarVisible,
+                projects: addedProjects, tabs: tabs))
     }
 
     private func observeSystemPower() {
@@ -570,31 +589,6 @@ final class AppState {
                 MainActor.assumeIsolated { self?.flushState() }
             }
         }
-    }
-
-    /// `frame` if it shows on a screen (kept clear of the menu bar), else the same size centered on the main screen:
-    /// the display it was on may be gone.
-    private static func visibleFrame(for frame: NSRect, in window: NSWindow) -> NSRect {
-        let overlap = { (screen: NSScreen) in screen.visibleFrame.intersection(frame).width * screen.visibleFrame.intersection(frame).height }
-        if let screen = NSScreen.screens.max(by: { overlap($0) < overlap($1) }), overlap(screen) > 0 {
-            return window.constrainFrameRect(frame, to: screen)
-        }
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return frame }
-        let visible = screen.visibleFrame
-        let size = NSSize(width: min(frame.width, visible.width), height: min(frame.height, visible.height))
-        return NSRect(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2, width: size.width, height: size.height)
-    }
-}
-
-extension WindowFrame {
-    init(_ rect: NSRect) {
-        self.init(x: rect.origin.x, y: rect.origin.y, width: rect.width, height: rect.height)
-    }
-}
-
-extension NSRect {
-    init(_ frame: WindowFrame) {
-        self.init(x: frame.x, y: frame.y, width: frame.width, height: frame.height)
     }
 }
 
