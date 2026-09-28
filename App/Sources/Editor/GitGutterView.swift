@@ -98,7 +98,7 @@ extension GitGutterMarks {
 
 /// The marks over an editor's gutter, as VS Code draws them: a bar the height of the line at the gutter's trailing
 /// edge, blue for a modified line and green for an added one, and a red triangle pointing right at the edge lines were
-/// deleted at. It spans CodeEditSourceEditor's gutter (whose resizing carries it along) and draws at the y positions
+/// deleted at. It lies over CodeEditSourceEditor's gutter (following its frame as it scrolls and grows) and draws at the y positions
 /// the text view's layout manager reports, so a wrapped line is one bar of its full height. The marks are diffed off
 /// the main thread when the file opens, 300 ms after typing pauses (or at a save before that), and when the
 /// repository's HEAD or the file's status changes; one diff runs at a time, and one more if asked meanwhile.
@@ -117,6 +117,8 @@ final class GitGutterView: NSView {
 
     private let path: String
     private weak var textView: TextView?
+    private weak var gutter: GutterView?
+    private var frameObserver: (any NSObjectProtocol)?
     private let repository: GitRepository
     private var marks = GitGutterMarks() {
         didSet { if marks != oldValue { needsDisplay = true } }
@@ -136,7 +138,6 @@ final class GitGutterView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
-        autoresizingMask = [.width, .height]
         observeRepository()
     }
 
@@ -163,18 +164,35 @@ final class GitGutterView: NSView {
 
     // MARK: Lifecycle
 
-    /// Goes over the controller's gutter once its view is loaded (it appeared).
+    /// Goes over the controller's gutter once its view is loaded (it appeared): a floating subview of the scroll view
+    /// next to the gutter (never a subview of it: the gutter is placed by hand, and a constrained subview would make
+    /// Auto Layout zero its frame), kept the gutter's size and place.
     func attach(to controller: TextViewController) {
-        guard superview == nil, !isDetached, controller.isViewLoaded, let gutter = Self.gutter(in: controller.scrollView) else { return }
-        frame = gutter.bounds
-        gutter.addSubview(self)
+        guard superview == nil, !isDetached, controller.isViewLoaded, let gutter = Self.findGutter(in: controller.scrollView) else { return }
+        self.gutter = gutter
+        controller.scrollView.addFloatingSubview(self, for: .horizontal)
+        gutter.postsFrameChangedNotifications = true
+        frameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification, object: gutter, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.syncFrame() }
+        }
+        syncFrame()
     }
 
-    /// The gutter floats in the scroll view, in a container of AppKit's outside the clip view that holds the text.
-    private static func gutter(in view: NSView) -> GutterView? {
-        for subview in view.subviews where !(subview is NSClipView) {
+    /// Takes the gutter's frame (it moves with the scroll and grows with the text).
+    func syncFrame() {
+        guard let gutter, superview != nil else { return }
+        if frame != gutter.frame { frame = gutter.frame }
+        needsDisplay = true
+    }
+
+    /// CodeEditSourceEditor's gutter: a floating subview of the scroll view, found in its view tree (the controller
+    /// keeps it internal).
+    private static func findGutter(in view: NSView) -> GutterView? {
+        for subview in view.subviews {
             if let gutter = subview as? GutterView { return gutter }
-            if let gutter = gutter(in: subview) { return gutter }
+            if let gutter = findGutter(in: subview) { return gutter }
         }
         return nil
     }
@@ -184,6 +202,8 @@ final class GitGutterView: NSView {
         isDetached = true
         debounce?.cancel()
         debounce = nil
+        if let frameObserver { NotificationCenter.default.removeObserver(frameObserver) }
+        frameObserver = nil
         removeFromSuperview()
     }
 
@@ -191,7 +211,7 @@ final class GitGutterView: NSView {
 
     /// The text changed: the marks move with it now, and are recomputed once typing pauses.
     func textDidChange() {
-        needsDisplay = true
+        syncFrame()
         debounce?.cancel()
         debounce = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(300))

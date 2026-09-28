@@ -234,7 +234,7 @@ final class EditorDocument {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.saveUI()
-                self?.gitGutter?.needsDisplay = true
+                self?.gitGutter?.syncFrame()
             }
         }
     }
