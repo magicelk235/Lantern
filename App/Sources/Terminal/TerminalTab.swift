@@ -20,6 +20,17 @@ final class OmpTerminalView: TerminalView {
     func fitToFrame() {
         setFrameSize(frame.size)
     }
+
+    /// Shows the program's output and keeps the selection, as Terminal does. SwiftTerm drops the selection on every
+    /// write (and line feed) while `allowMouseReporting` is on, its default: a TUI redrawing as it works (omp's
+    /// spinner and status line) ended a drag partway, the next drag event starting a new selection under the pointer.
+    /// Mouse reporting itself only matters to mouse events, which never arrive during a write.
+    func feedKeepingSelection(_ bytes: ArraySlice<UInt8>) {
+        let reportsMouse = allowMouseReporting
+        allowMouseReporting = false
+        feed(byteArray: bytes)
+        allowMouseReporting = reportsMouse
+    }
 }
 
 /// One tab's emulator: shows its endpoint — a terminal's PTY, or an omp session's TUI on whichever PTY omp runs on — and
@@ -84,7 +95,7 @@ extension TerminalTab: TerminalDisplay {
     }
 
     func feed(_ data: Data) {
-        view.feed(byteArray: ArraySlice(data))
+        view.feedKeepingSelection(ArraySlice(data))
     }
 }
 
