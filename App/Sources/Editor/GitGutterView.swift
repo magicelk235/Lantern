@@ -19,6 +19,10 @@ struct GitGutterMarks: Equatable, Sendable {
 
     /// One run of changed lines: what a mark stands for, and what a click on it shows and reverts.
     struct Change: Equatable, Sendable {
+        enum Kind: Equatable, Sendable {
+            case modified, added, deleted
+        }
+
         /// The text's lines in the run; empty for a deletion, at the index of the line after it.
         var lines: Range<Int>
         /// HEAD's lines the run replaces, without their line breaks; none for an addition.
@@ -26,6 +30,8 @@ struct GitGutterMarks: Equatable, Sendable {
         /// HEAD's 1-based number of the line at `lines.lowerBound` (the first removed one, or the one an addition
         /// goes before).
         var oldStart: Int
+
+        var kind: Kind { lines.isEmpty ? .deleted : removed.isEmpty ? .added : .modified }
     }
 
     var changes: [Change] = []
@@ -87,27 +93,6 @@ struct GitGutterMarks: Equatable, Sendable {
     /// The change a click on line `index` means: the run holding it.
     func change(containing index: Int) -> Int? {
         changes.firstIndex { $0.lines.contains(index) }
-    }
-
-    /// `change` as a unified diff of `base` (HEAD's text) and `current` with up to `context` rows on either side, as
-    /// the whole file's diff has them (so a change nearby shows as one, with its own numbers).
-    static func rows(of change: Change, base: String, current: String, context: Int = 3) -> [LineDiff.Line] {
-        let base = base.replacingOccurrences(of: "\r\n", with: "\n")
-        let current = current.replacingOccurrences(of: "\r\n", with: "\n")
-        // As much context as there are lines: one hunk holding every line of both texts. HEAD lacking the file splits
-        // into one empty line, which is no removed line.
-        let all = LineDiff.hunks(from: base, to: current, context: base.utf16.count + current.utf16.count).first?.lines
-            .filter { !base.isEmpty || $0.kind != .removed } ?? []
-        let removed = change.oldStart..<(change.oldStart + change.removed.count)
-        let isInChange = { (line: LineDiff.Line) -> Bool in
-            switch line.kind {
-            case .removed: line.oldNumber.map(removed.contains) ?? false
-            case .inserted: line.newNumber.map { change.lines.contains($0 - 1) } ?? false
-            case .context: false
-            }
-        }
-        guard let first = all.firstIndex(where: isInChange), let last = all.lastIndex(where: isInChange) else { return [] }
-        return Array(all[max(0, first - context)...min(all.count - 1, last + context)])
     }
 }
 
@@ -406,22 +391,21 @@ final class GitGutterView: NSView {
         showPeek(index)
     }
 
-    /// Opens (or moves) the peek to change `index`, under its lines, across the editor.
+    /// Opens (or moves) the peek to change `index`: under its lines, starting where the text does, as wide as HEAD's
+    /// lines need.
     private func showPeek(_ index: Int) {
         guard let textView, let layoutManager = textView.layoutManager, marks.changes.indices.contains(index),
               let span = span(of: marks.changes[index], layoutManager) else { return }
         peekIndex = index
+        let change = marks.changes[index]
         let visible = textView.visibleRect
-        let width = min(max(visible.width - 48, 360), 960)
+        let textStart = max(visible.minX, convert(NSPoint(x: bounds.maxX, y: 0), to: textView).x)
+        let width = GitChangePeek.width(for: change, maximum: min(640, visible.maxX - textStart - 16))
         let content = GitChangePeek(
-            fileName: (path as NSString).lastPathComponent,
-            position: index + 1, count: marks.changes.count,
-            rows: GitGutterMarks.rows(of: marks.changes[index], base: base ?? "", current: textView.string),
-            width: width,
+            change: change, position: index + 1, count: marks.changes.count, width: width,
             revert: { [weak self] in self?.revertPeekedChange() },
             previous: { [weak self] in self?.movePeek(by: -1) },
-            next: { [weak self] in self?.movePeek(by: 1) },
-            close: { [weak self] in self?.peek?.close() })
+            next: { [weak self] in self?.movePeek(by: 1) })
         let popover: NSPopover
         if let peek, peek.isShown, let host = peek.contentViewController as? NSHostingController<GitChangePeek> {
             host.rootView = content
@@ -436,8 +420,9 @@ final class GitGutterView: NSView {
             popover.contentViewController = host
             peek = popover
         }
-        // Under the change, the arrow at its middle across the editor; the text view is flipped like the gutter.
-        let anchor = NSRect(x: visible.minX, y: span.minY, width: visible.width, height: max(1, span.maxY - span.minY))
+        // A popover centers on its anchor: one as wide as it, from the text's start, lines their left edges up. The
+        // text view is flipped like the gutter, so its maxY edge is the bottom one.
+        let anchor = NSRect(x: textStart, y: span.minY, width: width, height: max(1, span.maxY - span.minY))
         popover.show(relativeTo: anchor, of: textView, preferredEdge: .maxY)
     }
 
