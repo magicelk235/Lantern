@@ -112,6 +112,40 @@ public enum SessionForget: DaemonMethod {
     public typealias Result = Empty
 }
 
+/// Answers a session's `pendingContinuation` (restore policy `ask`): the main agent (`main`) and
+/// the listed subagents are told they were interrupted and asked to continue; everything else is left as it is.
+/// `main: false, agents: []` leaves the whole interruption. Refused (`badParams`) when nothing is pending.
+public enum SessionContinue: DaemonMethod {
+    public static let name = "session.continue"
+    public struct Params: Codable, Sendable, Equatable {
+        public var sessionKey: SessionKey
+        public var main: Bool
+        public var agents: [String]
+        public init(sessionKey: SessionKey, main: Bool, agents: [String]) {
+            self.sessionKey = sessionKey
+            self.main = main
+            self.agents = agents
+        }
+    }
+    public typealias Result = Empty
+}
+
+// MARK: - Restore policy
+
+public enum RestorePolicyGet: DaemonMethod {
+    public static let name = "restore.policy.get"
+    public typealias Params = Empty
+    public typealias Result = RestorePolicy
+}
+
+/// Replaces the daemon-wide restore policy (kept in the manifest); returns it. Applies to interruptions found from
+/// now on; one already waiting for a decision stays until answered.
+public enum RestorePolicySet: DaemonMethod {
+    public static let name = "restore.policy.set"
+    public typealias Params = RestorePolicy
+    public typealias Result = RestorePolicy
+}
+
 // MARK: - PTYs
 
 public struct PTYInfo: Codable, Sendable, Equatable {

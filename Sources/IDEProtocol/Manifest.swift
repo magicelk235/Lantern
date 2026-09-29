@@ -5,10 +5,94 @@ import Foundation
 public struct SessionManifest: Sendable, Equatable, Codable {
     public var version: Int
     public var sessions: [SessionManifestEntry]
-    public init(version: Int = 2, sessions: [SessionManifestEntry] = []) {
+    /// What ompd does with agents a Regime-B death interrupted. Absent from older manifests.
+    public var restorePolicy: RestorePolicy
+    public init(version: Int = 2, sessions: [SessionManifestEntry] = [], restorePolicy: RestorePolicy = RestorePolicy()) {
         self.version = version
         self.sessions = sessions
+        self.restorePolicy = restorePolicy
     }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(Int.self, forKey: .version)
+        sessions = try c.decode([SessionManifestEntry].self, forKey: .sessions)
+        restorePolicy = try c.decodeIfPresent(RestorePolicy.self, forKey: .restorePolicy) ?? RestorePolicy()
+    }
+}
+
+/// `restore.continue`: after omp died (Regime B) and was resumed, whether an agent it interrupted
+/// mid-turn is told so and asked to continue.
+public enum ContinuePolicy: String, Sendable, Codable, CaseIterable {
+    /// Continued without asking.
+    case auto
+    /// Held until the user decides in omp IDE (`SessionManifestEntry.pendingContinuation`, `session.continue`).
+    case ask
+    /// Left as it is; the user carries on in the session TUI.
+    case never
+}
+
+/// Daemon-wide continuation policy, one for the main agent and one for subagents.
+public struct RestorePolicy: Sendable, Equatable, Codable {
+    public var main: ContinuePolicy
+    public var subagents: ContinuePolicy
+    public init(main: ContinuePolicy = .ask, subagents: ContinuePolicy = .auto) {
+        self.main = main
+        self.subagents = subagents
+    }
+}
+
+/// A tool call omp started and never recorded a result for, or reported pending when it exited (`session_exit`).
+public struct InterruptedToolCall: Sendable, Equatable, Codable {
+    public var toolCallId: String
+    public var toolName: String
+    /// One line: the call's intent, else its command or path argument (clipped).
+    public var summary: String
+    public init(toolCallId: String, toolName: String, summary: String) {
+        self.toolCallId = toolCallId
+        self.toolName = toolName
+        self.summary = summary
+    }
+}
+
+/// A subagent that had not finished its assignment when its omp died (`<id>.jsonl` without a tombstone or an output).
+public struct InterruptedAgent: Sendable, Equatable, Codable {
+    /// Agent id: the transcript's file name without `.jsonl` (`Sleeper`, `Parent.Child`).
+    public var id: String
+    public var pendingToolCalls: [InterruptedToolCall]
+    public init(id: String, pendingToolCalls: [InterruptedToolCall] = []) {
+        self.id = id
+        self.pendingToolCalls = pendingToolCalls
+    }
+}
+
+/// What the omp of a session left unfinished when it died, read from its session file and artifacts.
+public struct Interruption: Sendable, Equatable, Codable {
+    public var detectedAt: Date
+    /// How omp ended, for people: "omp exited (signal 9)", "ompd restarted".
+    public var cause: String
+    /// The main agent was mid-turn.
+    public var mainInterrupted: Bool
+    /// The main agent's tool calls that may not have completed.
+    public var pendingToolCalls: [InterruptedToolCall]
+    public var agents: [InterruptedAgent]
+    /// The dead omp ran `eval`: its kernels' variables are gone.
+    public var evalKernelsLost: Bool
+
+    public init(
+        detectedAt: Date, cause: String, mainInterrupted: Bool, pendingToolCalls: [InterruptedToolCall] = [],
+        agents: [InterruptedAgent] = [], evalKernelsLost: Bool = false
+    ) {
+        self.detectedAt = detectedAt
+        self.cause = cause
+        self.mainInterrupted = mainInterrupted
+        self.pendingToolCalls = pendingToolCalls
+        self.agents = agents
+        self.evalKernelsLost = evalKernelsLost
+    }
+
+    /// Nothing to continue.
+    public var isEmpty: Bool { !mainInterrupted && agents.isEmpty }
 }
 
 /// One omp session owned by ompd. The session runs omp's own interactive TUI inside a daemon-owned PTY;
@@ -37,12 +121,18 @@ public struct SessionManifestEntry: Sendable, Equatable, Codable, Identifiable {
     /// omp exits (the session is then closed like any other, resumed in a session PTY of its own). Runtime-only like
     /// `ptyId`; absent from older manifests.
     public var adopted: Bool
+    /// When the omp now (or last) serving the session started: the start of the run a death interrupts. Absent from
+    /// older manifests.
+    public var spawnedAt: Date?
+    /// An interruption waiting for the user's decision (restore policy `ask`), answered with `session.continue`. Kept
+    /// until answered, across daemon restarts (merged with what a later death leaves).
+    public var pendingContinuation: Interruption?
 
     public init(
         sessionKey: SessionKey, workspace: String, sessionFile: String? = nil, sessionId: String? = nil,
         title: String? = nil, launch: LaunchSpec, status: SessionStatus = .starting, ptyId: PTYID? = nil,
         createdAt: Date, lastActiveAt: Date? = nil, services: [NamedService] = [], closedByUser: Bool = false,
-        adopted: Bool = false
+        adopted: Bool = false, spawnedAt: Date? = nil, pendingContinuation: Interruption? = nil
     ) {
         self.sessionKey = sessionKey
         self.workspace = workspace
@@ -57,9 +147,11 @@ public struct SessionManifestEntry: Sendable, Equatable, Codable, Identifiable {
         self.services = services
         self.closedByUser = closedByUser
         self.adopted = adopted
+        self.spawnedAt = spawnedAt
+        self.pendingContinuation = pendingContinuation
     }
 
-    /// Manifests written before `adopted` existed decode with it false.
+    /// Manifests written before `adopted`, `spawnedAt` or `pendingContinuation` existed decode without them.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         sessionKey = try container.decode(SessionKey.self, forKey: .sessionKey)
@@ -75,6 +167,8 @@ public struct SessionManifestEntry: Sendable, Equatable, Codable, Identifiable {
         services = try container.decode([NamedService].self, forKey: .services)
         closedByUser = try container.decode(Bool.self, forKey: .closedByUser)
         adopted = try container.decodeIfPresent(Bool.self, forKey: .adopted) ?? false
+        spawnedAt = try container.decodeIfPresent(Date.self, forKey: .spawnedAt)
+        pendingContinuation = try container.decodeIfPresent(Interruption.self, forKey: .pendingContinuation)
     }
 }
 

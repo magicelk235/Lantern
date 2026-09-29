@@ -29,12 +29,14 @@ public actor Daemon {
         /// How long no omp IDE window must be connected (after the last one disconnected, or after `start()`) before
         /// every session is paused: an app relaunch or a reconnect blip within it pauses nothing.
         public var detachedPauseGrace: Duration
+        /// omp's launch broker, for relaunching named services after a Regime-B resume.
+        public var services: any ServiceControl
 
         public init(
             paths: AppSupportPaths, ompExecutable: String? = nil, ompArguments: [String] = [], sessionDirectory: String? = nil,
             bridgeExtension: String? = nil, baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
             timings: SupervisorTimings = SupervisorTimings(), wakeHealthCheckDelay: Duration = .seconds(10),
-            detachedPauseGrace: Duration = .seconds(3)
+            detachedPauseGrace: Duration = .seconds(3), services: any ServiceControl = OmpServiceControl()
         ) {
             self.paths = paths
             self.ompExecutable = ompExecutable
@@ -45,6 +47,7 @@ public actor Daemon {
             self.timings = timings
             self.wakeHealthCheckDelay = wakeHealthCheckDelay
             self.detachedPauseGrace = detachedPauseGrace
+            self.services = services
         }
     }
 
@@ -212,6 +215,7 @@ public actor Daemon {
         return SupervisorContext(
             manifest: manifest, ptys: ptys, bridge: bridge, locks: locks, bridgeExtension: configuration.bridgeExtension,
             baseEnvironment: configuration.baseEnvironment, timings: configuration.timings, pauseDemand: pauseDemand,
+            services: configuration.services,
             persistenceFailed: { error in Self.enterReadOnly(readOnly, broadcaster, failedWith: error) },
             notify: { broadcaster.send(.notice($0)) })
     }
@@ -450,6 +454,21 @@ public actor Daemon {
         return Empty()
     }
 
+    private func continueSession(_ params: SessionContinue.Params) async throws -> Empty {
+        try await supervisor(params.sessionKey).continueInterrupted(main: params.main, agents: params.agents)
+        return Empty()
+    }
+
+    private func setRestorePolicy(_ policy: RestorePolicy) async throws -> RestorePolicy {
+        if readOnly.isOn { throw DaemonError(.readOnly, "ompd is read-only: the session manifest could not be written (disk full?)") }
+        do {
+            return try await manifest.update { $0.restorePolicy = policy }.restorePolicy
+        } catch {
+            persistenceFailed(error)
+            throw DaemonError(.internal, "cannot write the session manifest: \(error)")
+        }
+    }
+
     // MARK: - Routes
 
     private nonisolated func registerRoutes() {
@@ -470,6 +489,15 @@ public actor Daemon {
         }
         router.on(SessionForget.self) { [weak self] params, _ in
             try await Self.alive(self).forgetSession(params)
+        }
+        router.on(SessionContinue.self) { [weak self] params, _ in
+            try await Self.alive(self).continueSession(params)
+        }
+        router.on(RestorePolicyGet.self) { [weak self] _, _ in
+            try await Self.alive(self).manifest.store.current.restorePolicy
+        }
+        router.on(RestorePolicySet.self) { [weak self] params, _ in
+            try await Self.alive(self).setRestorePolicy(params)
         }
         router.on(PTYOpen.self) { [weak self] params, _ in
             try await Self.alive(self).ptys.open(params)

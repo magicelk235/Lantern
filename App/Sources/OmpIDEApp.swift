@@ -49,7 +49,7 @@ struct OmpIDEApp: App {
         }
 
         Settings {
-            SettingsView()
+            SettingsView(connection: app.connection)
         }
     }
 }

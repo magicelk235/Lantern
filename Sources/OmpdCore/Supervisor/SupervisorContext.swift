@@ -21,11 +21,14 @@ public struct SupervisorTimings: Sendable {
     /// Before resuming at daemon start: the session file must have been unchanged this long (an omp of the previous
     /// daemon may still be writing its teardown).
     public var resumeQuietPeriod: Duration
+    /// After a wake: how long a busy main agent may go without progress (model stream, tool, turn events) before its
+    /// turn is aborted and it is told to continue.
+    public var wakeStallTimeout: Duration
 
     public init(
         hello: Duration = .seconds(30), bridgeCall: Duration = .seconds(30), stop: Duration = .seconds(15),
         hangup: Duration = .seconds(3), healthCheck: Duration = .seconds(10), respawnWindow: Duration = .seconds(60),
-        maxRespawns: Int = 3, resumeQuietPeriod: Duration = .seconds(1)
+        maxRespawns: Int = 3, resumeQuietPeriod: Duration = .seconds(1), wakeStallTimeout: Duration = .seconds(120)
     ) {
         self.hello = hello
         self.bridgeCall = bridgeCall
@@ -35,6 +38,7 @@ public struct SupervisorTimings: Sendable {
         self.respawnWindow = respawnWindow
         self.maxRespawns = maxRespawns
         self.resumeQuietPeriod = resumeQuietPeriod
+        self.wakeStallTimeout = wakeStallTimeout
     }
 }
 
@@ -69,6 +73,8 @@ public struct SupervisorContext: Sendable {
     public var timings: SupervisorTimings
     /// Whether ompd wants the sessions paused (no omp IDE window connected).
     public var pauseDemand: PauseDemand
+    /// omp's launch broker: named services relaunched after a Regime-B resume.
+    public var services: any ServiceControl
     /// A manifest write failed (disk full, I/O error).
     public var persistenceFailed: @Sendable (any Error) -> Void
     /// Delivers a notice to every connected client (`ServerFrame.notice`).
@@ -78,6 +84,7 @@ public struct SupervisorContext: Sendable {
         manifest: ManifestPublisher, ptys: PTYPool, bridge: any SessionBridgeLink, locks: any SessionLockProvider,
         bridgeExtension: String?, baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         timings: SupervisorTimings = SupervisorTimings(), pauseDemand: PauseDemand = PauseDemand(),
+        services: any ServiceControl = OmpServiceControl(),
         persistenceFailed: @escaping @Sendable (any Error) -> Void, notify: @escaping @Sendable (DaemonNotice) -> Void
     ) {
         self.manifest = manifest
@@ -88,6 +95,7 @@ public struct SupervisorContext: Sendable {
         self.baseEnvironment = baseEnvironment
         self.timings = timings
         self.pauseDemand = pauseDemand
+        self.services = services
         self.persistenceFailed = persistenceFailed
         self.notify = notify
     }

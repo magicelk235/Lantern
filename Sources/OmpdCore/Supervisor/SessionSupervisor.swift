@@ -56,6 +56,15 @@ public actor SessionSupervisor {
     /// When automatic respawns happened (crash-loop guard).
     private var respawns: [ContinuousClock.Instant] = []
 
+    // Regime B recovery
+    /// What the omp that died left unfinished, found before the respawn with `--resume` and applied once the resumed
+    /// omp's bridge said hello (continuation policy, service relaunch). Only a resume carries it.
+    private var recovery: Recovery?
+
+    private struct Recovery {
+        var interruption: Interruption?
+    }
+
     // omp's pause gate
     /// Who holds the gate closed, as the bridge last reported it; nil while it is open.
     private var pausedBy: PauseOwner?
@@ -170,6 +179,7 @@ public actor SessionSupervisor {
             entry.status = new
             entry.ptyId = terminal
             entry.adopted = true
+            entry.spawnedAt = now
             entry.closedByUser = false
             entry.lastActiveAt = now
         }
@@ -195,6 +205,8 @@ public actor SessionSupervisor {
                 // done would fork the session.
                 await SessionFileTail.waitForQuiescence(path: file, quietPeriod: context.timings.resumeQuietPeriod)
                 guard !Task.isCancelled else { return }
+                recovery = Recovery(interruption: InterruptionAnalyzer.analyze(
+                    sessionFile: file, since: entry.spawnedAt, cause: "ompd restarted"))
                 try await start(.resume, notice: "ompd restarted; resuming the omp session from \(file).")
             } else {
                 try await start(.fresh, notice: "ompd restarted; the session had no saved history, so a new omp session was started.")
@@ -237,6 +249,7 @@ public actor SessionSupervisor {
         }
 
         await setStatus(mode == .resume ? .resuming : .starting)
+        if mode == .fresh { recovery = nil }
         if let notice { notify("info", notice) }
 
         let credentials = await context.bridge.expect(sessionKey: sessionKey)
@@ -272,9 +285,11 @@ public actor SessionSupervisor {
         pausedBy = nil
         activity = .idle
         if let pid = info.pid { await context.bridge.setExpectedPID(pid, for: sessionKey) }
+        let now = spawnedAt
         await updateEntry { entry in
             entry.ptyId = info.ptyId
             entry.adopted = false
+            entry.spawnedAt = now
         }
         // Only now that the entry points to the new PTY does the old one go away (clients follow `ptyId`).
         if let previous, previous != info.ptyId { try? await context.ptys.close(previous) }
@@ -313,6 +328,11 @@ public actor SessionSupervisor {
         let recorded = sessionFile.flatMap { SessionFileTail.sessionExitKind(path: $0, recordedSince: spawnedAt) }
         notify("warning", "omp exited unexpectedly (\(exit); \(recorded.map { "session_exit \($0)" } ?? "no session_exit recorded")).")
         await setStatus(.interrupted)
+        if let sessionFile {
+            // Merged with what a previous death left, if the resume that was to apply it never got to its hello.
+            let found = InterruptionAnalyzer.analyze(sessionFile: sessionFile, since: spawnedAt, cause: "omp exited unexpectedly: \(exit)")
+            recovery = Recovery(interruption: InterruptionAnalyzer.merge(recovery?.interruption, found))
+        }
         await respawnAfterCrash()
     }
 
@@ -471,9 +491,12 @@ public actor SessionSupervisor {
 
     // MARK: - Health
 
-    /// After a wake from sleep: omp must answer the bridge's `session.info`.
+    /// After a wake from sleep: omp must answer the bridge's `session.info`. A main agent busy in a turn
+    /// (not paused) then gets `timings.wakeStallTimeout` to show progress; a turn whose model stream stalled is aborted
+    /// by the bridge and the agent is told to continue (a transport failure, not a death: no policy applies).
     public func healthCheck() async {
-        guard pid != nil, stopping == nil, bridgeHello != nil else { return }
+        guard pid != nil, stopping == nil, let hello = bridgeHello else { return }
+        let generation = generation
         let started = ContinuousClock.now
         do {
             _ = try await context.bridge.call(sessionKey, method: "session.info", params: [:], timeout: context.timings.healthCheck)
@@ -481,8 +504,243 @@ public actor SessionSupervisor {
             supervisorLog.info("session \(self.sessionKey, privacy: .public): wake health check answered in \(elapsed, privacy: .public)")
         } catch {
             notify("warning", "Wake health check: omp did not answer session.info through the ide-bridge (\(error)).")
+            return
+        }
+        guard activity == .busy, pausedBy == nil, hello.capabilities["session.watchStall"] == true else { return }
+        let timeout = context.timings.wakeStallTimeout
+        do {
+            let result = try await context.bridge.call(
+                sessionKey, method: "session.watchStall",
+                params: ["timeoutMs": .number(Double(timeout.components.seconds * 1000))],
+                timeout: timeout + context.timings.bridgeCall)
+            guard result["stalled"]?.boolValue == true, generation == self.generation, pid != nil else { return }
+            notify("warning", "omp's model stream made no progress for \(timeout) after the wake; the turn was aborted and the agent asked to continue.")
+            try await prompt(ContinuationMessages.wake)
+        } catch {
+            guard generation == self.generation, pid != nil else { return }
+            notify("warning", "Wake stall check failed: \(error)")
         }
     }
+
+    // MARK: - Recovery
+
+    /// After the resumed omp's hello: its persisted subagents registered, named services relaunched, and what the dead
+    /// omp left unfinished (with any interruption still waiting for a decision) handled per the restore policy.
+    private func recover(_ recovery: Recovery, generation: Int) async {
+        guard generation == self.generation, pid != nil, let hello = bridgeHello else { return }
+        if hello.capabilities["agents.loadPersisted"] == true {
+            do {
+                _ = try await context.bridge.call(sessionKey, method: "agents.loadPersisted", params: [:], timeout: context.timings.bridgeCall)
+            } catch {
+                supervisorLog.error("session \(self.sessionKey, privacy: .public): agents.loadPersisted failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+        await relaunchServices()
+        guard generation == self.generation, pid != nil else { return }
+        let waiting = await context.manifest.entry(sessionKey)?.pendingContinuation
+        guard let interruption = InterruptionAnalyzer.merge(waiting, recovery.interruption) else { return }
+        if interruption.evalKernelsLost, recovery.interruption?.evalKernelsLost == true {
+            notify("info", "The eval kernels of the omp that ended are gone; variables and imports defined in them must be loaded again.")
+        }
+        let policy = await context.manifest.store.current.restorePolicy
+        let main = interruption.mainInterrupted
+        let agents = interruption.agents
+        let leftMain = main && policy.main == .never
+        let leftAgents = policy.subagents == .never ? agents : []
+        let askMain = main && policy.main == .ask
+        let askAgents = policy.subagents == .ask ? agents : []
+        let autoMain = main && policy.main == .auto
+        let autoAgents = policy.subagents == .auto ? agents : []
+
+        let asked = Interruption(
+            detectedAt: interruption.detectedAt, cause: interruption.cause, mainInterrupted: askMain,
+            pendingToolCalls: askMain ? interruption.pendingToolCalls : [], agents: askAgents,
+            evalKernelsLost: interruption.evalKernelsLost)
+        await updateEntry { $0.pendingContinuation = asked.isEmpty ? nil : asked }
+        if leftMain || !leftAgents.isEmpty {
+            await mark(interruption, decision: "left", main: leftMain, agents: leftAgents.map(\.id))
+        }
+        if autoMain || !autoAgents.isEmpty {
+            await deliver(interruption, main: autoMain, agents: autoAgents, notContinued: (leftAgents + askAgents).map(\.id))
+        }
+    }
+
+    /// `session.continue`: the user's answer to the interruption waiting for a decision. The main agent (if `main` and
+    /// it was interrupted) and the subagents in `ids` continue; the rest is left.
+    public func continueInterrupted(main: Bool, agents ids: [String]) async throws {
+        if let startTask { _ = try? await startTask.value }
+        guard let pending = await context.manifest.entry(sessionKey)?.pendingContinuation else {
+            throw DaemonError(.badParams, "no interruption is waiting for a decision in session \(sessionKey)")
+        }
+        let continueMain = main && pending.mainInterrupted
+        let chosen = pending.agents.filter { ids.contains($0.id) }
+        let left = pending.agents.filter { !ids.contains($0.id) }
+        let running = pid != nil && bridgeHello != nil && stopping == nil
+        guard running || (!continueMain && chosen.isEmpty) else {
+            throw DaemonError(.sessionBusy, "omp is not running in session \(sessionKey); open the session first")
+        }
+        await updateEntry { $0.pendingContinuation = nil }
+        guard running else { return } // left while omp is not running: nothing to tell it
+        let leftMain = pending.mainInterrupted && !continueMain
+        if leftMain || !left.isEmpty {
+            await mark(pending, decision: "left", main: leftMain, agents: left.map(\.id))
+        }
+        if continueMain || !chosen.isEmpty {
+            await deliver(pending, main: continueMain, agents: chosen, notContinued: left.map(\.id))
+        }
+    }
+
+    /// Tells the interrupted agents to continue: subagents first (like `write agent://<id>`, which revives them; their
+    /// results reach the main agent the usual way), then the main agent, so its waiting on them holds.
+    /// The marker goes first, so a death during the continuation is an interruption of its own.
+    private func deliver(_ interruption: Interruption, main: Bool, agents: [InterruptedAgent], notContinued: [String]) async {
+        let capabilities = bridgeHello?.capabilities ?? [:]
+        let canMessage = capabilities["agent.message"] == true
+        let canPrompt = capabilities["session.prompt"] == true
+        let messaged = canMessage ? agents : []
+        await mark(interruption, decision: "continued", main: main && canPrompt, agents: messaged.map(\.id))
+        if !agents.isEmpty, !canMessage {
+            notify("warning", "The interrupted subagents (\(agents.map(\.id).joined(separator: ", "))) cannot be asked to continue: this omp's ide-bridge cannot message agents.")
+        }
+        var continued: [String] = []
+        for agent in messaged {
+            do {
+                _ = try await context.bridge.call(
+                    sessionKey, method: "agent.message",
+                    params: ["id": .string(agent.id), "body": .string(ContinuationMessages.agent(agent, cause: interruption.cause))],
+                    timeout: context.timings.bridgeCall)
+                continued.append(agent.id)
+            } catch {
+                notify("warning", "Subagent \(agent.id) could not be asked to continue: \(error)")
+            }
+        }
+        guard main else { return }
+        guard canPrompt else {
+            notify("warning", "The main agent cannot be asked to continue: this omp's ide-bridge cannot submit prompts. Tell it in the session.")
+            return
+        }
+        let leftAgents = notContinued + messaged.map(\.id).filter { !continued.contains($0) }
+        do {
+            try await prompt(ContinuationMessages.main(interruption, continuedAgents: continued, leftAgents: leftAgents))
+        } catch {
+            notify("warning", "The main agent could not be asked to continue: \(error)")
+        }
+    }
+
+    private func prompt(_ text: String) async throws {
+        _ = try await context.bridge.call(sessionKey, method: "session.prompt", params: ["text": .string(text)], timeout: context.timings.bridgeCall)
+    }
+
+    /// Appends the `com.omp-ide.interrupted` entry (IDE bookkeeping, not model context): the interruption is handled,
+    /// and is not reported again at a later death.
+    private func mark(_ interruption: Interruption, decision: String, main: Bool, agents: [String]) async {
+        guard bridgeHello?.capabilities["entry.append"] == true else { return }
+        do {
+            let data: JSONValue = [
+                "recordedAt": .string(Date().formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true))),
+                "detectedAt": .string(interruption.detectedAt.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true))),
+                "cause": .string(interruption.cause),
+                "decision": .string(decision),
+                "main": .bool(main),
+                "pendingToolCalls": try JSONValue(encoding: main ? interruption.pendingToolCalls : []),
+                "agents": .array(agents.map { .string($0) }),
+            ]
+            _ = try await context.bridge.call(
+                sessionKey, method: "entry.append",
+                params: ["customType": .string(InterruptionAnalyzer.markerType), "data": data], timeout: context.timings.bridgeCall)
+        } catch {
+            supervisorLog.error("session \(self.sessionKey, privacy: .public): interruption marker not written: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    // MARK: - Named services
+
+    /// A `service` event: the manifest keeps the spec and whether it should run (omp's broker can neither tell an
+    /// idle-out from a stop nor keep its records).
+    private func noteService(_ data: JSONValue?) async {
+        guard let data, let op = data["op"]?.stringValue else { return }
+        switch op {
+        case "started":
+            guard let name = data["name"]?.stringValue else { return }
+            var env: [String: String] = [:]
+            for (key, value) in data["env"]?.objectValue ?? [:] { if let value = value.stringValue { env[key] = value } }
+            // A new spec under a live name replaces it, and omp resets its mode to `session`.
+            let service = NamedService(
+                id: name, mode: "session", command: data["command"]?.stringValue, cwd: data["cwd"]?.stringValue, env: env,
+                pty: data["pty"]?.boolValue ?? true, ready: data["ready"].flatMap { $0 == .null ? nil : $0 }, desiredRunning: true)
+            await updateEntry { entry in
+                entry.services.removeAll { $0.id == name }
+                entry.services.append(service)
+            }
+        case "stopped", "exited":
+            let names = Set(data["names"]?.arrayValue?.compactMap(\.stringValue) ?? [data["name"]?.stringValue].compactMap { $0 })
+            await updateEntry { entry in
+                for index in entry.services.indices where names.contains(entry.services[index].id) {
+                    entry.services[index].desiredRunning = false
+                }
+            }
+        case "mode":
+            guard let name = data["name"]?.stringValue, let mode = data["mode"]?.stringValue else { return }
+            await updateEntry { entry in
+                for index in entry.services.indices where entry.services[index].id == name {
+                    entry.services[index].mode = mode
+                    if mode == "detached" { entry.services[index].pty = false }
+                }
+            }
+        default:
+            break
+        }
+    }
+
+    /// Services that should run and do not (the broker reaped them with the omp, or the machine restarted) are
+    /// relaunched from the broker's record with `omp ps restart`, which keeps their spec and mode. A service the broker
+    /// no longer knows cannot be relaunched by ompd: a notice says so, and it is not tried again.
+    private func relaunchServices() async {
+        guard let entry = await context.manifest.entry(sessionKey) else { return }
+        let desired = entry.services.filter(\.desiredRunning)
+        guard !desired.isEmpty else { return }
+        let environment = context.baseEnvironment.merging(entry.launch.env) { $1 }
+        let control = context.services
+        let states: [String: String]
+        do {
+            states = try await control.states(workspace: entry.workspace, omp: entry.launch.ompPath, environment: environment)
+        } catch {
+            notify("warning", "Named services could not be checked after the restart: \(error)")
+            return
+        }
+        var restarted: [String] = []
+        var lost: [NamedService] = []
+        for service in desired {
+            guard let state = states[service.id] else {
+                lost.append(service)
+                continue
+            }
+            guard !liveServiceStates.contains(state) else { continue }
+            do {
+                switch try await control.restart(service.id, workspace: entry.workspace, omp: entry.launch.ompPath, environment: environment) {
+                case .restarted: restarted.append(service.id)
+                case .unknown: lost.append(service)
+                case .failed(let message): notify("warning", "The service \(service.id) could not be restarted: \(message)")
+                }
+            } catch {
+                notify("warning", "The service \(service.id) could not be restarted: \(error)")
+            }
+        }
+        if !restarted.isEmpty {
+            notify("info", "Restarted the named service\(restarted.count == 1 ? "" : "s") \(restarted.joined(separator: ", ")).")
+        }
+        guard !lost.isEmpty else { return }
+        for service in lost {
+            notify("warning", "The service \(service.id) was not restored: omp no longer has its record. Ask the agent to start it again\(service.command.map { " (\($0))" } ?? "").")
+        }
+        let names = Set(lost.map(\.id))
+        await updateEntry { entry in
+            for index in entry.services.indices where names.contains(entry.services[index].id) {
+                entry.services[index].desiredRunning = false
+            }
+        }
+    }
+
 
     // MARK: - Bridge
 
@@ -504,8 +762,14 @@ public actor SessionSupervisor {
         warnAboutCapabilities(of: hello)
         await adopt(sessionFile: hello.sessionFile, sessionId: hello.sessionId, title: hello.title, replacingTitle: false)
         await becomeIdleIfStarting()
-        // An omp spawned while no omp IDE window is connected is paused right away.
-        Task { await self.syncPause() }
+        // An omp spawned while no omp IDE window is connected is paused right away, before a recovery gives its
+        // agents anything to do.
+        let recovery = recovery
+        self.recovery = nil
+        Task {
+            await self.syncPause()
+            if let recovery { await self.recover(recovery, generation: generation) }
+        }
         for await event in await context.bridge.events(sessionKey) {
             guard generation == self.generation else { return }
             await handle(bridgeEvent: event)
@@ -559,6 +823,8 @@ public actor SessionSupervisor {
                 return
             }
             await adopt(sessionFile: file, sessionId: session["id"]?.stringValue, title: session["title"]?.stringValue, replacingTitle: true)
+        case "service":
+            await noteService(data)
         default:
             break
         }

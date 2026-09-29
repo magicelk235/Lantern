@@ -2,18 +2,21 @@ import IDEModel
 import SwiftUI
 
 struct SettingsView: View {
+    let connection: DaemonConnection
+
     var body: some View {
         TabView {
-            GeneralSettings()
+            GeneralSettings(connection: connection)
                 .tabItem { Label("General", systemImage: "gearshape") }
             TerminalSettingsPane()
                 .tabItem { Label("Terminal", systemImage: "terminal") }
         }
-        .frame(width: 460, height: 250)
+        .frame(width: 460, height: 360)
     }
 }
 
 private struct GeneralSettings: View {
+    let connection: DaemonConnection
     @AppStorage(AppSettings.defaultApprovalModeKey) private var approvalMode = ""
 
     var body: some View {
@@ -29,6 +32,7 @@ private struct GeneralSettings: View {
             } footer: {
                 Text(explanation)
             }
+            RestorePolicySection(connection: connection)
         }
         .formStyle(.grouped)
     }
@@ -39,6 +43,87 @@ private struct GeneralSettings: View {
             return "omp decides, from tools.approvalMode in your omp config (default: never ask). \(applies)"
         }
         return "\(mode.explanation) \(applies)"
+    }
+}
+
+/// What ompd does with agents that were mid-task when omp stopped unexpectedly. ompd keeps it, not the
+/// defaults: it loads when the pane shows and saves on every change.
+private struct RestorePolicySection: View {
+    let connection: DaemonConnection
+    /// ompd's policy; nil until loaded, and while ompd is out of reach.
+    @State private var policy: RestorePolicy?
+    @State private var failure: String?
+
+    var body: some View {
+        Section {
+            Picker("Main agent", selection: binding(\.main)) { options }
+            Picker("Subagents", selection: binding(\.subagents)) { options }
+        } header: {
+            Text("Interrupted Agents")
+        } footer: {
+            Text(footer)
+        }
+        .disabled(policy == nil)
+        .task(id: connection.isConnected) { await load() }
+    }
+
+    @ViewBuilder private var options: some View {
+        ForEach(ContinuePolicy.allCases, id: \.self) { choice in
+            Text(choice.title).tag(choice)
+        }
+    }
+
+    private var footer: String {
+        if !connection.isConnected { return "Available while ompd is running." }
+        if let failure { return failure }
+        return "When omp stops unexpectedly, ompd starts it again. Agents that were mid-task can then carry on; Ask shows a bar in the session's tab."
+    }
+
+    private func binding(_ keyPath: WritableKeyPath<RestorePolicy, ContinuePolicy>) -> Binding<ContinuePolicy> {
+        Binding {
+            (policy ?? RestorePolicy())[keyPath: keyPath]
+        } set: { choice in
+            guard var changed = policy, changed[keyPath: keyPath] != choice else { return }
+            changed[keyPath: keyPath] = choice
+            policy = changed
+            Task { await save(changed) }
+        }
+    }
+
+    private func load() async {
+        guard connection.isConnected else {
+            policy = nil
+            failure = nil
+            return
+        }
+        do {
+            policy = try await connection.restorePolicy()
+            failure = nil
+        } catch {
+            policy = nil
+            failure = "Could not load this setting: \(error.userMessage)"
+        }
+    }
+
+    private func save(_ changed: RestorePolicy) async {
+        do {
+            policy = try await connection.setRestorePolicy(changed)
+            failure = nil
+        } catch {
+            let message = "Could not save this setting: \(error.userMessage)"
+            await load()
+            failure = message
+        }
+    }
+}
+
+private extension ContinuePolicy {
+    var title: String {
+        switch self {
+        case .auto: "Continue automatically"
+        case .ask: "Ask"
+        case .never: "Don't continue"
+        }
     }
 }
 

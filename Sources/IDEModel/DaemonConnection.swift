@@ -157,8 +157,7 @@ public final class DaemonConnection: TerminalBackend {
     /// Asks ompd to start omp's TUI in `workspace`, `size` big. The new session also arrives through the next `sessions`
     /// push.
     public func createSession(workspace: URL, approvalMode: ApprovalMode?, size: TerminalSize) async throws -> SessionManifestEntry {
-        var path = workspace.standardizedFileURL.path(percentEncoded: false)
-        if path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        let path = Self.folderPath(workspace)
         let size = size.clamped
         let entry = try await connectedClient().call(
             SessionCreate.self,
@@ -168,16 +167,35 @@ public final class DaemonConnection: TerminalBackend {
     }
 
     /// Starts omp again for a closed session, resuming its session file (`session.open`) with the TUI `size` big. ompd
-    /// keeps the session (same key) and moves it to a new PTY, which its tab follows.
-    public func resumeSession(_ sessionKey: SessionKey, size: TerminalSize) async throws -> SessionManifestEntry {
+    /// keeps the session (same key) and moves it to a new PTY, which its tab follows. `workspace`: a folder to run it
+    /// in instead of the recorded one (the session's folder moved or is gone).
+    public func resumeSession(_ sessionKey: SessionKey, in workspace: URL? = nil, size: TerminalSize) async throws -> SessionManifestEntry {
         guard let entry = sessions.first(where: { $0.sessionKey == sessionKey }), let sessionFile = entry.sessionFile else {
             throw DaemonError(.noSuchSession, "ompd knows no session file to resume this session from.")
         }
+        let path = workspace.map { Self.folderPath($0) } ?? entry.workspace
         let size = size.clamped
         let resumed = try await connectedClient().call(
-            SessionOpen.self, .init(sessionFile: sessionFile, workspace: entry.workspace, cols: size.cols, rows: size.rows))
+            SessionOpen.self, .init(sessionFile: sessionFile, workspace: path, cols: size.cols, rows: size.rows))
         adopt(resumed)
         return resumed
+    }
+
+    /// Answers the session's `pendingContinuation`: the main agent (`main`) and the subagents `agents` are asked to
+    /// continue, the rest is left as it is. `main: false, agents: []` leaves it all.
+    public func continueSession(_ sessionKey: SessionKey, main: Bool, agents: [String]) async throws {
+        _ = try await connectedClient().call(SessionContinue.self, .init(sessionKey: sessionKey, main: main, agents: agents))
+    }
+
+    /// What ompd does with agents an omp death interrupted.
+    public func restorePolicy() async throws -> RestorePolicy {
+        try await connectedClient().call(RestorePolicyGet.self, Empty())
+    }
+
+    /// Replaces the restore policy; returns what ompd keeps.
+    @discardableResult
+    public func setRestorePolicy(_ policy: RestorePolicy) async throws -> RestorePolicy {
+        try await connectedClient().call(RestorePolicySet.self, policy)
     }
 
     /// Ends the session's omp gracefully; the session stays listed as closed and can be resumed.
@@ -198,6 +216,13 @@ public final class DaemonConnection: TerminalBackend {
         guard !sessions.contains(where: { $0.sessionKey == entry.sessionKey }) else { return }
         sessions.append(entry)
         openSessions[entry.sessionKey]?.update(entry: entry)
+    }
+
+    /// A folder's path as ompd gets it: standardized, without a trailing slash.
+    private static func folderPath(_ folder: URL) -> String {
+        var path = folder.standardizedFileURL.path(percentEncoded: false)
+        if path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        return path
     }
 
     // MARK: - Connection loop
@@ -343,5 +368,11 @@ extension SessionManifestEntry {
     public var sessionFileIsGone: Bool {
         guard let sessionFile else { return false }
         return !FileManager.default.fileExists(atPath: sessionFile)
+    }
+
+    /// The session's workspace folder is no longer on disk: omp cannot start there.
+    public var workspaceIsGone: Bool {
+        var isDirectory: ObjCBool = false
+        return !FileManager.default.fileExists(atPath: workspace, isDirectory: &isDirectory) || !isDirectory.boolValue
     }
 }

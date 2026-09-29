@@ -43,9 +43,18 @@
  * title {title} (the session name changed), pause {paused, by:"daemon"|"user"} (omp's pause gate closed or opened:
  * `session.pause`/`session.resume`, or the user's /pause and its pause screen), registry:registered|status_changed|
  * metadata_changed|removed (data = agent row), before_subagent_spawn, session_start, session_shutdown, session_switch
- * (per agent instance; data.session is the session info), bridge:error. `agentId` is the agent the event is about
- * (registry rows: the row; before_subagent_spawn: the spawning parent). `seq` is per process and gap-free except where a
- * `gap` frame says otherwise.
+ * (per agent instance; data.session is the session info), service (below), bridge:error. `agentId` is the agent the
+ * event is about (registry rows: the row; before_subagent_spawn: the spawning parent; service: the agent whose tool call
+ * or message it was). `seq` is per process and gap-free except where a `gap` frame says otherwise.
+ * service evts (named services of the launch broker), from every agent instance:
+ *   {op:"started", name, command, cwd, env, pty, ready}  a `bash` call with `name` finished without error; its input
+ *                                                        (`cwd` made absolute against the session cwd; null = not given)
+ *   {op:"stopped", name}                                 a `write` to proc://<name>/kill finished without error
+ *   {op:"mode", name, mode}                              a `write` of persist|session|detached to proc://<name>/mode did
+ *   {op:"exited", names}                                 a `launch-completion` custom message: they exited on their own
+ * Requests are the keys of METHODS below. After a crash ompd continues the resumed main agent with
+ * `session.prompt` (a user message, as if typed); after a wake from sleep `session.watchStall` aborts a
+ * main-agent turn whose model stream made no progress within the timeout.
  *
  * Graceful stop (`session.shutdown`): the reply goes out first, then the main AgentSession is disposed —
  * what the TUI's own /exit does: `session_exit {kind:"normal"}` with the pending tool calls, the turn aborted,
@@ -140,6 +149,8 @@ interface OmpRootLike {
 /** Handler ctx. The public type narrows `sessionManager` to read-only; at runtime it is the live manager. */
 interface CtxLike {
 	sessionManager: SessionManagerLike;
+	/** The session's working directory (what the tools resolve relative paths against). */
+	cwd?: string;
 	getAsyncJobSnapshot?(): { running?: unknown[] } | null;
 	hasPendingMessages?(): boolean;
 	ui?: {
@@ -192,6 +203,14 @@ interface Internals {
 type Handler = (event: unknown, ctx: unknown) => unknown;
 type On = (event: string, handler: Handler) => void;
 
+/** The ExtensionAPI of one session instance (the factory runs once per instance). In interactive mode
+ *  `sendUserMessage` is fire-and-forget: the TUI reports its failures itself. */
+interface ExtensionApiLike {
+	on: On;
+	setLabel?(label: string): void;
+	sendUserMessage?(text: string, options?: unknown): unknown;
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------------------------------------------------
@@ -211,6 +230,27 @@ const MAX_DEPTH = 10;
 /** macOS <fcntl.h>: open(2) takes a shared flock(2) lock; with O_NONBLOCK it fails with EAGAIN while one is held. */
 const O_SHLOCK = 0x10;
 const O_NONBLOCK = 0x4;
+/** setTimeout's largest delay; a longer `session.watchStall` timeout would fire at once. */
+const MAX_TIMER_MS = 2_147_483_647;
+const STALL_ABORT_REASON = "Model stream stalled after the machine woke (omp IDE)";
+/** Main-agent events that count as progress for `session.watchStall`. */
+const PROGRESS_EVENTS = [
+	"message_start",
+	"message_update",
+	"message_end",
+	"tool_execution_start",
+	"tool_execution_update",
+	"tool_execution_end",
+	"turn_start",
+	"turn_end",
+	"auto_retry_start",
+	"auto_retry_end",
+] as const;
+/** omp's `LAUNCH_COMPLETION_MESSAGE_TYPE`: the broker's "service exited" notice, delivered as a custom message. */
+const LAUNCH_COMPLETION = "launch-completion";
+const SERVICE_MODES: Record<string, true> = { persist: true, session: true, detached: true };
+/** `write` targets that control a named service. */
+const PROC_CONTROL = /^proc:\/\/([^/?#\s]+)\/(kill|mode)\/?$/;
 
 const omp = ompModule as unknown as OmpRootLike;
 const MAIN_AGENT_ID = omp.MAIN_AGENT_ID ?? "Main";
@@ -278,8 +318,8 @@ const WIRING = resolveWiring();
 // ---------------------------------------------------------------------------------------------------------------------
 
 /** Bumped whenever the daemon-mode behavior changes (2: TUI sessions: shutdown, activity, title; 3: pause; 4: terminal
- *  mode). */
-const BRIDGE_REVISION = 4;
+ *  mode; 5: session.prompt, stall watch, service events). */
+const BRIDGE_REVISION = 5;
 
 interface GuardSlot {
 	/** The evaluation of this file that serves the process. */
@@ -502,6 +542,7 @@ if (WIRING?.mode !== "daemon") {
 type Phase = "idle" | "connecting" | "accepted" | "rejected" | "closed";
 
 interface Instance {
+	api: ExtensionApiLike;
 	ctx?: CtxLike;
 	agentId?: string;
 	isMain: boolean;
@@ -537,6 +578,12 @@ const S = {
 	pauseScreen: undefined as PauseScreenLike | undefined,
 	/** Interactive mode's TUI instance, captured through a widget factory. */
 	tui: undefined as TuiLike | undefined,
+	/** The main agent is inside a run (`agent_start` .. `agent_end`). */
+	mainRunning: false,
+	/** Main-agent tools executing right now. */
+	mainTools: 0,
+	/** Pending `session.watchStall` requests. */
+	stallWatchers: new Set<StallWatcher>(),
 };
 
 type PausedBy = "daemon" | "user";
@@ -705,6 +752,9 @@ async function probeCapabilities(ctx: CtxLike): Promise<Record<string, boolean>>
 		"events.title": fn(sm, "onSessionNameChanged") && fn(sm, "getSessionName"),
 		"session.shutdown": fn(mainSession(), "dispose"),
 		"session.pause": internals.pauseGate !== undefined,
+		"session.prompt": fn(S.main?.api, "sendUserMessage"),
+		"session.watchStall": fn(mainSession(), "abort"),
+		"events.service": true,
 	};
 }
 
@@ -780,6 +830,7 @@ function endConnection(next: "rejected" | "closed"): void {
 	S.gateUnsub = undefined;
 	clearTimeout(S.settleTimer);
 	S.settleTimer = undefined;
+	dropStallWatchers();
 	const sock = S.sock;
 	S.sock = undefined;
 	try {
@@ -998,6 +1049,7 @@ function subscribePause(gate: PauseGateLike): void {
 				S.pausedBy = paused ? by : undefined;
 				if (!paused) S.pauseScreen = undefined;
 				emit(MAIN_AGENT_ID, "pause", { paused, by });
+				if (paused) settleStallWatchers("paused");
 			} catch (e) {
 				log(`pause event dropped: ${errText(e)}`);
 			}
@@ -1115,6 +1167,140 @@ async function resumeForDaemon(ifPausedBy: PausedBy | undefined): Promise<AnyRec
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Stall watch: after a wake from sleep, a main-agent turn whose model stream never resumes is aborted
+// ---------------------------------------------------------------------------------------------------------------------
+
+type NotStalled = "idle" | "paused" | "active";
+type StallVerdict = { stalled: false; reason: NotStalled } | { stalled: true };
+
+interface StallWatcher {
+	timer: Timer;
+	resolve(verdict: StallVerdict): void;
+	reject(error: Error): void;
+}
+
+/** Why the main agent cannot be stalled right now: no run, the pause gate holds it, or a tool of it is executing. */
+function notStalledReason(): NotStalled | undefined {
+	if (!S.mainRunning) return "idle";
+	if (attempt(() => S.gate?.paused === true, false)) return "paused";
+	if (S.mainTools > 0) return "active";
+	return undefined;
+}
+
+function settleStallWatchers(reason: NotStalled): void {
+	if (S.stallWatchers.size === 0) return;
+	const watchers = [...S.stallWatchers];
+	S.stallWatchers.clear();
+	for (const watcher of watchers) {
+		clearTimeout(watcher.timer);
+		watcher.resolve({ stalled: false, reason });
+	}
+}
+
+/** The daemon connection ended: nobody waits for the verdicts, and no turn is aborted on their behalf. */
+function dropStallWatchers(): void {
+	const watchers = [...S.stallWatchers];
+	S.stallWatchers.clear();
+	for (const watcher of watchers) {
+		clearTimeout(watcher.timer);
+		watcher.reject(new Error("the daemon connection closed"));
+	}
+}
+
+/** Main-agent run tracking for the stall watch; every event of `PROGRESS_EVENTS` is progress. */
+function onMainProgress(kind: (typeof PROGRESS_EVENTS)[number]): void {
+	if (kind === "tool_execution_start") S.mainTools++;
+	else if (kind === "tool_execution_end") S.mainTools = Math.max(0, S.mainTools - 1);
+	settleStallWatchers("active");
+}
+
+/** Waits up to `timeoutMs` for the main agent to show progress; without any, aborts its turn (`{stalled: true}`). */
+async function watchStall(timeoutMs: number): Promise<StallVerdict> {
+	const { pauseGate } = await loadInternals();
+	if (pauseGate) subscribePause(pauseGate);
+	const now = notStalledReason();
+	if (now !== undefined) return { stalled: false, reason: now };
+	if (typeof mainSession()?.abort !== "function") throw new Error("the main session cannot be aborted from the bridge");
+	const { promise, resolve, reject } = Promise.withResolvers<StallVerdict>();
+	const watcher: StallWatcher = {
+		resolve,
+		reject,
+		timer: setTimeout(() => {
+			try {
+				S.stallWatchers.delete(watcher);
+				const reason = notStalledReason();
+				if (reason !== undefined) return resolve({ stalled: false, reason });
+				const session = mainSession();
+				if (typeof session?.abort !== "function") throw new Error("the main session cannot be aborted from the bridge");
+				log(`the main agent made no progress for ${timeoutMs} ms after a wake; aborting its turn`);
+				// Not awaited: abort() waits for the agent loop to go idle, which a hung stream may delay.
+				Promise.resolve()
+					.then(() => session.abort({ reason: STALL_ABORT_REASON }))
+					.catch((e: unknown) => {
+						log(`stall abort failed: ${errText(e)}`);
+						emit(MAIN_AGENT_ID, "bridge:error", { method: "session.watchStall", error: errText(e) });
+					});
+				resolve({ stalled: true });
+			} catch (e) {
+				reject(e instanceof Error ? e : new Error(String(e)));
+			}
+		}, timeoutMs),
+	};
+	watcher.timer.unref?.();
+	S.stallWatchers.add(watcher);
+	return await promise;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Named services: what ompd needs to relaunch them after a crash
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** A tool-level `cwd` as the bash tool resolves it: `~` expanded, relative to the session cwd. Null when not given. */
+function serviceCwd(cwd: unknown, ctx: CtxLike): string | null {
+	if (typeof cwd !== "string" || cwd.trim() === "") return null;
+	let dir = cwd.trim();
+	if (dir === "~") dir = os.homedir();
+	else if (dir.startsWith("~/")) dir = path.join(os.homedir(), dir.slice(2));
+	const base = attempt(() => (typeof ctx.cwd === "string" ? ctx.cwd : ctx.sessionManager.getCwd()), undefined);
+	return base === undefined ? path.resolve(dir) : path.resolve(base, dir);
+}
+
+/** `tool_result` of a call that started, stopped or re-moded a named service; undefined for anything else. */
+function serviceChange(event: unknown, ctx: CtxLike): AnyRecord | undefined {
+	if (!isRecord(event) || event.isError === true || !isRecord(event.input)) return undefined;
+	const input = event.input;
+	if (event.toolName === "bash") {
+		const name = typeof input.name === "string" ? input.name.trim() : "";
+		if (name === "" || typeof input.command !== "string") return undefined;
+		return {
+			op: "started",
+			name,
+			command: input.command,
+			cwd: serviceCwd(input.cwd, ctx),
+			env: isRecord(input.env) ? input.env : null,
+			pty: typeof input.pty === "boolean" ? input.pty : null,
+			ready: isRecord(input.ready) ? input.ready : null,
+		};
+	}
+	if (event.toolName !== "write" || typeof input.path !== "string") return undefined;
+	const target = PROC_CONTROL.exec(input.path.trim());
+	const name = target?.[1];
+	if (name === undefined) return undefined;
+	if (target?.[2] === "kill") return { op: "stopped", name };
+	const mode = typeof input.content === "string" ? input.content.trim() : "";
+	return Object.hasOwn(SERVICE_MODES, mode) ? { op: "mode", name, mode } : undefined;
+}
+
+/** Services named by a `launch-completion` custom message (`details.daemons[].name`); undefined for other messages. */
+function exitedServices(event: unknown): string[] | undefined {
+	const message = isRecord(event) ? event.message : undefined;
+	if (!isRecord(message) || message.role !== "custom" || message.customType !== LAUNCH_COMPLETION) return undefined;
+	const daemons = isRecord(message.details) ? message.details.daemons : undefined;
+	if (!Array.isArray(daemons)) return undefined;
+	return daemons.flatMap((daemon) => (isRecord(daemon) && typeof daemon.name === "string" ? [daemon.name] : []));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Requests
 // ---------------------------------------------------------------------------------------------------------------------
 
@@ -1187,6 +1373,29 @@ const METHODS: Record<string, (params: AnyRecord) => Promise<unknown>> = {
 			throw new Error('params.ifPausedBy must be "daemon" or "user"');
 		}
 		return await resumeForDaemon(ifPausedBy);
+	},
+
+	/** ompd's continuation after a crash, as the user's message (`sendUserMessage`: idle starts a turn,
+	 *  while the agent streams it is queued as a steer). Accepted means handed to omp; the turn shows as `activity`. */
+	async "session.prompt"(params) {
+		const text = requireString(params, "text");
+		const api = S.main?.api;
+		if (typeof api?.sendUserMessage !== "function") throw new Error("the main session cannot be prompted from the bridge");
+		Promise.resolve(api.sendUserMessage(text)).catch((e: unknown) =>
+			emit(MAIN_AGENT_ID, "bridge:error", { method: "session.prompt", error: errText(e) }),
+		);
+		return { accepted: true };
+	},
+
+	/** After a wake. `{stalled: false, reason}` as soon as the main agent is idle ("idle"), paused ("paused")
+	 *  or shows progress ("active": a message, turn, retry or tool event, or a tool still executing); `{stalled: true}`
+	 *  after `timeoutMs` without any, once its turn is being aborted. */
+	async "session.watchStall"(params) {
+		const timeoutMs = params.timeoutMs;
+		if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_MS) {
+			throw new Error(`params.timeoutMs must be a number of milliseconds in (0, ${MAX_TIMER_MS}]`);
+		}
+		return await watchStall(timeoutMs);
 	},
 
 	/** Graceful stop: answers, then disposes the main session and exits 0 like the TUI's own /exit. */
@@ -1332,8 +1541,9 @@ function registerLockMode(on: On): void {
 	on("session_before_switch", async (event, rawCtx) => (owns() ? vetoOwnedSwitch(event, rawCtx) : undefined));
 }
 
-function registerDaemonMode(on: On, wiring: Wiring): void {
-	const inst: Instance = { isMain: false };
+function registerDaemonMode(api: ExtensionApiLike, wiring: Wiring): void {
+	const on = api.on;
+	const inst: Instance = { api, isMain: false };
 
 	on("session_start", async (_event, rawCtx) => {
 		if (!owns()) return;
@@ -1389,6 +1599,8 @@ function registerDaemonMode(on: On, wiring: Wiring): void {
 	on("agent_start", async (_event, rawCtx) => {
 		if (!owns() || inst !== S.main) return;
 		try {
+			S.mainRunning = true;
+			S.mainTools = 0;
 			setActivity("busy");
 			// omp creates the session file lazily, with the first assistant reply.
 			// Written now (the prompt included), a TUI that dies during its first turn is resumed instead of started over.
@@ -1402,10 +1614,38 @@ function registerDaemonMode(on: On, wiring: Wiring): void {
 	on("agent_end", async (_event, rawCtx) => {
 		if (!owns() || inst !== S.main) return;
 		try {
+			S.mainRunning = false;
+			S.mainTools = 0;
+			settleStallWatchers("idle");
 			settleCheck(rawCtx as CtxLike);
 		} catch (e) {
 			log(`agent_end: ${errText(e)}`);
 		}
+	});
+
+	for (const kind of PROGRESS_EVENTS) {
+		on(kind, async (event) => {
+			if (!owns()) return;
+			try {
+				if (inst === S.main) onMainProgress(kind);
+				// The broker's "service exited" notice reaches the owning agent as a custom message.
+				const exited = kind === "message_end" ? exitedServices(event) : undefined;
+				if (exited !== undefined) emit(inst.agentId, "service", { op: "exited", names: exited });
+			} catch (e) {
+				log(`${kind}: ${errText(e)}`);
+			}
+		});
+	}
+
+	on("tool_result", async (event, rawCtx) => {
+		if (!owns()) return undefined;
+		try {
+			const change = serviceChange(event, rawCtx as CtxLike);
+			if (change !== undefined) emit(inst.agentId, "service", change);
+		} catch (e) {
+			log(`tool_result: ${errText(e)}`);
+		}
+		return undefined; // observe only; the result stays as the tool made it
 	});
 
 	on("before_subagent_spawn", async (event) => {
@@ -1427,6 +1667,8 @@ function registerDaemonMode(on: On, wiring: Wiring): void {
 			// Child sessions shut down on every park; only the main session ends the connection.
 			if (inst === S.main) {
 				S.main = undefined;
+				S.mainRunning = false;
+				settleStallWatchers("idle");
 				if (S.phase === "connecting" || S.phase === "accepted") endConnection("closed");
 			}
 		} catch (e) {
@@ -1442,9 +1684,8 @@ function registerDaemonMode(on: On, wiring: Wiring): void {
 export default function ideBridge(pi: ExtensionAPI): void {
 	if (!owns()) return;
 	// ExtensionAPI methods keep their binding when detached (extensions.md).
-	const api = pi as unknown as { on: On; setLabel?: (label: string) => void };
-	const on = api.on;
+	const api = pi as unknown as ExtensionApiLike;
 	attempt(() => api.setLabel?.("omp IDE bridge"), undefined);
-	if (WIRING) registerDaemonMode(on, WIRING);
-	else registerLockMode(on);
+	if (WIRING) registerDaemonMode(api, WIRING);
+	else registerLockMode(api.on);
 }

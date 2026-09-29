@@ -4,7 +4,8 @@ import SwiftUI
 
 /// A session tab: omp's own TUI in a terminal emulator, following omp from PTY to PTY. While the TUI is not
 /// live, a bar under the last screen says why and offers Resume or Close Session; before the tab showed anything, a
-/// placeholder does.
+/// placeholder does. While it is live, a bar there asks whether the agents omp's last death interrupted should carry on
+/// (restore policy `ask`).
 struct SessionTabView: View {
     let app: AppState
     let sessionKey: SessionKey
@@ -30,6 +31,9 @@ struct SessionTabView: View {
                             Button(action.title) { perform(action) }
                         }
                     }
+                } else if notice == nil, let interruption = session.entry?.pendingContinuation {
+                    ContinuationBar(app: app, sessionKey: sessionKey, interruption: interruption)
+                        .id(interruption.detectedAt)
                 }
             }
         }
@@ -38,6 +42,7 @@ struct SessionTabView: View {
     private func perform(_ action: SessionNotice.Action) {
         switch action {
         case .resume: app.resumeSession(sessionKey)
+        case .locateFolder: app.locateFolder(sessionKey)
         case .closeSession: app.requestCloseSession(sessionKey)
         case .forget: app.requestForgetSession(sessionKey)
         case .closeTab: app.closeTab(.session(sessionKey))
@@ -50,11 +55,12 @@ struct SessionTabView: View {
 /// Why omp's TUI is not live in a session tab, and what the user can do about it.
 struct SessionNotice {
     enum Action: Hashable {
-        case resume, closeSession, forget, closeTab, showTerminal
+        case resume, locateFolder, closeSession, forget, closeTab, showTerminal
 
         var title: String {
             switch self {
             case .resume: "Resume"
+            case .locateFolder: "Locate Folder…"
             case .closeSession: "Close Session"
             case .forget: "Remove Session…"
             case .closeTab: "Close Tab"
@@ -98,6 +104,13 @@ struct SessionNotice {
                 "omp Stopped Unexpectedly", "ompd is starting it again with this conversation.", "exclamationmark.triangle",
                 .orange, inProgress: true)
         case .needsAttention:
+            if entry.canLocateFolder {
+                // Resume would fail the same way; the session resumes in the folder the user points at.
+                self.init(
+                    "omp Could Not Be Resumed", daemonMessage ?? "Its folder \(entry.workspace) no longer exists.",
+                    "exclamationmark.octagon", .red, actions: [.locateFolder, .forget])
+                return
+            }
             self.init(
                 "omp Could Not Be Resumed", daemonMessage ?? "It stopped again right after every restart.",
                 "exclamationmark.octagon", .red, actions: entry.isResumable ? [.resume, .forget] : [.forget])
@@ -137,6 +150,81 @@ struct SessionNotice {
         self.tint = tint
         self.inProgress = inProgress
         self.actions = actions
+    }
+}
+
+/// omp died mid-work and ompd started it again; the restore policy says to ask before the interrupted agents are told
+/// and asked to carry on (`pendingContinuation`, `session.continue`). The bar goes once ompd's push clears it.
+private struct ContinuationBar: View {
+    let app: AppState
+    let sessionKey: SessionKey
+    let interruption: Interruption
+    /// An answer is on its way to ompd.
+    @State private var answering = false
+
+    var body: some View {
+        NoticeBar(
+            systemImage: "exclamationmark.triangle", tint: .orange, title: "omp Was Interrupted",
+            message: Self.unfinished(interruption), inProgress: answering, rule: .top
+        ) {
+            if parties > 1 {
+                Menu("Continue") {
+                    if interruption.mainInterrupted {
+                        Button("Only the Main Agent") { answer(main: true, agents: []) }
+                    }
+                    ForEach(interruption.agents, id: \.id) { agent in
+                        Button("Only \(agent.id)") { answer(main: false, agents: [agent.id]) }
+                    }
+                } primaryAction: {
+                    continueAll()
+                }
+                .fixedSize()
+            } else {
+                Button("Continue", action: continueAll)
+            }
+            Button("Leave") { answer(main: false, agents: []) }
+        }
+        .disabled(answering)
+        .help(interruption.cause)
+    }
+
+    /// The main agent (when it was mid-turn) and each interrupted subagent.
+    private var parties: Int { (interruption.mainInterrupted ? 1 : 0) + interruption.agents.count }
+
+    private func continueAll() {
+        answer(main: interruption.mainInterrupted, agents: interruption.agents.map(\.id))
+    }
+
+    private func answer(main: Bool, agents: [String]) {
+        answering = true
+        Task {
+            // On success the bar stays busy until the push that clears the interruption removes it.
+            if await !app.continueSession(sessionKey, main: main, agents: agents) { answering = false }
+        }
+    }
+
+    /// "Unfinished: the main agent's turn (npm test); subagents Sleeper and Scout."
+    static func unfinished(_ interruption: Interruption) -> String {
+        var parts: [String] = []
+        if interruption.mainInterrupted {
+            let calls = interruption.pendingToolCalls.map { clipped($0.summary.isEmpty ? $0.toolName : $0.summary) }
+            parts.append(calls.isEmpty ? "the main agent's turn" : "the main agent's turn (\(list(calls, limit: 2)))")
+        }
+        if !interruption.agents.isEmpty {
+            let ids = interruption.agents.map(\.id)
+            parts.append((ids.count == 1 ? "subagent " : "subagents ") + list(ids, limit: 3))
+        }
+        guard !parts.isEmpty else { return interruption.cause }
+        return "Unfinished: \(parts.joined(separator: "; "))."
+    }
+
+    private static func list(_ items: [String], limit: Int) -> String {
+        guard items.count > limit else { return items.formatted(.list(type: .and)) }
+        return items.prefix(limit).joined(separator: ", ") + " and \(items.count - limit) more"
+    }
+
+    private static func clipped(_ text: String, to length: Int = 40) -> String {
+        text.count > length ? String(text.prefix(length - 1)) + "…" : text
     }
 }
 

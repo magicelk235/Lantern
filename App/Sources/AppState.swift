@@ -334,6 +334,40 @@ final class AppState {
         }
     }
 
+    /// The session's folder is gone: asks where it is now and resumes the session there (same session, new folder).
+    /// Its tab moves to that folder's project, which joins the projects if needed.
+    func locateFolder(_ sessionKey: SessionKey) {
+        guard let folder = WorkspacePicker.choose(prompt: "Resume Here") else { return }
+        let size = connection.openSessions[sessionKey]?.size ?? newTabSize()
+        Task {
+            do {
+                let entry = try await connection.resumeSession(sessionKey, in: folder, size: size)
+                addProject(entry.workspace)
+                if strip(of: entry.workspace)?.tabs.contains(.session(sessionKey)) != true {
+                    tabs.close(.session(sessionKey))
+                }
+                show(entry)
+            } catch {
+                alert = AlertMessage(title: "Could not resume the session", message: error.userMessage)
+            }
+        }
+    }
+
+    /// Answers an interruption waiting for the user: the main agent (`main`) and the subagents `agents` are asked to
+    /// continue, the rest is left. False when ompd refused (the alert says why).
+    func continueSession(_ sessionKey: SessionKey, main: Bool, agents: [String]) async -> Bool {
+        do {
+            try await connection.continueSession(sessionKey, main: main, agents: agents)
+            return true
+        } catch {
+            let leaving = !main && agents.isEmpty
+            alert = AlertMessage(
+                title: leaving ? "Could not leave the interrupted work" : "Could not continue the session",
+                message: error.userMessage)
+            return false
+        }
+    }
+
     /// Ends the session: at once, or after a confirmation while the agent is working (it lives in the window).
     func requestCloseSession(_ sessionKey: SessionKey) {
         guard connection.isConnected, let entry = entry(for: sessionKey) else {
@@ -638,4 +672,6 @@ final class AppState {
 extension SessionManifestEntry {
     /// ompd can resume the session and its session file is still on disk.
     var isResumable: Bool { canResume && !sessionFileIsGone }
+    /// ompd could resume the session but its folder is gone: the user can point at where it is now.
+    var canLocateFolder: Bool { isResumable && workspaceIsGone }
 }

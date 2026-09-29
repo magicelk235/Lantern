@@ -129,6 +129,8 @@ actor ScriptedBridge: SessionBridgeLink {
     private let connects: Bool
     private let shutdown: Bool
     private let pausable: Bool
+    /// Advertised on top of the defaults (`session.prompt`, `agent.message`, `entry.append`, …).
+    private let extraCapabilities: [String: Bool]
     private let omp: FakeOmp
     private var pids: [SessionKey: Int32] = [:]
     private var streams: [SessionKey: (stream: AsyncStream<JSONValue>, sink: AsyncStream<JSONValue>.Continuation)] = [:]
@@ -137,6 +139,8 @@ actor ScriptedBridge: SessionBridgeLink {
     private(set) var calls: [String] = []
     /// `calls` with the session each went to.
     private(set) var sessionCalls: [(sessionKey: SessionKey, method: String)] = []
+    /// `calls` with their params.
+    private(set) var requests: [(method: String, params: JSONValue)] = []
     /// Terminal PTYs with credentials (`expectTerminal`, until `forgetTerminal`).
     private(set) var terminals: Set<PTYID> = []
     private let terminalHelloStream: AsyncStream<TerminalHello>
@@ -147,11 +151,12 @@ actor ScriptedBridge: SessionBridgeLink {
     private(set) var adoptions: [(ptyId: PTYID, sessionKey: SessionKey)] = []
     private(set) var refusals: [(ptyId: PTYID, reason: String)] = []
 
-    init(omp: FakeOmp, connects: Bool, shutdown: Bool = true, pausable: Bool = true) {
+    init(omp: FakeOmp, connects: Bool, shutdown: Bool = true, pausable: Bool = true, capabilities: [String: Bool] = [:]) {
         self.omp = omp
         self.connects = connects
         self.shutdown = shutdown
         self.pausable = pausable
+        extraCapabilities = capabilities
         (terminalHelloStream, terminalHelloSink) = AsyncStream.makeStream(of: TerminalHello.self)
     }
 
@@ -174,7 +179,7 @@ actor ScriptedBridge: SessionBridgeLink {
             capabilities: [
                 "session.info": true, "session.shutdown": shutdown, "events.activity": true, "events.title": true,
                 "session.pause": pausable,
-            ],
+            ].merging(extraCapabilities) { $1 },
             sessionId: "fake-session",
             sessionFile: file, onDisk: true, cwd: "/", artifactsDir: nil, title: nil, pausedBy: nil, raw: ["t": "hello"])
     }
@@ -182,6 +187,7 @@ actor ScriptedBridge: SessionBridgeLink {
     func call(_ sessionKey: SessionKey, method: String, params: JSONValue, timeout: Duration) throws -> JSONValue {
         calls.append(method)
         sessionCalls.append((sessionKey, method))
+        requests.append((method, params))
         switch method {
         case "session.shutdown":
             guard let pid = pids[sessionKey] else { return [:] }
@@ -196,6 +202,21 @@ actor ScriptedBridge: SessionBridgeLink {
             let changed = paused[sessionKey] != nil && (guardOwner == nil || paused[sessionKey] == guardOwner)
             if changed { setGate(sessionKey, nil) }
             return pauseResult(sessionKey, changed: changed)
+        case "entry.append":
+            // As omp's appendCustomEntry + flush: a `custom` line in the session file.
+            guard let pid = pids[sessionKey], let file = omp.sessionFile(of: pid) else { return [:] }
+            let entry: JSONValue = [
+                "type": "custom", "customType": params["customType"] ?? .null, "data": params["data"] ?? .null,
+                "timestamp": .string(Date().formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true))),
+            ]
+            if let line = try? JSONEncoder().encode(entry), let handle = FileHandle(forWritingAtPath: file) {
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: line + Data("\n".utf8))
+                try? handle.close()
+            }
+            return ["entryId": "fake"]
+        case "session.watchStall":
+            return ["stalled": true]
         default:
             return [:]
         }
@@ -394,13 +415,15 @@ struct SupervisorFixture {
     init(
         bridgeConnects: Bool = true, shutdownCapable: Bool = true, locks: FakeLocks = FakeLocks(),
         timings: SupervisorTimings = .fastTests, environment extra: [String: String] = [:],
+        bridgeCapabilities: [String: Bool] = [:], services: any ServiceControl = FakeServices(),
+        restorePolicy: RestorePolicy = RestorePolicy(),
         entry configure: (inout SessionManifestEntry) -> Void = { _ in }
     ) async throws {
         temp = try ShortTempDir()
         omp = try FakeOmp(in: temp.url)
         workspace = try temp.directory("workspace")
         pool = PTYPool(snapshotDirectory: temp.url.appending(path: "pty"), snapshotInterval: .seconds(3600))
-        bridge = ScriptedBridge(omp: omp, connects: bridgeConnects, shutdown: shutdownCapable)
+        bridge = ScriptedBridge(omp: omp, connects: bridgeConnects, shutdown: shutdownCapable, capabilities: bridgeCapabilities)
         self.locks = locks
         manifest = ManifestPublisher(store: ManifestStore(url: temp.url.appending(path: "sessions.json")))
         var entry = SessionManifestEntry(
@@ -412,7 +435,10 @@ struct SupervisorFixture {
             createdAt: Date())
         configure(&entry)
         let seeded = entry
-        try await manifest.update { $0.sessions = [seeded] }
+        try await manifest.update {
+            $0.sessions = [seeded]
+            $0.restorePolicy = restorePolicy
+        }
         let published = published
         let key = key
         manifest.setSink { list in
@@ -424,7 +450,7 @@ struct SupervisorFixture {
         let persistenceFailures = persistenceFailures
         let context = SupervisorContext(
             manifest: manifest, ptys: pool, bridge: bridge, locks: locks, bridgeExtension: "/fake/ide-bridge.ts",
-            baseEnvironment: omp.environment.merging(extra) { $1 }, timings: timings,
+            baseEnvironment: omp.environment.merging(extra) { $1 }, timings: timings, services: services,
             persistenceFailed: { error in persistenceFailures.mutate { $0.append("\(error)") } },
             notify: { notice in notices.mutate { $0.append(notice) } })
         supervisor = SessionSupervisor(entry: seeded, context: context)
@@ -524,4 +550,24 @@ func screenLines(_ attach: PTYAttach.Result) -> [String] {
         }
     }
     return lines
+}
+
+/// Scripted `ServiceControl`: the broker's states per service name, and the outcome of a restart per name
+/// (`.restarted` when not listed); restarts are recorded.
+final class FakeServices: ServiceControl {
+    let states: [String: String]
+    let outcomes: [String: ServiceRestart]
+    let restarts = Box<[String]>([])
+
+    init(states: [String: String] = [:], outcomes: [String: ServiceRestart] = [:]) {
+        self.states = states
+        self.outcomes = outcomes
+    }
+
+    func states(workspace: String, omp: String, environment: [String: String]) async throws -> [String: String] { states }
+
+    func restart(_ name: String, workspace: String, omp: String, environment: [String: String]) async throws -> ServiceRestart {
+        restarts.mutate { $0.append(name) }
+        return outcomes[name] ?? .restarted
+    }
 }

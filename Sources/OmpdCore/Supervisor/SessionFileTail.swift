@@ -65,8 +65,8 @@ enum SessionFileTail {
         return Fingerprint(size: info.st_size, seconds: info.st_mtimespec.tv_sec, nanoseconds: info.st_mtimespec.tv_nsec)
     }
 
-    /// omp's `recordedAt`: `2026-09-25T10:45:22.233Z`.
-    private static func parseTimestamp(_ text: String) -> Date? {
+    /// omp's `recordedAt` and entry `timestamp`: `2026-09-25T10:45:22.233Z`.
+    static func parseTimestamp(_ text: String) -> Date? {
         if let date = try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(text) { return date }
         return try? Date.ISO8601FormatStyle().parse(text)
     }

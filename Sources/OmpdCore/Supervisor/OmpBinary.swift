@@ -83,18 +83,21 @@ enum OmpBinary {
         return url.standardizedFileURL.path
     }
 
-    /// Runs a short-lived command (stdin and stderr on /dev/null) and returns how it ended and its stdout.
-    /// Output beyond the pipe buffer (64 KiB) blocks the command until the timeout kills it.
-    private static func run(
-        _ path: String, arguments: [String], timeout: Duration
+    /// Runs a short-lived command (stdin on /dev/null; stderr on /dev/null, or into stdout with `mergingStderr`) and
+    /// returns how it ended and its output. `environment` nil inherits ompd's. Output beyond the pipe buffer (64 KiB)
+    /// blocks the command until the timeout kills it.
+    static func run(
+        _ path: String, arguments: [String], environment: [String: String]? = nil, mergingStderr: Bool = false,
+        timeout: Duration
     ) async throws -> (Process.TerminationReason, Int32, String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
+        if let environment { process.environment = environment }
         process.standardInput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
         let stdout = Pipe()
         process.standardOutput = stdout
+        process.standardError = mergingStderr ? stdout : FileHandle.nullDevice
         let (exits, exited) = AsyncStream.makeStream(of: (Process.TerminationReason, Int32).self)
         process.terminationHandler = {
             exited.yield(($0.terminationReason, $0.terminationStatus))
