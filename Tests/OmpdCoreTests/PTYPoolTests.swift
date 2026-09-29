@@ -307,6 +307,28 @@ import Testing
         }
     }
 
+    @Test func theDividerGoesBelowEverythingTheOldProgramLeftUnderItsCursor() async throws {
+        try await withFixture { fixture in
+            // A TUI that died with its cursor mid-screen and a dialog drawn below it (omp waiting on an approval).
+            let dialog = #"printf 'prompt> \n\n\ndialog-top\ndialog-bottom\033[2;9H'; sleep 30"#
+            let old = try await fixture.openSession("s1", ["/bin/sh", "-c", dialog])
+            let watcher = try await Client.attach(fixture.pool, old.ptyId)
+            #expect(try await eventually { watcher.lines().contains("dialog-bottom") })
+            try await fixture.pool.signal(old.ptyId, SIGKILL)
+            #expect(try await eventually { await fixture.pool.info(old.ptyId)?.running == false })
+
+            // The new TUI paints over its whole screen from the top, as omp's does.
+            let repaint = #"printf '\033[H\033[2J\033[3J'; i=0; while [ $i -lt 24 ]; do printf 'new-row\n'; i=$((i+1)); done; sleep 30"#
+            let new = try await fixture.openSession("s1", ["/bin/sh", "-c", repaint], continuing: old.ptyId)
+            let client = try await Client.attach(fixture.pool, new.ptyId)
+            #expect(try await eventually { client.lines().filter { $0 == "new-row" }.count == 24 })
+            let lines = client.lines()
+            let divider = try #require(lines.firstIndex(of: "— terminal restarted —"), "the divider survives: \(lines)")
+            #expect(lines[..<divider].contains("dialog-bottom"), "the whole old screen is above it")
+            #expect(!lines[divider...].contains("dialog-bottom"))
+        }
+    }
+
     @Test func sessionScreensOutliveTheDaemonButNotTheirSessions() async throws {
         try await withFixture { fixture in
             let kept = try await fixture.openSession("kept", ["/bin/sh", "-c", "echo before-restart; sleep 30"])

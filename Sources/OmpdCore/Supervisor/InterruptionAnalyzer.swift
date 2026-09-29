@@ -113,12 +113,17 @@ struct TranscriptState: Equatable {
         var toolCalls: [JSONValue]
     }
 
+    /// An abort that ends the turn on purpose: the user's (Esc) or omp's after its retries ran out.
+    static func endsTurnOnPurpose(abort errorMessage: String?) -> Bool {
+        guard let errorMessage else { return false }
+        return errorMessage == "Interrupted by user" || errorMessage.hasPrefix("Aborted after ")
+    }
+
     /// nil when the file cannot be read.
     static func read(path: String, since: Date?, window: Int) -> TranscriptState? {
         guard let entries = tail(path: path, window: window) else { return nil }
         var lastMarker: (index: Int, at: Date?)?
         var lastMessage: Message?
-        var previousMessageIndex = -1
         var exits: [(index: Int, recordedAt: Date?, pending: [JSONValue])] = []
         var starts: [(index: Int, at: Date?, data: JSONValue)] = []
         var results: [(index: Int, toolCallId: String)] = []
@@ -131,7 +136,6 @@ struct TranscriptState: Equatable {
                       ["user", "assistant", "toolResult"].contains(role)
                 else { continue }
                 if role == "toolResult", let id = message["toolCallId"]?.stringValue { results.append((index, id)) }
-                previousMessageIndex = lastMessage?.index ?? -1
                 lastMessage = Message(
                     index: index, role: role, stopReason: message["stopReason"]?.stringValue,
                     errorMessage: message["errorMessage"]?.stringValue,
@@ -163,11 +167,10 @@ struct TranscriptState: Equatable {
         }
         let evalUsed = starts.contains { inRun($0.index, $0.at) && $0.data["toolName"]?.stringValue == "eval" }
         let markerAt = lastMarker?.at
+        let notInterrupted = TranscriptState(interrupted: false, pendingToolCalls: [], evalUsed: evalUsed, lastMarkerAt: markerAt)
 
         // Handled already: a marker after the last message.
-        guard let message = lastMessage, message.index >= floor else {
-            return TranscriptState(interrupted: false, pendingToolCalls: [], evalUsed: evalUsed, lastMarkerAt: markerAt)
-        }
+        guard let message = lastMessage, message.index >= floor else { return notInterrupted }
         let interrupted: Bool
         switch message.role {
         case "user", "toolResult":
@@ -177,18 +180,16 @@ struct TranscriptState: Equatable {
             case "toolUse":
                 interrupted = true
             case "aborted":
-                // Aborted by the process's own teardown (a graceful stop persists the partial reply after
-                // `session_exit`), or omp's synthetic abort for a turn a previous process never finished. An abort
-                // the user asked for (Esc) has neither.
-                interrupted = exits.contains { $0.index > previousMessageIndex && $0.index < message.index }
-                    || message.errorMessage?.contains("exited before completing") == true
+                // Only two aborts end a turn on purpose: the user's (Esc, "Interrupted by user") and omp giving up on
+                // retries ("Aborted after N retry attempts"). Any other was the process's own teardown ("Request was
+                // aborted", "Operation aborted", persisted around its `session_exit` or with none at all: SIGTERM,
+                // SIGHUP, a graceful stop) or omp's synthetic abort for a turn a previous process never finished.
+                interrupted = !TranscriptState.endsTurnOnPurpose(abort: message.errorMessage)
             default:
                 interrupted = false
             }
         }
-        guard interrupted else {
-            return TranscriptState(interrupted: false, pendingToolCalls: [], evalUsed: evalUsed, lastMarkerAt: markerAt)
-        }
+        guard interrupted else { return notInterrupted }
 
         let answered = Set(results.filter { $0.index >= floor }.map(\.toolCallId))
         var pending: [InterruptedToolCall] = []

@@ -294,7 +294,7 @@ struct StatusBanners: View {
                     }
                 }
             }
-            if let notice = connection.latestNotice {
+            if let notice = connection.latestNotice, !shownBySessionBar(notice) {
                 NoticeBar(
                     systemImage: notice.level == "info" ? "info.circle" : "exclamationmark.triangle",
                     tint: notice.level == "error" ? .red : notice.level == "warning" ? .orange : .blue,
@@ -330,5 +330,11 @@ struct StatusBanners: View {
                 EmptyView()
             }
         }
+    }
+
+    /// A notice about a session that needs attention: that session's own bar already shows it, with its actions.
+    private func shownBySessionBar(_ notice: DaemonNotice) -> Bool {
+        guard let key = notice.sessionKey else { return false }
+        return connection.sessions.first { $0.sessionKey == key }?.status == .needsAttention
     }
 }

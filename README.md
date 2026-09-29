@@ -14,7 +14,7 @@ Native macOS IDE for [omp](https://github.com/can1357/oh-my-pi) (Swift 6, SwiftU
 | `Sources/IDEEditorModel` | editor logic without AppKit: text file read/atomic save, content-hash buffer state machine (dirty, revert, external change, hot-exit restore), line diff, navigator listing, FSEvents watcher |
 | `bridge/ide-bridge.ts` | omp extension loaded into every daemon-owned omp and, installed globally, into every other omp (agent registry, revive, pause/resume via omp's `/pause`, continuation prompts, named-service events, wake stall watch, ownership lock; terminal mode has an omp started in an IDE terminal adopted by ompd) |
 | `App/` | XcodeGen spec + SwiftUI sources for `omp IDE.app` (embeds `ompd` and its LaunchAgent plist) |
-| `scripts/` | `dev-launchagent.sh` (dev LaunchAgent), `acceptance.sh` (TUI-session acceptance with real omp) |
+| `scripts/` | `dev-launchagent.sh` (dev LaunchAgent), `acceptance.sh` (TUI-session acceptance with real omp), `chaos.sh` (Phase 3 chaos matrix with real omp) |
 
 ## Build
 
@@ -26,6 +26,7 @@ The app must be signed with a real identity, even locally: Background Task Manag
 xcodebuild -downloadComponent MetalToolchain   # once; SwiftTerm compiles Metal shaders
 swift build && swift test                      # package + tests
 ./scripts/acceptance.sh                         # acceptance with real omp (spends a few haiku calls)
+./scripts/chaos.sh ["omp SIGKILL" ...]          # chaos matrix (haiku calls; ~20 min for every row)
 
 cd App && xcodegen generate --spec project.yml
 xcodebuild -project OmpIDE.xcodeproj -scheme "omp IDE" -configuration Debug \
@@ -50,7 +51,7 @@ With `OMPD_HOME` set, the app does not register the production LaunchAgent (`com
 |---|---|
 | 1 ompd core | done (rebuilt for TUI sessions). `scripts/acceptance.sh`: a prompt typed into the session TUI runs a nested task while a client detaches and reattaches; `launchctl kickstart -k` mid-run respawns the session with `--resume` in a new PTY that continues the old screen |
 | 2 App shell | done for Regime A: session tabs are omp's TUI; ⌘Q mid-tool, relaunch → the tab reattaches and shows the finished run; editor/terminal tabs and unsaved edits restore. Regime B2 (real logout/reboot) not yet exercised |
-| 3 Regime B (continuation policy, service relaunch) | implemented: an omp that dies is resumed and its interrupted agents are continued, held for the user (a bar in the session tab) or left, per the restore policy in Settings; named services relaunched; stalled turns after a wake aborted and continued; a session whose folder moved can be pointed at the new one. Real-omp smoke done; the automated chaos matrix and a real logout/reboot run are not |
+| 3 Regime B (continuation policy, service relaunch) | done: an omp that dies is resumed and its interrupted agents are continued, held for the user (a bar in the session tab) or left, per the restore policy in Settings; named services relaunched; stalled turns after a wake aborted and continued; a session whose folder moved can be pointed at the new one. `scripts/chaos.sh`: 35/35 cells green (app, omp and ompd deaths × idle, streaming, mid-tool, mid-subagent, pending ask/approval, named service). Logout, reboot, power loss and sleep need a VM and are not staged |
 | 4 Agent supervision UX (agent tree, jobs, director, session picker) | not started |
 | 5 Hardening (upgrades, disk pressure) | not started |
 

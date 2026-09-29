@@ -44,6 +44,17 @@ final class TerminalMirror {
         terminal.resize(cols: cols, rows: rows)
     }
 
+    /// Screen row (0-based, visible screen) of the last row with any content; nil for a blank screen.
+    var lastNonBlankScreenRow: Int? {
+        var total = 0
+        while terminal.bufferLine(atRow: total) != nil { total += 1 }
+        let screenTop = max(total - terminal.rows, 0)
+        for row in stride(from: total - 1, through: screenTop, by: -1) where terminal.bufferLine(atRow: row)?.hasAnyContent() == true {
+            return row - screenTop
+        }
+        return nil
+    }
+
     /// VT byte stream that repaints scrollback, screen, cursor, attributes and terminal modes into a fresh
     /// terminal of `cols`×`rows`. With `includePending`, the bytes of an escape sequence or UTF-8 character that
     /// is still in flight are appended, so live output that follows continues seamlessly.

@@ -34,8 +34,11 @@ private enum Line {
         ], at: date)
     }
 
-    static func reply(stopReason: String = "stop", at date: Date) -> String {
-        message(["role": "assistant", "stopReason": .string(stopReason), "content": [["type": "text", "text": "done"]]], at: date)
+    /// A reply; an `aborted` one carries omp's error text (teardown: "Request was aborted"; Esc: "Interrupted by user").
+    static func reply(stopReason: String = "stop", error: String? = nil, at date: Date) -> String {
+        var message: [String: JSONValue] = ["role": "assistant", "stopReason": .string(stopReason), "content": [["type": "text", "text": "done"]]]
+        if let error { message["errorMessage"] = .string(error) }
+        return self.message(.object(message), at: date)
     }
 
     static func toolStart(_ id: String, tool: String = "bash", command: String, at date: Date) -> String {
@@ -100,9 +103,11 @@ private func append(_ lines: [String], to path: String) throws {
     @Test func aFinishedTurnOrAnAbortTheUserAskedForIsNotAnInterruption() throws {
         try write([Line.user("hi", at: at(1)), Line.reply(at: at(2))], to: file)
         #expect(InterruptionAnalyzer.analyze(sessionFile: file, since: at(0), cause: "crash") == nil)
-        // Esc: an aborted reply with no teardown before it.
-        try write([Line.user("hi", at: at(1)), Line.reply(stopReason: "aborted", at: at(2))], to: file)
-        #expect(InterruptionAnalyzer.analyze(sessionFile: file, since: at(0), cause: "crash") == nil)
+        // Esc, and a turn omp gave up on after its retries: aborted on purpose, whenever omp died.
+        for error in ["Interrupted by user", "Aborted after 5 retry attempts"] {
+            try write([Line.user("hi", at: at(1)), Line.reply(stopReason: "aborted", error: error, at: at(2)), Line.sessionExit(at: at(2))], to: file)
+            #expect(InterruptionAnalyzer.analyze(sessionFile: file, since: at(0), cause: "crash") == nil, "\(error)")
+        }
     }
 
     @Test func aGracefulStopMidToolReportsTheCallsOmpAbortedItself() throws {
@@ -118,9 +123,37 @@ private func append(_ lines: [String], to path: String) throws {
 
     @Test func aReplyAbortedByTheTeardownIsAnInterruption() throws {
         // EOF mid-stream: the partial reply is persisted after session_exit.
-        try write([Line.user("write", at: at(1)), Line.sessionExit(at: at(2)), Line.reply(stopReason: "aborted", at: at(2))], to: file)
+        try write([Line.user("write", at: at(1)), Line.sessionExit(at: at(2)), Line.reply(stopReason: "aborted", error: "Request was aborted", at: at(2))], to: file)
         let found = try #require(InterruptionAnalyzer.analyze(sessionFile: file, since: at(0), cause: "ompd restarted"))
         #expect(found.mainInterrupted && found.pendingToolCalls.isEmpty)
+
+        // SIGHUP while waiting on a subagent (chaos matrix): the exit, then the aborted `wait` result, then the aborted
+        // reply, all written by the dying process.
+        try write([
+            Line.user("fan out", at: at(1)), Line.toolUse("w1", command: "wait", at: at(2)), Line.toolStart("w1", command: "wait", at: at(2)),
+            Line.sessionExit(pending: [("w1", "wait")], at: at(3)), Line.toolResult("w1", at: at(3)),
+            Line.reply(stopReason: "aborted", error: "Request was aborted", at: at(3)),
+        ], to: file)
+        let hungUp = try #require(InterruptionAnalyzer.analyze(sessionFile: file, since: at(0), cause: "ompd restarted"))
+        #expect(hungUp.mainInterrupted && hungUp.pendingToolCalls.map(\.toolCallId) == ["w1"])
+    }
+
+    @Test func aReplyAbortedByTheTeardownIsAnInterruptionEvenWithoutASessionExit() throws {
+        // Chaos matrix, SIGTERM, SIGHUP or ompd's graceful stop mid-stream: omp persists the aborted partial reply and
+        // no session_exit at all.
+        try write([Line.user("write", at: at(1)), Line.reply(stopReason: "aborted", error: "Request was aborted", at: at(10))], to: file)
+        #expect(try #require(InterruptionAnalyzer.analyze(sessionFile: file, since: at(0), cause: "crash")).mainInterrupted)
+
+        // A subagent disposed by the same stop: aborted result and reply first, its session_exit after them.
+        try write([Line.user("write", at: at(1)), Line.reply(at: at(2))], to: file)
+        let artifacts = try temp.directory("session")
+        try write([
+            Line.user("task", at: at(3)), Line.toolUse("s1", command: "sleep 40", at: at(4)), Line.toolStart("s1", command: "sleep 40", at: at(4)),
+            Line.toolResult("s1", at: at(10)), Line.reply(stopReason: "aborted", error: "Request was aborted", at: at(10)),
+            Line.sessionExit(pending: [("s1", "sleep 40")], at: at(10)),
+        ], to: artifacts + "/Sleeper.jsonl")
+        let found = try #require(InterruptionAnalyzer.analyze(sessionFile: file, since: at(0), cause: "ompd restarted"))
+        #expect(found.agents.map(\.id) == ["Sleeper"] && found.agents.first?.pendingToolCalls.map(\.toolCallId) == ["s1"])
     }
 
     @Test func aHandledInterruptionIsNotReportedAgainUntilANewTurnIsCutShort() throws {

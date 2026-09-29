@@ -467,12 +467,18 @@ public actor PTYPool {
     }
 
     /// Leaves whatever mode the old program had set (alternate screen, mouse reporting, kitty keyboard flags,
-    /// scroll region, pen, …) before the new process starts writing below the divider.
+    /// scroll region, pen, …) before the new process starts writing below the divider. The divider goes below the
+    /// last non-blank row of the old screen, wherever its cursor was: a TUI left mid-screen (omp with a dialog open
+    /// below its editor) would otherwise keep rows below the divider, which the new program then paints over.
     private static func resetForRestart(_ mirror: TerminalMirror) {
         if mirror.terminal.isCurrentBufferAlternate { mirror.feed(Array("\u{1b}[?1049l".utf8)) }
         mirror.terminal.softReset()
         let modesOff = [5, 9, 69, 1000, 1002, 1003, 1004, 1005, 1006, 1015, 1016, 2004, 2026].map { "\u{1b}[?\($0)l" }.joined()
-        mirror.feed(Array((modesOff + "\u{1b}[<16u\u{1b}[0m" + restartDivider).utf8))
+        var reset = modesOff + "\u{1b}[<16u\u{1b}[0m"
+        if let lastRow = mirror.lastNonBlankScreenRow, lastRow > mirror.terminal.getCursorLocation().y {
+            reset += "\u{1b}[\(lastRow + 1);1H"
+        }
+        mirror.feed(Array((reset + restartDivider).utf8))
     }
 
     /// Scrolls the whole screen (the old screen down to the divider) into the scrollback: the new program's first

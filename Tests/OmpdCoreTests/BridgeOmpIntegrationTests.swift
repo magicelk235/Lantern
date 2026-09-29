@@ -100,12 +100,22 @@ private final class OmpChild {
 
     func waitForExit(seconds: Double = 30) async throws -> Exit {
         let exit = exit
-        return try await bridgeWithin("omp pid \(pid) to exit", seconds: seconds) {
-            while true {
-                if let status = exit.withLock({ $0 }) { return status }
-                try await Task.sleep(for: .milliseconds(20))
+        do {
+            return try await bridgeWithin("omp pid \(pid) to exit", seconds: seconds) {
+                while true {
+                    if let status = exit.withLock({ $0 }) { return status }
+                    try await Task.sleep(for: .milliseconds(20))
+                }
             }
+        } catch {
+            let lines = output.withLock { $0.lines.suffix(5) }
+            let arguments = (process.arguments ?? []).filter { !$0.hasPrefix("/") }.joined(separator: " ")
+            throw ExitTimeout(description: "\(error) (omp \(arguments)); stderr: \(stderrText.suffix(1500)); last stdout: \(lines)")
         }
+    }
+
+    struct ExitTimeout: Error, CustomStringConvertible {
+        let description: String
     }
 
     /// SIGKILLs the child if it is still running (only processes this test spawned).
@@ -114,7 +124,7 @@ private final class OmpChild {
     }
 }
 
-/// Private omp surroundings: IDE home (`OMPD_HOME`), session dir, workspace, settings overlay.
+/// Private omp surroundings: IDE home (`OMPD_HOME`), session dir, workspace, settings overlay, terminal id.
 private struct Sandbox {
     let dir: StorageTempDir
     let paths: AppSupportPaths
@@ -122,6 +132,7 @@ private struct Sandbox {
     let workspace: URL
     let overlay: URL
     let bridge: URL
+    let terminal: TerminalIdentity
 
     init() throws {
         dir = try StorageTempDir()
@@ -135,6 +146,7 @@ private struct Sandbox {
         // Keep the run off the user's memory / auto-learn surface; no model turn happens anyway.
         try Data("memory:\n  backend: \"off\"\nautolearn:\n  enabled: false\n".utf8).write(to: overlay)
         bridge = try BridgeInstaller.stage(into: paths)
+        terminal = TerminalIdentity()
     }
 
     /// `extensions` load in order; the default is ompd's staged copy.
@@ -152,11 +164,20 @@ private struct Sandbox {
             ] + extra
     }
 
-    /// The test's environment without any daemon wiring, pointed at this sandbox's `OMPD_HOME`, plus `adding`.
+    /// Variables omp derives a terminal id from when it has no TTY (session-switching-and-recent-listing.md).
+    static let terminalIdentifiers = [
+        "TERM_SESSION_ID", "TMUX_PANE", "ZELLIJ_PANE_ID", "CMUX_SURFACE_ID", "KITTY_WINDOW_ID", "WEZTERM_PANE", "WT_SESSION",
+    ]
+
+    /// The test's environment without any daemon wiring, pointed at this sandbox's `OMPD_HOME` and terminal id, plus
+    /// `adding`.
     func environment(adding extra: [String: String] = [:]) -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment.filter { !$0.key.hasPrefix("OMP_IDE_") }
+        var environment = ProcessInfo.processInfo.environment.filter {
+            !$0.key.hasPrefix("OMP_IDE_") && !Self.terminalIdentifiers.contains($0.key)
+        }
         environment[AppSupportPaths.homeEnvironmentKey] = paths.root.path(percentEncoded: false)
         environment["PI_NO_TITLE"] = "1"
+        environment["TERM_SESSION_ID"] = terminal.id
         return environment.merging(extra) { _, new in new }
     }
 
@@ -164,6 +185,22 @@ private struct Sandbox {
         _ omp: URL, _ extra: [String] = [], extensions: [URL]? = nil, adding environment: [String: String] = [:]
     ) throws -> OmpChild {
         try OmpChild(omp, arguments(extra, extensions: extensions), environment: self.environment(adding: environment), cwd: workspace)
+    }
+}
+
+/// The terminal a sandbox's omps say they run in. omp keeps a `--continue` breadcrumb per terminal
+/// (`~/.omp/agent/terminal-sessions/apple-<TERM_SESSION_ID>`): with the terminal running the tests they would share
+/// (and overwrite) the user's own, and with each other `--continue` would follow another test's session. Without any
+/// id `--continue` falls back to the newest session omp knows of, which under a busy test run is not reliably this
+/// sandbox's. A fresh id per sandbox makes `--continue` follow this sandbox's own last session; its breadcrumb is
+/// removed with the sandbox.
+private final class TerminalIdentity: Sendable {
+    let id = UUID().uuidString
+
+    deinit {
+        let breadcrumb = FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: ".omp/agent/terminal-sessions/apple-\(id)", directoryHint: .notDirectory)
+        try? FileManager.default.removeItem(at: breadcrumb)
     }
 }
 
