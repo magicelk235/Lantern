@@ -119,8 +119,13 @@ struct SessionPicker: View {
     }
 
     private func load() async {
-        // `--session-dir` folders ompd starts omp with hold sessions of every workspace; the listing keeps this one's.
-        let sessionDirectories = Set(app.connection.sessions.compactMap(\.launch.sessionDir)).map { URL(filePath: $0, directoryHint: .isDirectory) }
+        // `--session-dir` folders ompd starts omp with (the launch spec's, or one passed through its extra arguments)
+        // hold sessions of every workspace; the folders of the session files ompd knows find them either way. The
+        // listing keeps this workspace's.
+        let sessionDirectories = Set(
+            app.connection.sessions.compactMap(\.launch.sessionDir)
+                + app.connection.sessions.compactMap { $0.sessionFile.map { ($0 as NSString).deletingLastPathComponent } }
+        ).map { URL(filePath: $0, directoryHint: .isDirectory) }
         let listed = await SessionFileListing.list(
             workspace: URL(filePath: project, directoryHint: .isDirectory), sessionDirectories: sessionDirectories)
         sessions = listed

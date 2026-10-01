@@ -30,7 +30,15 @@ struct AgentsPane: View {
                 }
                 .help(failure)
             }
-            if sessions.isEmpty && listed.isEmpty {
+            if !app.connection.isConnected {
+                // What omp runs is unknown, not nothing: the rows come back with the connection.
+                ContentUnavailableView {
+                    Text("Not Connected")
+                } description: {
+                    Text("Agents, jobs and named services show again once ompd is back.")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if sessions.isEmpty && listed.isEmpty {
                 ContentUnavailableView {
                     Text("No Running Sessions")
                 } description: {

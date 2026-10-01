@@ -103,9 +103,10 @@ struct ProjectWindow: View {
 }
 
 /// The column of icons at the window's left edge: Files, Changes (badged with the count of changed files), Agents
-/// (badged in red with the approvals and questions waiting in the project's sessions) and Projects. A click shows the
-/// pane; a click on the pane already showing hides the sidebar. Its own look, not an activity bar copied from
-/// elsewhere: 16pt outline symbols, the current one on a filled rounded square.
+/// (badged in red with the approvals and questions waiting in the project's sessions) and Projects (badged in red with
+/// those waiting in the other projects). A click shows the pane; a click on the pane already showing hides the
+/// sidebar. Its own look, not an activity bar copied from elsewhere: 16pt outline symbols, the current one on a filled
+/// rounded square.
 struct ActivityBar: View {
     let app: AppState
     let project: String
@@ -117,7 +118,7 @@ struct ActivityBar: View {
             ForEach(SidebarPane.allCases, id: \.self) { pane in
                 ActivityButton(
                     pane: pane, isCurrent: app.sidebarVisible && app.pane == pane, badge: badge(of: pane),
-                    badgeTint: pane == .agents ? .red : .accentColor
+                    badgeTint: pane == .agents || pane == .projects ? .red : .accentColor
                 ) {
                     app.togglePane(pane)
                 }
@@ -134,7 +135,8 @@ struct ActivityBar: View {
         switch pane {
         case .changes: changeCount
         case .agents: project.isEmpty ? 0 : app.attentionCount(in: project)
-        case .files, .projects: 0
+        case .projects: app.connection.attentionCount - (project.isEmpty ? 0 : app.attentionCount(in: project))
+        case .files: 0
         }
     }
 

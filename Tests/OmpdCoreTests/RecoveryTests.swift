@@ -190,15 +190,20 @@ private func append(_ lines: [String], to path: String) throws {
         let midTool = [Line.user("task", at: at(3)), Line.toolUse("s1", command: "sleep 30", at: at(4)), Line.toolStart("s1", command: "sleep 30", at: at(4))]
         try agent("Sleeper", midTool)
         try agent("Finished", midTool, output: "{\"output\":\"ok\"}")
+        // SIGHUP mid-call: omp's teardown aborts the call and writes what the agent had said so far as its output.
+        try agent(
+            "TornDown", midTool + [Line.sessionExit(pending: [("s1", "sleep 30")], at: at(5)), Line.toolResult("s1", at: at(5))],
+            output: "Running sleep 30...")
         try agent("Killed", midTool, output: "", tombstone: true)
         try agent("Stale", midTool, modified: at(-100))
         try agent("Idle", [Line.user("task", at: at(3)), Line.reply(at: at(4))])
 
         let found = try #require(InterruptionAnalyzer.analyze(sessionFile: file, since: at(0), cause: "crash"))
         #expect(!found.mainInterrupted)
-        #expect(found.agents == [InterruptedAgent(id: "Sleeper", pendingToolCalls: [
-            InterruptedToolCall(toolCallId: "s1", toolName: "bash", summary: "sleep 30"),
-        ])])
+        let midCall = [InterruptedToolCall(toolCallId: "s1", toolName: "bash", summary: "sleep 30")]
+        #expect(found.agents == [
+            InterruptedAgent(id: "Sleeper", pendingToolCalls: midCall), InterruptedAgent(id: "TornDown", pendingToolCalls: midCall),
+        ])
     }
 
     @Test func evalInTheDeadRunMeansItsKernelsAreLost() throws {

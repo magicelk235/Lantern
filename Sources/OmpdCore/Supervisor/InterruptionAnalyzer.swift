@@ -28,6 +28,9 @@ enum InterruptionAnalyzer {
             if let floor, transcript.modified < floor { continue }
             guard let state = TranscriptState.read(path: transcript.path, since: since, window: agentWindow) else { continue }
             evalUsed = evalUsed || state.evalUsed
+            // An output says the agent finished, unless the dead process's teardown aborted calls of it: omp then writes
+            // whatever the agent had said so far as its output (seen on SIGHUP when ompd died mid-`bash`).
+            if transcript.hasOutput && !state.teardownAbortedCalls { continue }
             guard state.interrupted else { continue }
             agents.append(InterruptedAgent(id: transcript.id, pendingToolCalls: state.pendingToolCalls))
         }
@@ -62,13 +65,14 @@ enum InterruptionAnalyzer {
 
     // MARK: - Subagents
 
-    /// A subagent's transcript that may be unfinished: `<id>.jsonl` anywhere under the artifacts dir, without a
-    /// tombstone (killed; checked first, a killed agent also has an empty `<id>.md`) and without a non-empty `<id>.md`
-    /// (its output: it finished).
+    /// A subagent's transcript that may be unfinished: `<id>.jsonl` anywhere under the artifacts dir without a
+    /// tombstone (killed; checked first, a killed agent also has an empty `<id>.md`). `hasOutput`: a non-empty `<id>.md`
+    /// (its output), which says it finished unless omp's teardown wrote it.
     struct AgentTranscript {
         var id: String
         var path: String
         var modified: Date
+        var hasOutput: Bool
     }
 
     static func agentTranscripts(in directory: String) -> [AgentTranscript] {
@@ -82,12 +86,12 @@ enum InterruptionAnalyzer {
             let path = url.path(percentEncoded: false)
             if fm.fileExists(atPath: path + ".tombstone") { continue }
             let output = url.deletingPathExtension().appendingPathExtension("md").path(percentEncoded: false)
-            if let size = (try? fm.attributesOfItem(atPath: output))?[.size] as? Int, size > 0 { continue }
+            let outputSize = (try? fm.attributesOfItem(atPath: output))?[.size] as? Int ?? 0
             let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
             guard values?.isRegularFile == true else { continue }
             found.append(AgentTranscript(
                 id: url.deletingPathExtension().lastPathComponent, path: path,
-                modified: values?.contentModificationDate ?? .distantPast))
+                modified: values?.contentModificationDate ?? .distantPast, hasOutput: outputSize > 0))
         }
         return found
     }
@@ -103,6 +107,8 @@ struct TranscriptState: Equatable {
     var evalUsed: Bool
     /// When the newest `com.omp-ide.interrupted` marker was written.
     var lastMarkerAt: Date?
+    /// The dead run's `session_exit` lists tool calls omp aborted in its teardown: the agent was mid-call.
+    var teardownAbortedCalls = false
 
     private struct Message {
         var index: Int
@@ -167,7 +173,11 @@ struct TranscriptState: Equatable {
         }
         let evalUsed = starts.contains { inRun($0.index, $0.at) && $0.data["toolName"]?.stringValue == "eval" }
         let markerAt = lastMarker?.at
-        let notInterrupted = TranscriptState(interrupted: false, pendingToolCalls: [], evalUsed: evalUsed, lastMarkerAt: markerAt)
+        let runExit = exits.last(where: { inRun($0.index, $0.recordedAt) })
+        let teardownAborted = !(runExit?.pending.isEmpty ?? true)
+        let notInterrupted = TranscriptState(
+            interrupted: false, pendingToolCalls: [], evalUsed: evalUsed, lastMarkerAt: markerAt,
+            teardownAbortedCalls: teardownAborted)
 
         // Handled already: a marker after the last message.
         guard let message = lastMessage, message.index >= floor else { return notInterrupted }
@@ -199,7 +209,7 @@ struct TranscriptState: Equatable {
                 toolCallId: id, toolName: name ?? "tool", summary: summary(intent: intent, arguments: arguments)))
         }
         // `session_exit.pendingToolCalls` lists calls omp aborted itself (their "aborted" results follow it).
-        if let exit = exits.last(where: { inRun($0.index, $0.recordedAt) }) {
+        if let exit = runExit {
             for call in exit.pending {
                 add(call["toolCallId"]?.stringValue, call["toolName"]?.stringValue, arguments: call["args"],
                     intent: call["intent"]?.stringValue)
@@ -215,7 +225,9 @@ struct TranscriptState: Equatable {
             guard let id = call["id"]?.stringValue, !answered.contains(id) else { continue }
             add(id, call["name"]?.stringValue, arguments: call["arguments"], intent: call["arguments"]?["i"]?.stringValue)
         }
-        return TranscriptState(interrupted: true, pendingToolCalls: pending, evalUsed: evalUsed, lastMarkerAt: markerAt)
+        return TranscriptState(
+            interrupted: true, pendingToolCalls: pending, evalUsed: evalUsed, lastMarkerAt: markerAt,
+            teardownAbortedCalls: teardownAborted)
     }
 
     /// One line for people and the model: what the call acts on (its command, path or url argument), else its intent,

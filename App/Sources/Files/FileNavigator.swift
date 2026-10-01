@@ -163,7 +163,8 @@ private struct FilesOutline: View {
     }
 }
 
-/// The projects, this window's marked; a click brings a project's window forward.
+/// The projects, this window's marked, each with what waits on the user in its sessions; a click brings a project's
+/// window forward.
 private struct ProjectsPane: View {
     let app: AppState
     let project: String
@@ -194,6 +195,18 @@ private struct ProjectsPane: View {
                     Text(AppState.projectName(candidate))
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    let waiting = app.attentionCount(in: candidate)
+                    if waiting > 0 {
+                        Text(waiting > 99 ? "99+" : String(waiting))
+                            .font(.system(size: 9, weight: .semibold))
+                            .monospacedDigit()
+                            .padding(.horizontal, 4)
+                            .frame(minWidth: 15, minHeight: 15)
+                            .background(.red, in: Capsule())
+                            .foregroundStyle(.white)
+                            .help(waiting == 1 ? "An approval or question waits for you" : "\(waiting) approvals or questions wait for you")
+                    }
                 }
                 .tag(candidate)
                 .listRowSeparator(.hidden)
