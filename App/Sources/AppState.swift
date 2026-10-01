@@ -45,6 +45,8 @@ final class AppState {
     var alert: AlertMessage?
     /// A Close Session / Close Terminal the user asked for, waiting for their confirmation in the window.
     var pendingClose: CloseRequest?
+    /// The project whose Open Session sheet is up (its window shows it).
+    var sessionPickerProject: String?
 
     @ObservationIgnored private let persistence: StatePersistence
     @ObservationIgnored private var started = false
@@ -353,6 +355,28 @@ final class AppState {
         }
     }
 
+    /// Opens an omp session file of `project` picked in the Open Session sheet: the tab of the session ompd runs for it
+    /// comes forward, the stopped session ompd keeps for it resumes, else a new session resumes it in `project`.
+    func openSessionFile(_ file: SessionFileInfo, in project: String) {
+        if let known = connection.session(forFile: file.path) {
+            if known.isStopped {
+                resumeSession(known.sessionKey)
+            } else {
+                showSession(known.sessionKey)
+            }
+            return
+        }
+        let size = newTabSize()
+        Task {
+            do {
+                show(try await connection.openSession(
+                    file: URL(filePath: file.path), workspace: URL(filePath: project, directoryHint: .isDirectory), size: size))
+            } catch {
+                alert = AlertMessage(title: "Could not open the session", message: error.userMessage)
+            }
+        }
+    }
+
     /// Answers an interruption waiting for the user: the main agent (`main`) and the subagents `agents` are asked to
     /// continue, the rest is left. False when ompd refused (the alert says why).
     func continueSession(_ sessionKey: SessionKey, main: Bool, agents: [String]) async -> Bool {
@@ -450,6 +474,13 @@ final class AppState {
         showProject(entry.workspace)
     }
 
+    /// Brings a running session's tab forward, opening one if needed: the tab of the terminal it runs in when the user
+    /// started omp there.
+    func showSession(_ sessionKey: SessionKey) {
+        guard let entry = entry(for: sessionKey) else { return }
+        if entry.adopted, let ptyId = entry.ptyId { showTerminal(ptyId) } else { show(entry) }
+    }
+
     /// The area below the tab strip changed size.
     func tabContentSizeChanged(_ size: CGSize) {
         tabContentArea = (size, currentProject.flatMap(strip(of:)) != nil)
@@ -465,15 +496,15 @@ final class AppState {
 
     // MARK: - Terminals
 
-    /// Opens the login shell on a new PTY in `workspace` (default: the workspace on screen, else the home folder), in a
-    /// new tab of that workspace's strip.
-    func newTerminal(in workspace: String? = nil) {
+    /// Opens the login shell, or `command`, on a new PTY in `workspace` (default: the workspace on screen, else the home
+    /// folder), in a new tab of that workspace's strip.
+    func newTerminal(in workspace: String? = nil, command: [String]? = nil) {
         let workspace = Self.normalized(workspace ?? currentProject ?? NSHomeDirectory())
         addProject(workspace)
         let size = newTabSize()
         Task {
             do {
-                let ptyId = try await terminals.open(in: workspace, size: size)
+                let ptyId = try await terminals.open(in: workspace, command: command, size: size)
                 tabs.open(.terminal(ptyId), in: workspace)
                 saveWindow()
                 showProject(workspace)

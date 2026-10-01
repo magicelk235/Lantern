@@ -51,6 +51,9 @@ public final class DaemonConnection: TerminalBackend {
     /// This app has an omp IDE window open. ompd pauses every session while no connected app has one:
     /// every (re)connect's hello carries it, and changes go to ompd as `client.presence`.
     public private(set) var hasWindow = false
+    /// What each running session's omp runs: agents, jobs, what waits for the user (`session.runtime` after each
+    /// connect, then `runtime` pushes). A session without an entry runs nothing ompd knows of.
+    public private(set) var runtimes: [SessionKey: SessionRuntime] = [:]
 
     @ObservationIgnored private var client: IDEClient?
     @ObservationIgnored private var runTask: Task<Void, Never>?
@@ -181,6 +184,24 @@ public final class DaemonConnection: TerminalBackend {
         return resumed
     }
 
+    /// Starts omp's TUI `size` big in `workspace`, resuming the omp session file `file` (`session.open`): a new session,
+    /// or the session ompd keeps for that file when its omp is not running. It also arrives through the next `sessions`
+    /// push.
+    public func openSession(file: URL, workspace: URL, size: TerminalSize) async throws -> SessionManifestEntry {
+        let size = size.clamped
+        let entry = try await connectedClient().call(
+            SessionOpen.self,
+            .init(sessionFile: file.path(percentEncoded: false), workspace: Self.folderPath(workspace), cols: size.cols, rows: size.rows))
+        adopt(entry)
+        return entry
+    }
+
+    /// The session ompd keeps for the omp session file at `path`, the paths compared canonically (`realpath`).
+    public func session(forFile path: String) -> SessionManifestEntry? {
+        let file = SessionFileListing.canonicalPath(path)
+        return sessions.first { $0.sessionFile.map(SessionFileListing.canonicalPath) == file }
+    }
+
     /// Answers the session's `pendingContinuation`: the main agent (`main`) and the subagents `agents` are asked to
     /// continue, the rest is left as it is. `main: false, agents: []` leaves it all.
     public func continueSession(_ sessionKey: SessionKey, main: Bool, agents: [String]) async throws {
@@ -223,6 +244,57 @@ public final class DaemonConnection: TerminalBackend {
         var path = folder.standardizedFileURL.path(percentEncoded: false)
         if path.count > 1, path.hasSuffix("/") { path.removeLast() }
         return path
+    }
+
+    // MARK: - Agent supervision
+
+    /// Every tool approval and `ask` waiting in a session TUI, over all sessions.
+    public var attentionCount: Int { runtimes.values.reduce(0) { $0 + $1.attention.count } }
+
+    /// Revives, parks or kills an agent of a running session; returns its row afterwards (nil once omp dropped it).
+    @discardableResult
+    public func control(agent agentId: String, of sessionKey: SessionKey, _ action: AgentControl.Action) async throws -> AgentInfo? {
+        try await connectedClient().call(AgentControl.self, .init(sessionKey: sessionKey, agentId: agentId, action: action)).agent
+    }
+
+    /// `write agent://<agentId>` from the session's main agent.
+    public func message(agent agentId: String, of sessionKey: SessionKey, body: String) async throws {
+        _ = try await connectedClient().call(AgentMessage.self, .init(sessionKey: sessionKey, agentId: agentId, body: body))
+    }
+
+    /// The named services of `workspace` (omp's broker merged with what ompd recorded).
+    public func services(in workspace: URL) async throws -> [ServiceInfo] {
+        try await connectedClient().call(ServiceList.self, .init(workspace: Self.folderPath(workspace))).services
+    }
+
+    /// Stops, kills, restarts or re-modes a named service of `workspace`; returns it afterwards.
+    @discardableResult
+    public func control(
+        service name: String, in workspace: URL, _ action: ServiceControlRequest.Action, mode: String? = nil
+    ) async throws -> ServiceInfo {
+        try await connectedClient().call(
+            ServiceControlRequest.self, .init(workspace: Self.folderPath(workspace), name: name, action: action, mode: mode)
+        ).service
+    }
+
+    private func apply(runtime: SessionRuntime) {
+        let empty = runtime.agents.isEmpty && runtime.jobs.isEmpty && runtime.attention.isEmpty
+        if empty {
+            if runtimes[runtime.sessionKey] != nil { runtimes.removeValue(forKey: runtime.sessionKey) }
+        } else if runtimes[runtime.sessionKey] != runtime {
+            runtimes[runtime.sessionKey] = runtime
+        }
+    }
+
+    /// The whole set after a (re)connect; an ompd from before `session.runtime` leaves it empty.
+    private func fetchRuntimes(_ client: IDEClient) async {
+        guard let list = try? await client.call(SessionRuntimeList.self, Empty()) else { return }
+        guard self.client === client else { return }
+        var fresh: [SessionKey: SessionRuntime] = [:]
+        for runtime in list.sessions where !(runtime.agents.isEmpty && runtime.jobs.isEmpty && runtime.attention.isEmpty) {
+            fresh[runtime.sessionKey] = runtime
+        }
+        if fresh != runtimes { runtimes = fresh }
     }
 
     // MARK: - Connection loop
@@ -272,12 +344,14 @@ public final class DaemonConnection: TerminalBackend {
         }
         apply(sessions: welcome.sessions)
         terminals.connectionOpened()
+        Task { await fetchRuntimes(client) }
         for await frame in client.pushes {
             route(frame)
         }
         self.client = nil
         await client.close()
         terminals.connectionClosed()
+        if !runtimes.isEmpty { runtimes = [:] }
     }
 
     private func route(_ frame: ServerFrame) {
@@ -285,6 +359,7 @@ public final class DaemonConnection: TerminalBackend {
         case .sessions(let list): apply(sessions: list.sessions)
         case .ptys(let list): terminals.receive(list)
         case .ptyOutput(let output): terminals.receive(output)
+        case .runtime(let runtime): apply(runtime: runtime)
         case .notice(let notice):
             notices.append(notice)
             if notices.count > Self.noticeLimit { notices.removeFirst(notices.count - Self.noticeLimit) }

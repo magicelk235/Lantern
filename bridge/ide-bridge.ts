@@ -32,7 +32,7 @@
  *
  * Wire: JSON lines over the unix socket.
  *   bridge -> ompd  {t:"hello", v:1, sessionKey, token, pid, ompVersion, capabilities, session:{id, file, onDisk,
- *                    leafId, cwd, artifactsDir, title, paused, pausedBy}}             first frame, exactly once
+ *                    leafId, cwd, artifactsDir, title, paused, pausedBy, attention}} first frame, exactly once
  *                   (terminal mode: ptyId and the terminal's token in place of sessionKey and token)
  *                   {t:"res", id, ok:true, result} | {t:"res", id, ok:false, error}  one per req
  *                   {t:"evt", seq, ts, agentId, kind, data}                           only after welcome
@@ -42,10 +42,24 @@
  * evt kinds: activity {state:"busy"|"idle"} (the main agent started a run / finished it with no background job left),
  * title {title} (the session name changed), pause {paused, by:"daemon"|"user"} (omp's pause gate closed or opened:
  * `session.pause`/`session.resume`, or the user's /pause and its pause screen), registry:registered|status_changed|
- * metadata_changed|removed (data = agent row), before_subagent_spawn, session_start, session_shutdown, session_switch
- * (per agent instance; data.session is the session info), service (below), bridge:error. `agentId` is the agent the
- * event is about (registry rows: the row; before_subagent_spawn: the spawning parent; service: the agent whose tool call
- * or message it was). `seq` is per process and gap-free except where a `gap` frame says otherwise.
+ * metadata_changed|removed (data = agent row, below), attention and jobs (below), before_subagent_spawn, session_start,
+ * session_shutdown, session_switch (per agent instance; data.session is the session info), service (below),
+ * bridge:error. `agentId` is the agent the event is about (registry rows: the row; attention: the agent whose call
+ * changed; before_subagent_spawn: the spawning parent; service: the agent whose tool call or message it was). `seq` is
+ * per process and gap-free except where a `gap` frame says otherwise.
+ * agent rows: omp's registry row plus `currentTool {name, detail}` (the agent's latest tool call still executing,
+ *   `detail` its main argument, e.g. the bash command) or null. omp changes `isStreaming` and `activity` (a subagent's
+ *   last tool-call intent, or `running <tool>`) without a registry event, so an agent's row is also sent as
+ *   `registry:status_changed` after its message_start, message_end, tool_execution_start and tool_execution_end when it
+ *   differs from the last row sent for it, at most once per macrotask.
+ * attention {items: [{id, kind:"approval"|"ask", toolName, agentId, since}]}: what waits for the user in the TUI,
+ *   oldest first, the whole list on every change; `id` is the tool call's, `since` ms since the epoch.
+ *   An approval waits from `tool_approval_requested` to `tool_approval_resolved` (an approved `ask` then waits for its
+ *   answer), an `ask` from its `tool_execution_start`; any call's `tool_execution_end`, or the session of its agent
+ *   shutting down, ends it. From every agent instance; the hello's `session.attention` is the list at that moment.
+ * jobs {running, recent}: the main session's async jobs (`getAsyncJobSnapshot({recentLimit: 5})`: running ones, then
+ *   the recently finished; times in ms since the epoch), pushed when they differ from the last push. Checked after the
+ *   main agent's tool_execution_end, message_end, turn_end and agent_end, and every `JOBS_RECHECK_MS` while a job runs.
  * service evts (named services of the launch broker), from every agent instance:
  *   {op:"started", name, command, cwd, env, pty, ready}  a `bash` call with `name` finished without error; its input
  *                                                        (`cwd` made absolute against the session cwd; null = not given)
@@ -54,7 +68,8 @@
  *   {op:"exited", names}                                 a `launch-completion` custom message: they exited on their own
  * Requests are the keys of METHODS below. After a crash ompd continues the resumed main agent with
  * `session.prompt` (a user message, as if typed); after a wake from sleep `session.watchStall` aborts a
- * main-agent turn whose model stream made no progress within the timeout.
+ * main-agent turn whose model stream made no progress within the timeout. `service.mode` is the agent's
+ * `write proc://<name>/mode` on ompd's behalf (the jobs pane's mode toggle).
  *
  * Graceful stop (`session.shutdown`): the reply goes out first, then the main AgentSession is disposed —
  * what the TUI's own /exit does: `session_exit {kind:"normal"}` with the pending tool calls, the turn aborted,
@@ -70,8 +85,9 @@
  * focus and opens the gate). The daemon pauses sessions while no omp IDE window is connected.
  *
  * Internal omp subpaths (registry/agent-lifecycle, registry/persisted-agents, modes/agent-hub-runtime,
- * slash-commands/builtin-registry), @oh-my-pi/pi-agent-core and @oh-my-pi/pi-utils are imported dynamically: a missing
- * module turns the matching capability off instead of failing the extension load.
+ * slash-commands/builtin-registry, internal-urls/proc-protocol, internal-urls/parse), @oh-my-pi/pi-agent-core and
+ * @oh-my-pi/pi-utils are imported dynamically: a missing module turns the matching capability off instead of failing
+ * the extension load.
  */
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import * as ompModule from "@oh-my-pi/pi-coding-agent";
@@ -103,6 +119,8 @@ interface SessionManagerLike {
 
 interface AgentSessionLike {
 	sessionManager: SessionManagerLike;
+	/** The session's `Settings` (what omp's tools read, e.g. `launch.enabled` for named services). */
+	settings?: unknown;
 	isStreaming?: boolean;
 	prompt(text: string, options?: { streamingBehavior?: "steer" | "followUp" }): Promise<unknown>;
 	abort(options?: { reason?: string }): Promise<void>;
@@ -151,7 +169,8 @@ interface CtxLike {
 	sessionManager: SessionManagerLike;
 	/** The session's working directory (what the tools resolve relative paths against). */
 	cwd?: string;
-	getAsyncJobSnapshot?(): { running?: unknown[] } | null;
+	/** Running jobs, then up to `recentLimit` finished ones (default 5); `delivery` is not used here. */
+	getAsyncJobSnapshot?(options?: { recentLimit?: number }): { running?: unknown[]; recent?: unknown[] } | null;
 	hasPendingMessages?(): boolean;
 	ui?: {
 		notify?(message: string, type?: "info" | "warning" | "error"): void;
@@ -188,6 +207,12 @@ interface PauseScreenLike {
 	render(width: number): string[];
 }
 
+/** omp's `proc://` handler (internal-urls/proc-protocol): `write(proc://<name>/mode, mode, {session})` is what the
+ *  agent's `write` tool does for a named service (the broker's `mode` op, scoped by `session.cwd`). */
+interface ProcProtocolLike {
+	write(url: unknown, content: string, options: { session: { cwd: string; settings: unknown } }): Promise<unknown>;
+}
+
 interface Internals {
 	AgentLifecycleManager?: { global(): AgentLifecycleLike };
 	ensurePersistedRoster?: (registry: AgentRegistryLike, rootSessionFile?: string) => Promise<string | undefined>;
@@ -197,6 +222,8 @@ interface Internals {
 	pauseGate?: PauseGateLike;
 	/** The TUI's built-in `/pause`: engages the gate and shows omp's pause screen until it is dismissed. */
 	pauseCommand?: BuiltinSlashCommandLike;
+	/** omp's `proc://` handler and the internal-URL parser its `write` takes. */
+	procProtocol?: { handler: ProcProtocolLike; parseUrl(url: string): unknown };
 	errors: Record<string, string>;
 }
 
@@ -222,6 +249,25 @@ const MAX_BACKLOG_BYTES = 1 << 20;
 const MAX_QUEUED_BEFORE_WELCOME = 1024;
 /** While background jobs outlive the main agent's run, how often the bridge checks whether the session went idle. */
 const SETTLE_RECHECK_MS = 1000;
+/** While a job of the main session runs, how often its snapshot is checked for changes (omp has no change listener). */
+const JOBS_RECHECK_MS = 2000;
+/** Finished jobs in a `jobs` push (what omp's /jobs shows). */
+const JOBS_RECENT_LIMIT = 5;
+/** Main-agent events after which the jobs snapshot may have changed (agent_end is checked in its own handler). */
+const JOB_CHECK_EVENTS: Record<string, true> = { tool_execution_end: true, message_end: true, turn_end: true };
+/** omp's `ask` tool: a call waits for the user's answer in the TUI. */
+const ASK_TOOL = "ask";
+/** An agent's events after which its row may differ though omp sent no registry event (`isStreaming`, omp's `activity`,
+ *  `currentTool`). */
+const ROW_CHECK_EVENTS: Record<string, true> = {
+	message_start: true,
+	message_end: true,
+	tool_execution_start: true,
+	tool_execution_end: true,
+};
+/** Tool arguments that say what a call works on, in order of preference (`currentTool.detail`). */
+const TOOL_DETAIL_KEYS = ["command", "path", "pattern", "url", "query", "code"] as const;
+const MAX_TOOL_DETAIL = 80;
 const MAX_INBOUND_CHARS = 16 << 20;
 const MAX_STRING = 16_384;
 const MAX_ARRAY = 5_000;
@@ -249,6 +295,8 @@ const PROGRESS_EVENTS = [
 /** omp's `LAUNCH_COMPLETION_MESSAGE_TYPE`: the broker's "service exited" notice, delivered as a custom message. */
 const LAUNCH_COMPLETION = "launch-completion";
 const SERVICE_MODES: Record<string, true> = { persist: true, session: true, detached: true };
+/** omp's service names (launch/services.ts): what `service.mode` may put into a `proc://` URL. */
+const SERVICE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/;
 /** `write` targets that control a named service. */
 const PROC_CONTROL = /^proc:\/\/([^/?#\s]+)\/(kill|mode)\/?$/;
 
@@ -318,8 +366,9 @@ const WIRING = resolveWiring();
 // ---------------------------------------------------------------------------------------------------------------------
 
 /** Bumped whenever the daemon-mode behavior changes (2: TUI sessions: shutdown, activity, title; 3: pause; 4: terminal
- *  mode; 5: session.prompt, stall watch, service events). */
-const BRIDGE_REVISION = 5;
+ *  mode; 5: session.prompt, stall watch, service events; 6: attention, jobs, service.mode; 7: agent rows re-sent on
+ *  message and tool events, currentTool). */
+const BRIDGE_REVISION = 7;
 
 interface GuardSlot {
 	/** The evaluation of this file that serves the process. */
@@ -584,7 +633,37 @@ const S = {
 	mainTools: 0,
 	/** Pending `session.watchStall` requests. */
 	stallWatchers: new Set<StallWatcher>(),
+	/** What waits for the user, by tool call id, oldest first, each with the instance whose call it is. */
+	attention: new Map<string, { item: AttentionItem; owner: Instance }>(),
+	/** The last `jobs` push as JSON: an unchanged snapshot is not pushed again. */
+	jobsSent: undefined as string | undefined,
+	/** Checks the jobs snapshot again while a job runs. */
+	jobsTimer: undefined as Timer | undefined,
+	/** Each agent's tool calls executing right now: agent id → tool call id → tool, in start order. */
+	tools: new Map<string, Map<string, CurrentTool>>(),
+	/** The last row sent per agent id (JSON): an unchanged row is not sent again. */
+	rowsSent: new Map<string, string>(),
+	/** Agents whose row is checked at the next macrotask (`rowsTimer`). */
+	rowsDue: new Set<string>(),
+	rowsTimer: undefined as Timer | undefined,
 };
+
+/** A tool call executing for an agent: the tool, and its main argument on one line. */
+interface CurrentTool {
+	name: string;
+	detail: string | null;
+}
+
+/** A tool approval prompt or an `ask` waiting for the user in the TUI (`attention` evt). */
+interface AttentionItem {
+	/** The tool call's id. */
+	id: string;
+	kind: "approval" | "ask";
+	toolName: string;
+	agentId: string | null;
+	/** ms since the epoch. */
+	since: number;
+}
 
 type PausedBy = "daemon" | "user";
 
@@ -644,6 +723,17 @@ function loadInternals(): Promise<Internals> {
 		} catch (e) {
 			out.errors.pauseCommand = errText(e);
 		}
+		try {
+			const proc = (await import("@oh-my-pi/pi-coding-agent/internal-urls/proc-protocol")) as AnyRecord;
+			const parse = (await import("@oh-my-pi/pi-coding-agent/internal-urls/parse")) as AnyRecord;
+			const Handler = proc.ProcProtocolHandler as (new () => ProcProtocolLike) | undefined;
+			const parseUrl = parse.parseInternalUrl as ((url: string) => unknown) | undefined;
+			if (typeof Handler === "function" && typeof parseUrl === "function") {
+				out.procProtocol = { handler: new Handler(), parseUrl };
+			} else out.errors.procProtocol = "ProcProtocolHandler or parseInternalUrl export missing";
+		} catch (e) {
+			out.errors.procProtocol = errText(e);
+		}
 		return out;
 	})();
 	return S.internals;
@@ -687,10 +777,12 @@ function sessionInfo(ctx: CtxLike): AnyRecord {
 		artifactsDir: attempt(() => sm.getArtifactsDir(), undefined) ?? null,
 		title: attempt(() => sm.getSessionName?.(), undefined) ?? null,
 		...pauseState(),
+		attention: attentionItems(),
 	};
 }
 
-/** Registry row as JSON: live objects stripped, `hasSession`/`isStreaming` derived. */
+/** Registry row as JSON: live objects stripped, `hasSession`/`isStreaming` derived, `currentTool` the agent's latest tool
+ *  call still executing. */
 function refJson(ref: AgentRefLike | undefined): AnyRecord | null {
 	if (!ref) return null;
 	return {
@@ -705,6 +797,7 @@ function refJson(ref: AgentRefLike | undefined): AnyRecord | null {
 		createdAt: ref.createdAt ?? null,
 		lastActivity: ref.lastActivity ?? null,
 		activity: sanitize(ref.activity) ?? null,
+		currentTool: [...(S.tools.get(ref.id)?.values() ?? [])].at(-1) ?? null,
 		lifecycle: sanitize(ref.lifecycle) ?? null,
 		history: sanitize(ref.history) ?? null,
 	};
@@ -755,6 +848,9 @@ async function probeCapabilities(ctx: CtxLike): Promise<Record<string, boolean>>
 		"session.prompt": fn(S.main?.api, "sendUserMessage"),
 		"session.watchStall": fn(mainSession(), "abort"),
 		"events.service": true,
+		"events.attention": true,
+		"events.jobs": fn(ctx, "getAsyncJobSnapshot"),
+		"service.mode": internals.procProtocol !== undefined && mainSession()?.settings !== undefined,
 	};
 }
 
@@ -830,6 +926,12 @@ function endConnection(next: "rejected" | "closed"): void {
 	S.gateUnsub = undefined;
 	clearTimeout(S.settleTimer);
 	S.settleTimer = undefined;
+	clearTimeout(S.jobsTimer);
+	S.jobsTimer = undefined;
+	clearTimeout(S.rowsTimer);
+	S.rowsTimer = undefined;
+	S.rowsDue.clear();
+	S.rowsSent.clear();
 	dropStallWatchers();
 	const sock = S.sock;
 	S.sock = undefined;
@@ -893,7 +995,11 @@ function subscribeRegistry(): void {
 		S.registryUnsub = reg.onChange((event) => {
 			try {
 				if (!owns()) return;
-				emit(event.ref?.id, `registry:${event.type}`, refJson(event.ref));
+				const id = event.ref?.id;
+				const row = refJson(event.ref);
+				if (id !== undefined && event.type === "removed") S.rowsSent.delete(id);
+				else if (id !== undefined) S.rowsSent.set(id, JSON.stringify(row));
+				emit(id, `registry:${event.type}`, row);
 			} catch (e) {
 				log(`registry event dropped: ${errText(e)}`);
 			}
@@ -1252,7 +1358,120 @@ async function watchStall(timeoutMs: number): Promise<StallVerdict> {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Named services: what ompd needs to relaunch them after a crash
+// Agent supervision: what waits for the user in the TUI, and the main session's async jobs
+// ---------------------------------------------------------------------------------------------------------------------
+
+function attentionItems(): AttentionItem[] {
+	return Array.from(S.attention.values(), (entry) => entry.item);
+}
+
+/** The tool call an approval or tool execution event is about. */
+function toolCallOf(event: unknown): { id: string; toolName: string } | undefined {
+	if (!isRecord(event) || typeof event.toolCallId !== "string" || typeof event.toolName !== "string") return undefined;
+	return { id: event.toolCallId, toolName: event.toolName };
+}
+
+/** Tool call `call` of `owner`'s agent waits for the user (`kind`), or no longer does (undefined); the whole list is
+ *  pushed when that changed. A wait of another kind on the same call is a new one: it goes to the end of the list. */
+function noteAttention(owner: Instance, call: { id: string; toolName: string }, kind: AttentionItem["kind"] | undefined): void {
+	if (S.attention.get(call.id)?.item.kind === kind) return;
+	S.attention.delete(call.id);
+	if (kind !== undefined) {
+		const item: AttentionItem = { id: call.id, kind, toolName: call.toolName, agentId: owner.agentId ?? null, since: Date.now() };
+		S.attention.set(call.id, { item, owner });
+	}
+	emit(owner.agentId, "attention", { items: attentionItems() });
+}
+
+/** The session of `owner`'s agent shut down (a subagent parked or released, the main session ending): none of its calls
+ *  waits for the user any more. */
+function dropAttention(owner: Instance): void {
+	let changed = false;
+	for (const [id, entry] of S.attention) {
+		if (entry.owner !== owner) continue;
+		S.attention.delete(id);
+		changed = true;
+	}
+	if (changed) emit(owner.agentId, "attention", { items: attentionItems() });
+}
+
+/** Pushes `jobs` when the main session's snapshot differs from the last push; while a job runs, checks again after
+ *  `JOBS_RECHECK_MS` (omp tells extensions nothing when a job ends). */
+function checkJobs(): void {
+	clearTimeout(S.jobsTimer);
+	S.jobsTimer = undefined;
+	if (S.phase !== "connecting" && S.phase !== "accepted") return;
+	const snapshot = attempt(() => S.main?.ctx?.getAsyncJobSnapshot?.({ recentLimit: JOBS_RECENT_LIMIT }), undefined);
+	if (!snapshot) return;
+	const jobs = { running: snapshot.running ?? [], recent: snapshot.recent ?? [] };
+	const json = JSON.stringify(jobs);
+	if (json !== S.jobsSent) {
+		S.jobsSent = json;
+		emit(MAIN_AGENT_ID, "jobs", jobs);
+	}
+	if (jobs.running.length === 0) return;
+	S.jobsTimer = setTimeout(() => {
+		try {
+			checkJobs();
+		} catch (e) {
+			log(`jobs check failed: ${errText(e)}`);
+		}
+	}, JOBS_RECHECK_MS);
+	S.jobsTimer.unref?.();
+}
+
+/** What a tool call works on, one line (`currentTool.detail`): the first of `TOOL_DETAIL_KEYS` its arguments have; null
+ *  without any. */
+function toolDetail(args: unknown): string | null {
+	if (!isRecord(args)) return null;
+	for (const key of TOOL_DETAIL_KEYS) {
+		const value = args[key];
+		if (typeof value !== "string") continue;
+		const line = value.replace(/\s+/g, " ").trim();
+		if (line !== "") return line.length > MAX_TOOL_DETAIL ? `${line.slice(0, MAX_TOOL_DETAIL - 1)}…` : line;
+	}
+	return null;
+}
+
+/** `owner`'s agent started (`started`) or finished the tool call of `event`. */
+function noteTool(owner: Instance, event: unknown, started: boolean): void {
+	const id = owner.agentId;
+	const call = toolCallOf(event);
+	if (id === undefined || !call) return;
+	const tools = S.tools.get(id) ?? new Map<string, CurrentTool>();
+	if (started) tools.set(call.id, { name: call.toolName, detail: toolDetail(isRecord(event) ? event.args : undefined) });
+	else tools.delete(call.id);
+	if (tools.size > 0) S.tools.set(id, tools);
+	else S.tools.delete(id);
+}
+
+/** Sends `agentId`'s row again at the next macrotask if it differs from the last one sent; every agent queued until then
+ *  is checked in that one pass. */
+function queueRow(agentId: string | undefined): void {
+	if (agentId === undefined || (S.phase !== "connecting" && S.phase !== "accepted")) return;
+	S.rowsDue.add(agentId);
+	if (S.rowsTimer) return;
+	S.rowsTimer = setTimeout(() => {
+		S.rowsTimer = undefined;
+		const due = [...S.rowsDue];
+		S.rowsDue.clear();
+		for (const id of due) {
+			try {
+				const row = refJson(registryOrUndefined()?.get(id));
+				const json = JSON.stringify(row);
+				if (!row || S.rowsSent.get(id) === json) continue;
+				S.rowsSent.set(id, json);
+				emit(id, "registry:status_changed", row);
+			} catch (e) {
+				log(`row of agent ${id} not sent: ${errText(e)}`);
+			}
+		}
+	}, 0);
+	S.rowsTimer.unref?.();
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Named services: what ompd needs to relaunch them after a crash, and the jobs pane's mode toggle
 // ---------------------------------------------------------------------------------------------------------------------
 
 /** A tool-level `cwd` as the bash tool resolves it: `~` expanded, relative to the session cwd. Null when not given. */
@@ -1298,6 +1517,22 @@ function exitedServices(event: unknown): string[] | undefined {
 	const daemons = isRecord(message.details) ? message.details.daemons : undefined;
 	if (!Array.isArray(daemons)) return undefined;
 	return daemons.flatMap((daemon) => (isRecord(daemon) && typeof daemon.name === "string" ? [daemon.name] : []));
+}
+
+/** `write proc://<name>/mode` as the agent's `write` tool does it, in the main session's workspace scope. Returns the
+ *  broker's record of the service afterwards. */
+async function setServiceMode(name: string, mode: string): Promise<unknown> {
+	const { procProtocol, errors } = await loadInternals();
+	if (!procProtocol) throw new Error(`omp's proc:// handler is unavailable: ${errors.procProtocol}`);
+	const settings = mainSession()?.settings;
+	if (settings === undefined) throw new Error("the main session's settings are unavailable");
+	// Deliberately without getSessionId/getAgentId: omp's broker client is shared per workspace and keeps one
+	// completion listener per owner, so a session object of the bridge's under the main session's id would take over its
+	// launch-completion notices. The broker's `mode` op needs no owner.
+	const session = { cwd: mainCtx().sessionManager.getCwd(), settings };
+	const result = await procProtocol.handler.write(procProtocol.parseUrl(`proc://${name}/mode`), mode, { session });
+	const proc = isRecord(result) && isRecord(result.details) ? result.details.proc : undefined;
+	return isRecord(proc) ? (proc.daemon ?? null) : null;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1478,6 +1713,16 @@ const METHODS: Record<string, (params: AnyRecord) => Promise<unknown>> = {
 		return { snapshot: ctx.getAsyncJobSnapshot() ?? null };
 	},
 
+	/** The jobs pane's mode toggle: `write proc://<name>/mode` of `mode` (persist | session | detached), as the
+	 *  agent would. Result: `{service}`, the broker's record afterwards. */
+	async "service.mode"(params) {
+		const name = requireString(params, "name");
+		const mode = requireString(params, "mode");
+		if (!SERVICE_NAME.test(name)) throw new Error(`not a service name: ${name}`);
+		if (!Object.hasOwn(SERVICE_MODES, mode)) throw new Error('params.mode must be "persist", "session" or "detached"');
+		return { service: await setServiceMode(name, mode) };
+	},
+
 	/** Appends an opaque `custom` entry (not model context) and flushes it. */
 	async "entry.append"(params) {
 		const customType = requireString(params, "customType");
@@ -1618,6 +1863,7 @@ function registerDaemonMode(api: ExtensionApiLike, wiring: Wiring): void {
 			S.mainTools = 0;
 			settleStallWatchers("idle");
 			settleCheck(rawCtx as CtxLike);
+			checkJobs();
 		} catch (e) {
 			log(`agent_end: ${errText(e)}`);
 		}
@@ -1631,11 +1877,41 @@ function registerDaemonMode(api: ExtensionApiLike, wiring: Wiring): void {
 				// The broker's "service exited" notice reaches the owning agent as a custom message.
 				const exited = kind === "message_end" ? exitedServices(event) : undefined;
 				if (exited !== undefined) emit(inst.agentId, "service", { op: "exited", names: exited });
+				// An `ask` waits for its answer from its start; a call's end ends whatever of it waited.
+				const call = kind === "tool_execution_start" || kind === "tool_execution_end" ? toolCallOf(event) : undefined;
+				if (call && kind === "tool_execution_end") noteAttention(inst, call, undefined);
+				else if (call?.toolName === ASK_TOOL) noteAttention(inst, call, "ask");
+				if (inst === S.main && Object.hasOwn(JOB_CHECK_EVENTS, kind)) checkJobs();
+				if (kind === "tool_execution_start" || kind === "tool_execution_end") noteTool(inst, event, kind === "tool_execution_start");
+				if (Object.hasOwn(ROW_CHECK_EVENTS, kind)) queueRow(inst.agentId);
 			} catch (e) {
 				log(`${kind}: ${errText(e)}`);
 			}
 		});
 	}
+
+	// omp emits these only while some extension handles them.
+	on("tool_approval_requested", async (event) => {
+		if (!owns()) return;
+		try {
+			const call = toolCallOf(event);
+			if (call) noteAttention(inst, call, "approval");
+		} catch (e) {
+			log(`tool_approval_requested: ${errText(e)}`);
+		}
+	});
+
+	on("tool_approval_resolved", async (event) => {
+		if (!owns()) return;
+		try {
+			const call = toolCallOf(event);
+			// An approved `ask` asks its question next.
+			const approvedAsk = call?.toolName === ASK_TOOL && isRecord(event) && event.approved === true;
+			if (call) noteAttention(inst, call, approvedAsk ? "ask" : undefined);
+		} catch (e) {
+			log(`tool_approval_resolved: ${errText(e)}`);
+		}
+	});
 
 	on("tool_result", async (event, rawCtx) => {
 		if (!owns()) return undefined;
@@ -1664,6 +1940,8 @@ function registerDaemonMode(api: ExtensionApiLike, wiring: Wiring): void {
 		try {
 			const status = inst.agentId ? attempt(() => registryOrUndefined()?.get(inst.agentId ?? "")?.status, undefined) : undefined;
 			emit(inst.agentId, "session_shutdown", { isMain: inst.isMain, status: status ?? null });
+			dropAttention(inst);
+			if (inst.agentId !== undefined) S.tools.delete(inst.agentId);
 			// Child sessions shut down on every park; only the main session ends the connection.
 			if (inst === S.main) {
 				S.main = undefined;

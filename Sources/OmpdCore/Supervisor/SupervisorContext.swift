@@ -79,13 +79,16 @@ public struct SupervisorContext: Sendable {
     public var persistenceFailed: @Sendable (any Error) -> Void
     /// Delivers a notice to every connected client (`ServerFrame.notice`).
     public var notify: @Sendable (DaemonNotice) -> Void
+    /// Delivers a session's changed runtime to every connected client (`ServerFrame.runtime`).
+    public var runtimeChanged: @Sendable (SessionRuntime) -> Void
 
     public init(
         manifest: ManifestPublisher, ptys: PTYPool, bridge: any SessionBridgeLink, locks: any SessionLockProvider,
         bridgeExtension: String?, baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         timings: SupervisorTimings = SupervisorTimings(), pauseDemand: PauseDemand = PauseDemand(),
         services: any ServiceControl = OmpServiceControl(),
-        persistenceFailed: @escaping @Sendable (any Error) -> Void, notify: @escaping @Sendable (DaemonNotice) -> Void
+        persistenceFailed: @escaping @Sendable (any Error) -> Void, notify: @escaping @Sendable (DaemonNotice) -> Void,
+        runtimeChanged: @escaping @Sendable (SessionRuntime) -> Void
     ) {
         self.manifest = manifest
         self.ptys = ptys
@@ -98,6 +101,7 @@ public struct SupervisorContext: Sendable {
         self.services = services
         self.persistenceFailed = persistenceFailed
         self.notify = notify
+        self.runtimeChanged = runtimeChanged
     }
 }
 

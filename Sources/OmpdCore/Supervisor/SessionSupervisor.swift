@@ -31,7 +31,9 @@ public actor SessionSupervisor {
     }
 
     private let context: SupervisorContext
-    private var status: SessionStatus
+    private var status: SessionStatus {
+        didSet { publishRuntime() } // the main agent's row follows it
+    }
 
     // The omp TUI
     /// The session's PTY: running, or exited and kept so its last screen stays attachable. Mirrors `entry.ptyId`. For an
@@ -79,12 +81,25 @@ public actor SessionSupervisor {
     /// Canonical path (`OwnershipLock.canonicalPath`) of the locked session file.
     private var lockedFile: String?
 
+    // Agent supervision
+    /// What omp runs, folded from its bridge since the hello; empty while there is none.
+    private var tracker = RuntimeTracker()
+    /// Subagents of the interruption waiting for the user's decision (`pendingContinuation.agents`): parked, they read
+    /// `interrupted`.
+    private var heldAgents: Set<String> {
+        didSet { publishRuntime() }
+    }
+    /// The runtime clients last got (`context.runtimeChanged`).
+    private var publishedRuntime: SessionRuntime
+
     /// `entry` is the session's current manifest entry.
     public init(entry: SessionManifestEntry, context: SupervisorContext) {
         sessionKey = entry.sessionKey
         self.context = context
         status = entry.status
         ptyId = entry.ptyId
+        heldAgents = Set(entry.pendingContinuation?.agents.map(\.id) ?? [])
+        publishedRuntime = SessionRuntime(sessionKey: entry.sessionKey)
     }
 
     // MARK: - Queries
@@ -96,6 +111,9 @@ public actor SessionSupervisor {
     public var isOpen: Bool { pid != nil || startTask != nil }
 
     public var currentStatus: SessionStatus { status }
+
+    /// What omp runs, as clients last got it: empty while omp does not run or before its bridge said hello.
+    public var runtime: SessionRuntime { publishedRuntime }
 
     // MARK: - Start
 
@@ -187,7 +205,7 @@ public actor SessionSupervisor {
         if let previous, previous != terminal { try? await context.ptys.close(previous) }
         warnAboutCapabilities(of: hello)
         Task { await self.syncPause() }
-        bridgeTask = Task { await self.followAdoptedBridge(generation: generation, gate: gate) }
+        bridgeTask = Task { await self.followAdoptedBridge(hello: hello, generation: generation, gate: gate) }
     }
 
     /// Regime B2: the daemon restarted and this session's omp is gone. Resumed from its file, started
@@ -381,13 +399,15 @@ public actor SessionSupervisor {
         notify("info", "omp exited in its terminal; the session is closed. Open it again to resume it.")
     }
 
-    /// Drops what belonged to the omp that exited. Idempotent.
+    /// Drops what belonged to the omp that exited; clients get its runtime emptied. Idempotent.
     private func forgetSpawn() async {
         pid = nil
         bridgeTask?.cancel()
         bridgeTask = nil
         bridgeHello = nil
         pausedBy = nil
+        tracker = RuntimeTracker()
+        publishRuntime()
         await context.bridge.forget(sessionKey)
     }
 
@@ -556,6 +576,7 @@ public actor SessionSupervisor {
             detectedAt: interruption.detectedAt, cause: interruption.cause, mainInterrupted: askMain,
             pendingToolCalls: askMain ? interruption.pendingToolCalls : [], agents: askAgents,
             evalKernelsLost: interruption.evalKernelsLost)
+        heldAgents = Set(askAgents.map(\.id))
         await updateEntry { $0.pendingContinuation = asked.isEmpty ? nil : asked }
         if leftMain || !leftAgents.isEmpty {
             await mark(interruption, decision: "left", main: leftMain, agents: leftAgents.map(\.id))
@@ -579,6 +600,7 @@ public actor SessionSupervisor {
         guard running || (!continueMain && chosen.isEmpty) else {
             throw DaemonError(.sessionBusy, "omp is not running in session \(sessionKey); open the session first")
         }
+        heldAgents = []
         await updateEntry { $0.pendingContinuation = nil }
         guard running else { return } // left while omp is not running: nothing to tell it
         let leftMain = pending.mainInterrupted && !continueMain
@@ -717,8 +739,8 @@ public actor SessionSupervisor {
             }
             guard !liveServiceStates.contains(state) else { continue }
             do {
-                switch try await control.restart(service.id, workspace: entry.workspace, omp: entry.launch.ompPath, environment: environment) {
-                case .restarted: restarted.append(service.id)
+                switch try await control.run(.restart, service.id, workspace: entry.workspace, omp: entry.launch.ompPath, environment: environment) {
+                case .done: restarted.append(service.id)
                 case .unknown: lost.append(service)
                 case .failed(let message): notify("warning", "The service \(service.id) could not be restarted: \(message)")
                 }
@@ -770,14 +792,20 @@ public actor SessionSupervisor {
             await self.syncPause()
             if let recovery { await self.recover(recovery, generation: generation) }
         }
+        await seedRuntime(from: hello, generation: generation)
         for await event in await context.bridge.events(sessionKey) {
             guard generation == self.generation else { return }
             await handle(bridgeEvent: event)
         }
+        // The bridge went away, with omp or without it: nothing it reported holds any more.
+        guard generation == self.generation else { return }
+        tracker = RuntimeTracker()
+        publishRuntime()
     }
 
     /// The bridge of an adopted omp, from its hello on; its end is the omp's exit.
-    private func followAdoptedBridge(generation: Int, gate: ExitGate) async {
+    private func followAdoptedBridge(hello: BridgeHello, generation: Int, gate: ExitGate) async {
+        await seedRuntime(from: hello, generation: generation)
         for await event in await context.bridge.events(sessionKey) {
             guard generation == self.generation else { return }
             await handle(bridgeEvent: event)
@@ -796,6 +824,7 @@ public actor SessionSupervisor {
     }
 
     private func handle(bridgeEvent event: JSONValue) async {
+        if event["t"]?.stringValue == "gap" { return await resyncRuntime() }
         guard event["t"]?.stringValue == "evt", let kind = event["kind"]?.stringValue else { return }
         let data = event["data"]
         switch kind {
@@ -825,8 +854,16 @@ public actor SessionSupervisor {
             await adopt(sessionFile: file, sessionId: session["id"]?.stringValue, title: session["title"]?.stringValue, replacingTitle: true)
         case "service":
             await noteService(data)
+        case "jobs":
+            tracker.replaceJobs(data)
+            publishRuntime()
+        case "attention":
+            tracker.attention = RuntimeTracker.attention(data?["items"])
+            publishRuntime()
         default:
-            break
+            guard kind.hasPrefix("registry:") else { return }
+            tracker.apply(registry: String(kind.dropFirst("registry:".count)), row: data)
+            publishRuntime()
         }
     }
 
@@ -848,6 +885,109 @@ public actor SessionSupervisor {
 
     private func becomeIdleIfStarting() async {
         if status == .starting || status == .resuming { await setStatus(pausedBy == nil ? .idle : .paused) }
+    }
+
+    // MARK: - Agent supervision
+
+    /// `agent.control`: revives, parks or kills agent `id` of the running omp; reviving the main agent is a no-op.
+    /// Returns its row afterwards, nil once omp no longer lists it. `bridgeUnavailable` while omp does not run or its
+    /// bridge cannot do it, `ompError` when omp refuses.
+    public func control(agent id: String, _ action: AgentControl.Action) async throws -> AgentInfo? {
+        let method = "agent.\(action.rawValue)"
+        if let unavailable = bridgeUnavailable(for: method) { throw unavailable }
+        if action == .revive, id == RuntimeTracker.mainAgentID { return publishedRuntime.agents.first { $0.id == id } }
+        let result = try await callBridge(method, params: ["id": .string(id)])
+        return tracker.agent(fromRow: result["agent"], mainStatus: RuntimeTracker.mainStatus(status), held: heldAgents)
+    }
+
+    /// `agent.message`: `write agent://<id>` from the main agent, which revives a parked agent; its answer reaches the
+    /// main agent like any reply. Errors as `control`.
+    public func message(agent id: String, body: String) async throws {
+        _ = try await callBridge("agent.message", params: ["id": .string(id), "body": .string(body)])
+    }
+
+    /// What `write proc://<name>/mode` does, through this omp's bridge: named service `name` of the session's workspace
+    /// gets `mode`. Errors as `control`.
+    public func setServiceMode(_ name: String, mode: String) async throws {
+        _ = try await callBridge("service.mode", params: ["name": .string(name), "mode": .string(mode)])
+    }
+
+    /// Why `method` cannot go to the bridge now; nil when it can.
+    private func bridgeUnavailable(for method: String) -> DaemonError? {
+        guard pid != nil, stopping == nil, let hello = bridgeHello else {
+            return DaemonError(.bridgeUnavailable, "omp is not running in session \(sessionKey)")
+        }
+        guard hello.capabilities[method] == true else {
+            return DaemonError(.bridgeUnavailable, "the ide-bridge of session \(sessionKey) cannot do \(method)")
+        }
+        return nil
+    }
+
+    /// `method` through the bridge, failing as clients are told: omp's refusal is `ompError`, a bridge that is gone or
+    /// does not answer `bridgeUnavailable`.
+    private func callBridge(_ method: String, params: JSONValue) async throws -> JSONValue {
+        if let unavailable = bridgeUnavailable(for: method) { throw unavailable }
+        do {
+            return try await context.bridge.call(sessionKey, method: method, params: params, timeout: context.timings.bridgeCall)
+        } catch BridgeError.callFailed(_, let message) {
+            throw DaemonError(.ompError, message)
+        } catch let error as BridgeError {
+            throw DaemonError(.bridgeUnavailable, "\(method) in session \(sessionKey): \(error)")
+        }
+    }
+
+    /// After the hello: the agent tree as omp has it now (`agents.snapshot`) and what waited for the user then. The
+    /// pushes buffered meanwhile are handled next and bring it forward.
+    private func seedRuntime(from hello: BridgeHello, generation: Int) async {
+        var seeded = RuntimeTracker()
+        seeded.attention = hello.attention
+        if hello.capabilities["agents.snapshot"] == true {
+            do {
+                seeded.seed(agents: try await read("agents.snapshot")["agents"]?.arrayValue ?? [])
+            } catch {
+                supervisorLog.error("session \(self.sessionKey, privacy: .public): agents.snapshot failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+        guard generation == self.generation, pid != nil else { return }
+        tracker = seeded
+        publishRuntime()
+    }
+
+    /// The bridge dropped pushes (`gap`): the agent tree, what waits for the user and the jobs are read again.
+    private func resyncRuntime() async {
+        guard let capabilities = bridgeHello?.capabilities else { return }
+        let generation = generation
+        var resynced = tracker
+        do {
+            if capabilities["agents.snapshot"] == true {
+                resynced.seed(agents: try await read("agents.snapshot")["agents"]?.arrayValue ?? [])
+            }
+            if capabilities["events.attention"] == true {
+                resynced.attention = RuntimeTracker.attention(try await read("session.info")["attention"])
+            }
+            if capabilities["events.jobs"] == true {
+                resynced.replaceJobs(try await read("jobs.snapshot")["snapshot"])
+            }
+        } catch {
+            supervisorLog.error("session \(self.sessionKey, privacy: .public): runtime not read again after a gap: \(String(describing: error), privacy: .public)")
+            return
+        }
+        guard generation == self.generation, pid != nil else { return }
+        tracker = resynced
+        publishRuntime()
+    }
+
+    /// A bridge method that only reads (`agents.snapshot`, `session.info`, `jobs.snapshot`).
+    private func read(_ method: String) async throws -> JSONValue {
+        try await context.bridge.call(sessionKey, method: method, params: [:], timeout: context.timings.bridgeCall)
+    }
+
+    /// Hands the runtime to clients when it changed (`ServerFrame.runtime`).
+    private func publishRuntime() {
+        let runtime = tracker.runtime(sessionKey: sessionKey, mainStatus: RuntimeTracker.mainStatus(status), held: heldAgents)
+        guard runtime != publishedRuntime else { return }
+        publishedRuntime = runtime
+        context.runtimeChanged(runtime)
     }
 
     // MARK: - Pause

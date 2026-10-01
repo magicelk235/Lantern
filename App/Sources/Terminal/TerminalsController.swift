@@ -108,9 +108,9 @@ final class TerminalsController {
 
     // MARK: - Commands
 
-    /// Starts the login shell on a new PTY in `workspace`, `size` big.
-    func open(in workspace: String, size: TerminalSize) async throws -> PTYID {
-        let model = try await registry.open(cwd: workspace, size: size)
+    /// Starts `command` (nil: the login shell) on a new PTY in `workspace`, `size` big.
+    func open(in workspace: String, command: [String]? = nil, size: TerminalSize) async throws -> PTYID {
+        let model = try await registry.open(cwd: workspace, command: command, size: size)
         workspaces[model.ptyId] = workspace
         return model.ptyId
     }

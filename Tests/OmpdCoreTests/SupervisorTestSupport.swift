@@ -121,10 +121,12 @@ struct FakeOmp: Sendable {
 /// started (only when `connects`; else the wait fails at once like a timeout) and names the session file that spawn
 /// serves. `session.shutdown` (advertised when `shutdown`) makes the fake exit like omp's dispose. Unless `pausable` is
 /// off it plays omp's pause gate like the ide-bridge: `session.pause`/`session.resume` flip it and push `pause` events,
-/// and `userPause`/`userResume` are the user's /pause and pause screen. Calls are recorded; other events are pushed by
-/// the test. `terminalOmpSaysHello` is a fake omp the user started in a terminal PTY saying hello in terminal mode; the
-/// daemon's verdict lands in `adoptions` or `refusals`, and an adopted omp's event stream finishes when its process is
-/// gone, as the real bridge's socket closes with it.
+/// and `userPause`/`userResume` are the user's /pause and pause screen. `agents.snapshot` lists the rows given to
+/// `setAgents` (omp's registry), `agent.revive|park|kill` answer with the agent's row, and a method given to `refuse`
+/// fails the way omp refusing does. Calls are recorded; other events are pushed by the test. `terminalOmpSaysHello` is a
+/// fake omp the user started in a terminal PTY saying hello in terminal mode; the daemon's verdict lands in `adoptions`
+/// or `refusals`, and an adopted omp's event stream finishes when its process is gone, as the real bridge's socket
+/// closes with it.
 actor ScriptedBridge: SessionBridgeLink {
     private let connects: Bool
     private let shutdown: Bool
@@ -150,6 +152,10 @@ actor ScriptedBridge: SessionBridgeLink {
     private var pending: Set<Int> = []
     private(set) var adoptions: [(ptyId: PTYID, sessionKey: SessionKey)] = []
     private(set) var refusals: [(ptyId: PTYID, reason: String)] = []
+    /// What `agents.snapshot` lists.
+    private var agentRows: [JSONValue] = []
+    /// Methods omp refuses, with its error message.
+    private var refused: [String: String] = [:]
 
     init(omp: FakeOmp, connects: Bool, shutdown: Bool = true, pausable: Bool = true, capabilities: [String: Bool] = [:]) {
         self.omp = omp
@@ -181,13 +187,15 @@ actor ScriptedBridge: SessionBridgeLink {
                 "session.pause": pausable,
             ].merging(extraCapabilities) { $1 },
             sessionId: "fake-session",
-            sessionFile: file, onDisk: true, cwd: "/", artifactsDir: nil, title: nil, pausedBy: nil, raw: ["t": "hello"])
+            sessionFile: file, onDisk: true, cwd: "/", artifactsDir: nil, title: nil, pausedBy: nil, attention: [],
+            raw: ["t": "hello"])
     }
 
     func call(_ sessionKey: SessionKey, method: String, params: JSONValue, timeout: Duration) throws -> JSONValue {
         calls.append(method)
         sessionCalls.append((sessionKey, method))
         requests.append((method, params))
+        if let message = refused[method] { throw BridgeError.callFailed(method: method, message: message) }
         switch method {
         case "session.shutdown":
             guard let pid = pids[sessionKey] else { return [:] }
@@ -217,6 +225,10 @@ actor ScriptedBridge: SessionBridgeLink {
             return ["entryId": "fake"]
         case "session.watchStall":
             return ["stalled": true]
+        case "agents.snapshot":
+            return ["agents": .array(agentRows)]
+        case "agent.revive", "agent.park", "agent.kill":
+            return ["agent": agentRows.first { $0["id"] == params["id"] } ?? .null]
         default:
             return [:]
         }
@@ -233,6 +245,12 @@ actor ScriptedBridge: SessionBridgeLink {
     }
 
     func pausedBy(_ sessionKey: SessionKey) -> PauseOwner? { paused[sessionKey] }
+
+    /// omp's registry from now on, as `agents.snapshot` lists it.
+    func setAgents(_ rows: [JSONValue]) { agentRows = rows }
+
+    /// omp refuses `method` with `message` from now on.
+    func refuse(_ method: String, with message: String) { refused[method] = message }
 
     /// Closes (`owner`) or opens (nil) the gate and pushes `pause {paused, by}` as the bridge's gate listener does.
     private func setGate(_ sessionKey: SessionKey, _ owner: PauseOwner?, by opener: PauseOwner = .daemon) {
@@ -289,7 +307,7 @@ actor ScriptedBridge: SessionBridgeLink {
                 "session.pause": pausable,
             ],
             sessionId: sessionId, sessionFile: sessionFile, onDisk: true, cwd: cwd, artifactsDir: nil, title: title,
-            pausedBy: pausedBy, raw: ["t": "hello"])
+            pausedBy: pausedBy, attention: [], raw: ["t": "hello"])
         let request = TerminalHello(ptyId: ptyId, hello: hello, peerID: lastPeerID)
         pending.insert(lastPeerID)
         terminalHelloSink.yield(request)
@@ -408,6 +426,8 @@ struct SupervisorFixture {
     let persistenceFailures = Box<[String]>([])
     /// Manifest and PTY-list changes in publication order (what the daemon broadcasts as `sessions` and `ptys`).
     let published = Box<[Published]>([])
+    /// Runtimes the supervisor delivered (what the daemon broadcasts as `runtime`), in order.
+    let runtimes = Box<[SessionRuntime]>([])
     let workspace: String
     let key: SessionKey = "session-1"
     let supervisor: SessionSupervisor
@@ -448,11 +468,13 @@ struct SupervisorFixture {
         await pool.setChangeHandler { list in published.mutate { $0.append(.ptys(list.map(\.ptyId))) } }
         let notices = notices
         let persistenceFailures = persistenceFailures
+        let runtimes = runtimes
         let context = SupervisorContext(
             manifest: manifest, ptys: pool, bridge: bridge, locks: locks, bridgeExtension: "/fake/ide-bridge.ts",
             baseEnvironment: omp.environment.merging(extra) { $1 }, timings: timings, services: services,
             persistenceFailed: { error in persistenceFailures.mutate { $0.append("\(error)") } },
-            notify: { notice in notices.mutate { $0.append(notice) } })
+            notify: { notice in notices.mutate { $0.append(notice) } },
+            runtimeChanged: { runtime in runtimes.mutate { $0.append(runtime) } })
         supervisor = SessionSupervisor(entry: seeded, context: context)
     }
 
@@ -552,22 +574,34 @@ func screenLines(_ attach: PTYAttach.Result) -> [String] {
     return lines
 }
 
-/// Scripted `ServiceControl`: the broker's states per service name, and the outcome of a restart per name
-/// (`.restarted` when not listed); restarts are recorded.
+/// Scripted `ServiceControl`: the broker's states per service name and its records (`omp ps --json`), and the outcome
+/// of an `omp ps` command per service name (`.done` when not listed); commands are recorded as "<command> <name>" with
+/// the workspace and omp they ran for.
 final class FakeServices: ServiceControl {
     let states: [String: String]
-    let outcomes: [String: ServiceRestart]
-    let restarts = Box<[String]>([])
+    let listed: [ServiceRecord]
+    let outcomes: [String: ServiceCommandResult]
+    let commands = Box<[String]>([])
+    let invocations = Box<[(workspace: String, omp: String)]>([])
 
-    init(states: [String: String] = [:], outcomes: [String: ServiceRestart] = [:]) {
+    init(states: [String: String] = [:], records: [ServiceRecord] = [], outcomes: [String: ServiceCommandResult] = [:]) {
         self.states = states
+        listed = records
         self.outcomes = outcomes
     }
 
     func states(workspace: String, omp: String, environment: [String: String]) async throws -> [String: String] { states }
 
-    func restart(_ name: String, workspace: String, omp: String, environment: [String: String]) async throws -> ServiceRestart {
-        restarts.mutate { $0.append(name) }
-        return outcomes[name] ?? .restarted
+    func records(workspace: String, omp: String, environment: [String: String]) async throws -> [ServiceRecord] {
+        invocations.mutate { $0.append((workspace, omp)) }
+        return listed
+    }
+
+    func run(_ command: ServiceCommand, _ name: String, workspace: String, omp: String, environment: [String: String])
+        async throws -> ServiceCommandResult
+    {
+        commands.mutate { $0.append("\(command.rawValue) \(name)") }
+        invocations.mutate { $0.append((workspace, omp)) }
+        return outcomes[name] ?? .done
     }
 }

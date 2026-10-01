@@ -347,7 +347,7 @@ struct RecoveryTests {
             try await fixture.entry.services.filter(\.desiredRunning).map(\.id).sorted() == ["live", "web"]
         }
         // Running ones are left alone, a stopped one stays stopped, one the broker never knew is not tried.
-        #expect(services.restarts.value.sorted() == ["gone-too", "web"])
+        #expect(services.commands.value.sorted() == ["restart gone-too", "restart web"])
         let messages = fixture.notices.value.map(\.message)
         #expect(messages.contains { $0.contains("Restarted the named service web") })
         #expect(messages.contains { $0.contains("db was not restored") && $0.contains("run db") })

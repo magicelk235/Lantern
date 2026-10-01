@@ -76,6 +76,9 @@ public struct BridgeHello: Sendable, Equatable {
     public let title: String?
     /// Who holds omp's pause gate closed when the bridge said hello; nil while it is open (and from older bridges).
     public let pausedBy: PauseOwner?
+    /// What waited for the user in omp's TUI when the bridge said hello (tool approvals, `ask`), oldest first; empty from
+    /// bridges without `events.attention`.
+    public let attention: [AttentionItem]
     /// The hello frame without `token`.
     public let raw: JSONValue
 }
@@ -113,7 +116,7 @@ extension BridgeHello {
             capabilities: capabilities.compactMapValues(\.boolValue), sessionId: sessionId, sessionFile: sessionFile,
             onDisk: onDisk, cwd: cwd, artifactsDir: session["artifactsDir"]?.stringValue,
             title: session["title"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 },
-            pausedBy: pausedBy,
+            pausedBy: pausedBy, attention: RuntimeTracker.attention(session["attention"]),
             raw: .object(raw))
     }
 }

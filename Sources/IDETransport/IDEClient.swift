@@ -202,7 +202,7 @@ final class ClientInbox: Sendable {
             case .call(let continuation):
                 continuation?.resume(returning: response) // nil: the call was cancelled
             }
-        case .ptyOutput, .sessions, .ptys, .notice:
+        case .ptyOutput, .sessions, .ptys, .notice, .runtime:
             pushes.yield(frame)
         }
     }

@@ -1,8 +1,8 @@
 import Foundation
 
-/// Daemon <-> UI protocol version. Bump on any incompatible change to this module (4: `SessionStatus.paused`, which a
-/// v3 client cannot decode; `Hello.clientKind`).
-public let ideProtocolVersion = 4
+/// Daemon <-> UI protocol version. Bump on any incompatible change to this module (5: `ServerFrame.runtime`, which a
+/// v4 client cannot decode; agent supervision methods).
+public let ideProtocolVersion = 5
 
 /// Wire framing: each frame is a 4-byte big-endian length followed by that many bytes of
 /// UTF-8 JSON encoding exactly one `ClientFrame` or `ServerFrame`. Max frame 64 MiB.
@@ -107,9 +107,12 @@ public enum ServerFrame: Sendable, Equatable, Codable {
     case notice(DaemonNotice)
     /// The PTY list changed (opened, exited, closed, resized). Full list, cheap; replaces client polling.
     case ptys(PTYList.Result)
+    /// One session's runtime changed (agents, jobs, what waits for the user). Sent for every change, and once with
+    /// empty lists when its omp stops; clients fetch the whole set with `SessionRuntimeList` after connecting.
+    case runtime(SessionRuntime)
 
     private enum CodingKeys: String, CodingKey { case type }
-    private enum Kind: String, Codable { case welcome, response, ptyOutput = "pty_output", sessions, notice, ptys }
+    private enum Kind: String, Codable { case welcome, response, ptyOutput = "pty_output", sessions, notice, ptys, runtime }
 
     public init(from decoder: any Decoder) throws {
         let kind = try decoder.container(keyedBy: CodingKeys.self).decode(Kind.self, forKey: .type)
@@ -120,6 +123,7 @@ public enum ServerFrame: Sendable, Equatable, Codable {
         case .sessions: self = .sessions(try SessionList(from: decoder))
         case .notice: self = .notice(try DaemonNotice(from: decoder))
         case .ptys: self = .ptys(try PTYList.Result(from: decoder))
+        case .runtime: self = .runtime(try SessionRuntime(from: decoder))
         }
     }
 
@@ -132,6 +136,7 @@ public enum ServerFrame: Sendable, Equatable, Codable {
         case .sessions(let v): try c.encode(Kind.sessions, forKey: .type); try v.encode(to: encoder)
         case .notice(let v): try c.encode(Kind.notice, forKey: .type); try v.encode(to: encoder)
         case .ptys(let v): try c.encode(Kind.ptys, forKey: .type); try v.encode(to: encoder)
+        case .runtime(let v): try c.encode(Kind.runtime, forKey: .type); try v.encode(to: encoder)
         }
     }
 }

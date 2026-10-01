@@ -28,6 +28,9 @@ struct OmpIDEApp: App {
                 Button("New Terminal") { app.newTerminal() }
                     .keyboardShortcut("`", modifiers: .control)
                     .disabled(!app.connection.isConnected)
+                Button("Open Session…") { if let project = app.currentProject { app.showSessionPicker(for: project) } }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
+                    .disabled(app.currentProject == nil)
                 Button("Add Project…") { app.addProject() }
                     .keyboardShortcut("o")
                 Divider()
@@ -40,6 +43,8 @@ struct OmpIDEApp: App {
                     .keyboardShortcut("s", modifiers: [.command, .control])
                 Button("Files") { app.showPane(.files) }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
+                Button("Agents") { app.showPane(.agents) }
+                    .keyboardShortcut("a", modifiers: [.command, .control])
                 Button("Projects") { app.showPane(.projects) }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
             }
@@ -54,13 +59,17 @@ struct OmpIDEApp: App {
     }
 }
 
-/// Owns the app state so quitting can save it first.
+/// Owns the app state so quitting can save it first, and what tells the user about approvals waiting while they are
+/// elsewhere.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let app = AppState()
+    /// The Dock badge and the notifications for approvals and questions waiting in the sessions.
+    private lazy var attention = AttentionAlerts(app: app)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         app.start()
+        attention.start()
     }
 
     /// The + at the end of the window tab bar: a new project tab.

@@ -207,7 +207,7 @@ private final class TerminalIdentity: Sendable {
 private let requiredCapabilities = [
     "session.info", "session.ensureOnDisk", "session.flush", "entry.append", "jobs.snapshot", "agents.snapshot",
     "agents.loadPersisted", "agent.revive", "agent.park", "agent.kill", "agent.prompt", "agent.message", "introspect",
-    "events.registry", "session.pause",
+    "events.registry", "session.pause", "events.attention", "events.jobs", "service.mode",
 ]
 
 /// Real `omp --mode rpc --no-ui -e <staged ide-bridge.ts>`; no model call is made. Skipped when omp is not installed.
@@ -243,6 +243,7 @@ struct BridgeOmpIntegrationTests {
             let info = try await server.call("itest", method: "session.ensureOnDisk")
             #expect(info["file"]?.stringValue == hello.sessionFile)
             #expect(info["onDisk"] == true)
+            #expect(hello.attention.isEmpty && info["attention"] == [], "nothing waits for the user")
             #expect(FileManager.default.fileExists(atPath: hello.sessionFile))
 
             let agents = try await server.call("itest", method: "agents.snapshot")["agents"]?.arrayValue ?? []

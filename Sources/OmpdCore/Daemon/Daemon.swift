@@ -29,7 +29,8 @@ public actor Daemon {
         /// How long no omp IDE window must be connected (after the last one disconnected, or after `start()`) before
         /// every session is paused: an app relaunch or a reconnect blip within it pauses nothing.
         public var detachedPauseGrace: Duration
-        /// omp's launch broker, for relaunching named services after a Regime-B resume.
+        /// omp's launch broker: named services listed and controlled (`services.list`, `service.control`), and
+        /// relaunched after a Regime-B resume.
         public var services: any ServiceControl
 
         public init(
@@ -217,7 +218,7 @@ public actor Daemon {
             baseEnvironment: configuration.baseEnvironment, timings: configuration.timings, pauseDemand: pauseDemand,
             services: configuration.services,
             persistenceFailed: { error in Self.enterReadOnly(readOnly, broadcaster, failedWith: error) },
-            notify: { broadcaster.send(.notice($0)) })
+            notify: { broadcaster.send(.notice($0)) }, runtimeChanged: { broadcaster.send(.runtime($0)) })
     }
 
     /// The manifest could not be written (disk full, I/O error): read-only for the rest of this daemon's life.
@@ -469,6 +470,132 @@ public actor Daemon {
         }
     }
 
+    // MARK: - Agent supervision
+
+    /// Every session's runtime, in manifest order (empty lists for a session whose omp does not run).
+    private func runtimes() async -> SessionRuntimeList.Result {
+        var sessions: [SessionRuntime] = []
+        for entry in await manifest.sessions {
+            guard let supervisor = supervisors[entry.sessionKey] else { continue }
+            sessions.append(await supervisor.runtime)
+        }
+        return SessionRuntimeList.Result(sessions: sessions)
+    }
+
+    private func controlAgent(_ params: AgentControl.Params) async throws -> AgentControl.Result {
+        AgentControl.Result(agent: try await supervisor(params.sessionKey).control(agent: params.agentId, params.action))
+    }
+
+    private func messageAgent(_ params: AgentMessage.Params) async throws -> Empty {
+        try await supervisor(params.sessionKey).message(agent: params.agentId, body: params.body)
+        return Empty()
+    }
+
+    /// `services.list`: omp's broker records of `workspace` merged with what its sessions recorded.
+    private func services(in workspace: String) async throws -> [ServiceInfo] {
+        let workspace = try Self.canonicalDirectory(workspace)
+        let entries = await manifest.sessions.filter { $0.workspace == workspace }
+        let omp = try await brokerOmp(for: entries)
+        let records = try await configuration.services.records(workspace: workspace, omp: omp.path, environment: omp.environment)
+        return mergeServices(records: records, entries: entries)
+    }
+
+    /// `service.control`: `omp ps stop|kill|restart`, then `desiredRunning` cleared (stop, kill) or set (restart) in every
+    /// session of the workspace that recorded the service; or its mode changed through the bridge of a running session of
+    /// the workspace and recorded the same way. Returns the service as `services.list` shows it afterwards.
+    private func controlService(_ params: ServiceControlRequest.Params) async throws -> ServiceControlRequest.Result {
+        let workspace = try Self.canonicalDirectory(params.workspace)
+        let name = params.name
+        let entries = await manifest.sessions.filter { $0.workspace == workspace }
+        switch params.action {
+        case .stop: try await runService(.stop, name, workspace: workspace, entries: entries)
+        case .kill: try await runService(.kill, name, workspace: workspace, entries: entries)
+        case .restart: try await runService(.restart, name, workspace: workspace, entries: entries)
+        case .setMode:
+            guard let mode = params.mode, Self.serviceModes.contains(mode) else {
+                throw DaemonError(.badParams, "service.control setMode needs mode persist, session or detached")
+            }
+            try await setServiceMode(name, mode: mode, workspace: workspace, entries: entries)
+            try await updateServices(named: name, in: workspace) { service in
+                service.mode = mode
+                if mode == "detached" { service.pty = false } // omp gives a detached service no PTY
+            }
+        }
+        let service = try await services(in: workspace).first { $0.name == name } ?? ServiceInfo(name: name, state: "unknown")
+        return ServiceControlRequest.Result(service: service)
+    }
+
+    /// `proc://<name>/mode` values.
+    private static let serviceModes: Set<String> = ["persist", "session", "detached"]
+
+    /// A stop or kill of a service the broker no longer knows leaves nothing running under that name; a restart of one
+    /// fails (ompd has nothing to relaunch it from).
+    private func runService(_ command: ServiceCommand, _ name: String, workspace: String, entries: [SessionManifestEntry]) async throws {
+        let omp = try await brokerOmp(for: entries)
+        switch try await configuration.services.run(command, name, workspace: workspace, omp: omp.path, environment: omp.environment) {
+        case .done:
+            break
+        case .unknown:
+            guard command != .restart else {
+                throw DaemonError(.ompError, "omp has no record of the service \(name) any more; ask the agent to start it again")
+            }
+        case .failed(let message):
+            throw DaemonError(.ompError, message)
+        }
+        try await updateServices(named: name, in: workspace) { $0.desiredRunning = command == .restart }
+    }
+
+    /// Through the first session of the workspace whose bridge can: those that recorded the service first.
+    private func setServiceMode(_ name: String, mode: String, workspace: String, entries: [SessionManifestEntry]) async throws {
+        let recorded = { (entry: SessionManifestEntry) in entry.services.contains { $0.id == name } }
+        for entry in entries.filter(recorded) + entries.filter({ !recorded($0) }) {
+            guard let supervisor = supervisors[entry.sessionKey] else { continue }
+            do {
+                return try await supervisor.setServiceMode(name, mode: mode)
+            } catch let error as DaemonError where error.code == .bridgeUnavailable {
+                continue
+            }
+        }
+        throw DaemonError(.bridgeUnavailable, "no omp running in \(workspace) has an ide-bridge that can change a service's mode")
+    }
+
+    /// `change` applied to service `name` in every session of `workspace` that recorded it.
+    private func updateServices(
+        named name: String, in workspace: String, _ change: @escaping @Sendable (inout NamedService) -> Void
+    ) async throws {
+        do {
+            try await manifest.update { manifest in
+                for session in manifest.sessions.indices where manifest.sessions[session].workspace == workspace {
+                    for service in manifest.sessions[session].services.indices
+                    where manifest.sessions[session].services[service].id == name {
+                        change(&manifest.sessions[session].services[service])
+                    }
+                }
+            }
+        } catch {
+            persistenceFailed(error)
+            throw DaemonError(.internal, "cannot write the session manifest: \(error)")
+        }
+    }
+
+    /// The omp that runs `omp ps` for a workspace's broker: the pinned binary and environment of a running session of the
+    /// workspace, else of another of its sessions whose binary is still there, else what a new session would get.
+    private func brokerOmp(for entries: [SessionManifestEntry]) async throws -> (path: String, environment: [String: String]) {
+        let usable = entries.filter { FileManager.default.isExecutableFile(atPath: $0.launch.ompPath) }
+        var chosen = usable.first
+        for entry in usable {
+            guard await supervisors[entry.sessionKey]?.isRunning == true else { continue }
+            chosen = entry
+            break
+        }
+        if let chosen { return (chosen.launch.ompPath, configuration.baseEnvironment.merging(chosen.launch.env) { $1 }) }
+        do {
+            return (try OmpBinary.locate(explicit: configuration.ompExecutable, environment: configuration.baseEnvironment), configuration.baseEnvironment)
+        } catch {
+            throw DaemonError(.ompError, "\(error)")
+        }
+    }
+
     // MARK: - Routes
 
     private nonisolated func registerRoutes() {
@@ -532,6 +659,21 @@ public actor Daemon {
         router.on(ClientPresence.self) { [weak self] params, connection in
             try await Self.alive(self).presence(connection.id, hasWindow: params.hasWindow)
             return Empty()
+        }
+        router.on(SessionRuntimeList.self) { [weak self] _, _ in
+            try await Self.alive(self).runtimes()
+        }
+        router.on(AgentControl.self) { [weak self] params, _ in
+            try await Self.alive(self).controlAgent(params)
+        }
+        router.on(AgentMessage.self) { [weak self] params, _ in
+            try await Self.alive(self).messageAgent(params)
+        }
+        router.on(ServiceList.self) { [weak self] params, _ in
+            ServiceList.Result(services: try await Self.alive(self).services(in: params.workspace))
+        }
+        router.on(ServiceControlRequest.self) { [weak self] params, _ in
+            try await Self.alive(self).controlService(params)
         }
     }
 

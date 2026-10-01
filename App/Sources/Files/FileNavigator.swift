@@ -7,6 +7,7 @@ import SwiftUI
 enum SidebarPane: String, CaseIterable {
     case files
     case changes
+    case agents
     case projects
 
     static let defaultsKey = "sidebarPane"
@@ -15,6 +16,7 @@ enum SidebarPane: String, CaseIterable {
         switch self {
         case .files: "Files"
         case .changes: "Source Control"
+        case .agents: "Agents"
         case .projects: "Projects"
         }
     }
@@ -23,6 +25,7 @@ enum SidebarPane: String, CaseIterable {
         switch self {
         case .files: "list.bullet.indent"
         case .changes: "point.3.connected.trianglepath.dotted"
+        case .agents: "person.2"
         case .projects: "square.stack.3d.up"
         }
     }
@@ -32,13 +35,14 @@ enum SidebarPane: String, CaseIterable {
         switch self {
         case .files: "⇧⌘E"
         case .changes: "⌃⌘G"
+        case .agents: "⌃⌘A"
         case .projects: "⇧⌘P"
         }
     }
 }
 
 /// The sidebar pane the activity bar picked: the project in focus (its title is the menu that switches projects and
-/// adds one) with its files or its git changes, or the list of projects.
+/// adds one) with its files, its git changes or what omp runs in it, or the list of projects.
 struct SidebarPaneView: View {
     @Bindable var app: AppState
     /// The window's project; empty for the window of no project.
@@ -60,6 +64,16 @@ struct SidebarPaneView: View {
                     ProjectHeader(app: app, project: project)
                     Divider()
                     SourceControlPanel(app: app, repository: app.editors.repositories.repository(for: project))
+                        .id(project)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    noProject
+                }
+            case .agents:
+                if !project.isEmpty {
+                    ProjectHeader(app: app, project: project)
+                    Divider()
+                    AgentsPane(app: app, project: project)
                         .id(project)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {

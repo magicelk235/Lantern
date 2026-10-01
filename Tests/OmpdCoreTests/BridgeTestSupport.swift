@@ -103,7 +103,7 @@ final class FakeBridge: Sendable {
         }
     }
 
-    /// A well-formed hello as the real bridge sends it.
+    /// A well-formed hello as the real bridge sends it, with an approval prompt open in the TUI.
     func sendHello(sessionKey: SessionKey, token: String, pid: Int32 = getpid()) throws {
         try send([
             "t": "hello", "v": 1, "sessionKey": .string(sessionKey), "token": .string(token), "pid": .number(Double(pid)),
@@ -112,6 +112,7 @@ final class FakeBridge: Sendable {
             "session": [
                 "id": "0199aaaa", "file": "/tmp/omb-session.jsonl", "onDisk": false, "leafId": nil, "cwd": "/tmp",
                 "artifactsDir": "/tmp/omb-session",
+                "attention": [["id": "call-7", "kind": "approval", "toolName": "bash", "agentId": "Main", "since": 1_790_000_000_000]],
             ],
         ])
     }

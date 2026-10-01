@@ -38,6 +38,9 @@ import Testing
             #expect(hello.sessionFile == "/tmp/omb-session.jsonl")
             #expect(hello.onDisk == false)
             #expect(hello.artifactsDir == "/tmp/omb-session")
+            #expect(hello.attention == [
+                AttentionItem(id: "call-7", kind: .approval, toolName: "bash", agentId: "Main", since: Date(timeIntervalSince1970: 1_790_000_000)),
+            ])
             #expect(hello.raw["token"] == nil)
 
             // The token is spent: a second hello with it is refused, the first connection keeps working.

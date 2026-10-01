@@ -62,10 +62,14 @@ struct ProjectWindow: View {
         // The tabs are the list of sessions and terminals: whatever ompd lists gets one.
         .onChange(of: app.connection.sessions, initial: true) { app.syncTabs() }
         .onChange(of: app.connection.terminals.terminals) { app.syncTabs() }
-        // The no-project window gives way once a project exists.
+        // The no-project window gives way once a project exists, to that project's window (a project can also arrive
+        // from ompd, e.g. a session started elsewhere; with no window left, ompd would pause every session).
         .onChange(of: app.projects.isEmpty) { _, empty in
-            if project.isEmpty, !empty { dismissWindow(id: OmpIDEApp.projectWindowID, value: "") }
+            guard project.isEmpty, !empty else { return }
+            if let first = app.projects.first { openWindow(id: OmpIDEApp.projectWindowID, value: first) }
+            dismissWindow(id: OmpIDEApp.projectWindowID, value: "")
         }
+        .sessionPicker(app, project: project)
         .alert(item: $app.alert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message))
         }
@@ -98,9 +102,10 @@ struct ProjectWindow: View {
     }
 }
 
-/// The column of icons at the window's left edge: Files, Changes (badged with the count of changed files) and
-/// Projects. A click shows the pane; a click on the pane already showing hides the sidebar. Its own look, not an
-/// activity bar copied from elsewhere: 16pt outline symbols, the current one on a filled rounded square.
+/// The column of icons at the window's left edge: Files, Changes (badged with the count of changed files), Agents
+/// (badged in red with the approvals and questions waiting in the project's sessions) and Projects. A click shows the
+/// pane; a click on the pane already showing hides the sidebar. Its own look, not an activity bar copied from
+/// elsewhere: 16pt outline symbols, the current one on a filled rounded square.
 struct ActivityBar: View {
     let app: AppState
     let project: String
@@ -111,8 +116,8 @@ struct ActivityBar: View {
         VStack(spacing: 4) {
             ForEach(SidebarPane.allCases, id: \.self) { pane in
                 ActivityButton(
-                    pane: pane, isCurrent: app.sidebarVisible && app.pane == pane,
-                    badge: pane == .changes ? changeCount : 0
+                    pane: pane, isCurrent: app.sidebarVisible && app.pane == pane, badge: badge(of: pane),
+                    badgeTint: pane == .agents ? .red : .accentColor
                 ) {
                     app.togglePane(pane)
                 }
@@ -123,6 +128,14 @@ struct ActivityBar: View {
         .frame(width: Self.width)
         .frame(maxHeight: .infinity)
         .background(Chrome.surface)
+    }
+
+    private func badge(of pane: SidebarPane) -> Int {
+        switch pane {
+        case .changes: changeCount
+        case .agents: project.isEmpty ? 0 : app.attentionCount(in: project)
+        case .files, .projects: 0
+        }
     }
 
     /// Changed files in the window's project.
@@ -137,6 +150,8 @@ private struct ActivityButton: View {
     let pane: SidebarPane
     let isCurrent: Bool
     let badge: Int
+    /// Red for what waits on the user, the accent for a plain count.
+    let badgeTint: Color
     let action: () -> Void
     @State private var hovering = false
 
@@ -156,7 +171,7 @@ private struct ActivityButton: View {
                             .monospacedDigit()
                             .padding(.horizontal, 4)
                             .frame(minWidth: 15, minHeight: 15)
-                            .background(Color.accentColor, in: Capsule())
+                            .background(badgeTint, in: Capsule())
                             .foregroundStyle(.white)
                             .offset(x: 2, y: 2)
                     }
@@ -234,7 +249,8 @@ private struct EmptyDetail: View {
     }
 }
 
-/// What the project in focus offers: New Session, New Terminal, Finder, and Remove once nothing of it is open.
+/// What the project in focus offers: New Session, New Terminal, Open Session…, Finder, and Remove once nothing of it is
+/// open.
 struct ProjectMenu: View {
     let app: AppState
     let project: String
@@ -244,6 +260,7 @@ struct ProjectMenu: View {
             .disabled(!app.connection.isConnected)
         Button("New Terminal") { app.newTerminal(in: project) }
             .disabled(!app.connection.isConnected)
+        Button("Open Session…") { app.showSessionPicker(for: project) }
         Divider()
         Button("Reveal in Finder") {
             NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: project, directoryHint: .isDirectory)])
