@@ -15,12 +15,17 @@ settings:
     OTHER_CODE_SIGN_FLAGS: --options=runtime
     # A real identity is required: Background Task Management refuses to spawn a bundled LaunchAgent whose executable
     # has no Team ID (`Bundle identifiers from launchd plist ignored because the executable doesn't have a Team ID`,
-    # then `Unable to update LWCR with smd: 22`), so an ad-hoc signed ompd never starts. Release builds override the
-    # identity with Developer ID.
+    # then `Unable to update LWCR with smd: 22`), so an ad-hoc signed ompd never starts. `scripts/release.sh` re-signs
+    # the archive with Developer ID when it exports it.
     CODE_SIGN_STYLE: Automatic
     CODE_SIGN_IDENTITY: Apple Development
     DEVELOPMENT_TEAM: V8K8L3ZSD5
     DEAD_CODE_STRIPPING: YES
+  configs:
+    # Universal. Debug keeps Xcode's defaults: the active architecture only.
+    Release:
+      ARCHS: arm64 x86_64
+      ONLY_ACTIVE_ARCH: NO
 packages:
   OmpIDE:
     path: ..
@@ -39,6 +44,10 @@ packages:
   CodeEditLanguages:
     url: https://github.com/CodeEditApp/CodeEditLanguages
     exactVersion: 0.1.20
+  # App updates. Started only when the build names a feed (`Updates.swift`).
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.10.0
 targets:
   omp IDE:
     type: application
@@ -63,6 +72,7 @@ targets:
       - package: CodeEditSourceEditor
       - package: CodeEditTextView
       - package: CodeEditLanguages
+      - package: Sparkle
       # The daemon ships inside the app so SMAppService can register it.
       - target: ompd
         embed: true
@@ -95,6 +105,12 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: omp IDE
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        # Merged into the generated Info.plist: Sparkle's feed and EdDSA public key from the two settings below.
+        INFOPLIST_FILE: Resources/Info.plist
+        # Empty: no feed, so Sparkle is never started and Check for Updates… is hidden. `scripts/release.sh` sets
+        # them from FEED_URL and SPARKLE_PUBLIC_KEY.
+        SPARKLE_FEED_URL: ""
+        SPARKLE_PUBLIC_ED_KEY: ""
         # Spawns processes, owns a unix socket in ~/Library and registers a LaunchAgent: never sandboxed.
         ENABLE_APP_SANDBOX: NO
         # The ide-bridge copy reads a file outside the declared inputs (it may not exist).
@@ -125,3 +141,7 @@ targets:
         CREATE_INFOPLIST_SECTION_IN_BINARY: YES
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
+      configs:
+        # Optimized for size. Its package modules (OmpdCore, …) take -Osize from Package.swift.
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-Osize"

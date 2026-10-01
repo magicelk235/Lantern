@@ -127,12 +127,17 @@ public struct SessionManifestEntry: Sendable, Equatable, Codable, Identifiable {
     /// An interruption waiting for the user's decision (restore policy `ask`), answered with `session.continue`. Kept
     /// until answered, across daemon restarts (merged with what a later death leaves).
     public var pendingContinuation: Interruption?
+    /// The version of the omp at `launch.ompPath` as ompd last read it: at each spawn, when an app connects, and when
+    /// the file there changes; nil until then (and in older manifests). Newer than `launch.ompVersion` while omp runs:
+    /// `session.restart` would upgrade it (`ompUpgrade`).
+    public var installedOmpVersion: String?
 
     public init(
         sessionKey: SessionKey, workspace: String, sessionFile: String? = nil, sessionId: String? = nil,
         title: String? = nil, launch: LaunchSpec, status: SessionStatus = .starting, ptyId: PTYID? = nil,
         createdAt: Date, lastActiveAt: Date? = nil, services: [NamedService] = [], closedByUser: Bool = false,
-        adopted: Bool = false, spawnedAt: Date? = nil, pendingContinuation: Interruption? = nil
+        adopted: Bool = false, spawnedAt: Date? = nil, pendingContinuation: Interruption? = nil,
+        installedOmpVersion: String? = nil
     ) {
         self.sessionKey = sessionKey
         self.workspace = workspace
@@ -149,9 +154,11 @@ public struct SessionManifestEntry: Sendable, Equatable, Codable, Identifiable {
         self.adopted = adopted
         self.spawnedAt = spawnedAt
         self.pendingContinuation = pendingContinuation
+        self.installedOmpVersion = installedOmpVersion
     }
 
-    /// Manifests written before `adopted`, `spawnedAt` or `pendingContinuation` existed decode without them.
+    /// Manifests written before `adopted`, `spawnedAt`, `pendingContinuation` or `installedOmpVersion` existed decode
+    /// without them.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         sessionKey = try container.decode(SessionKey.self, forKey: .sessionKey)
@@ -169,11 +176,14 @@ public struct SessionManifestEntry: Sendable, Equatable, Codable, Identifiable {
         adopted = try container.decodeIfPresent(Bool.self, forKey: .adopted) ?? false
         spawnedAt = try container.decodeIfPresent(Date.self, forKey: .spawnedAt)
         pendingContinuation = try container.decodeIfPresent(Interruption.self, forKey: .pendingContinuation)
+        installedOmpVersion = try container.decodeIfPresent(String.self, forKey: .installedOmpVersion)
     }
 }
 
-/// Everything needed to (re)spawn the same omp TUI for a session. The binary is pinned by absolute path +
-/// version so a half-upgraded system never mixes versions inside one session.
+/// Everything needed to (re)spawn the same omp TUI for a session. The binary is pinned by absolute path; `ompVersion` is
+/// what it reported (`--version`) at the session's latest spawn. A path a package manager re-points on upgrade
+/// (Homebrew's `bin/omp` link) runs the newer omp at the next spawn only — a death's respawn or `session.restart`; a
+/// pinned path that is gone is replaced at the next spawn by the omp a new session would get.
 public struct LaunchSpec: Sendable, Equatable, Codable {
     public var ompPath: String
     public var ompVersion: String

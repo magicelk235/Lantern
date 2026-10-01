@@ -38,10 +38,18 @@ public actor PTYPool {
     /// continues from it (`restoreFromSnapshots` collects them; `discardSessionScreens` drops unknown sessions).
     private var sessionScreens: [SessionKey: PTYSnapshot] = [:]
     private var onChange: (@Sendable ([PTYInfo]) -> Void)?
+    private var snapshotObserver: (@Sendable ((any Error)?) -> Void)?
+    /// Every snapshot on disk from before this daemon started has been taken in (`restoreFromSnapshots`): a snapshot no
+    /// PTY or session refers to from now on is garbage (`unreferencedSnapshots`).
+    private var snapshotsRestored = false
     private var terminalEnvironment: (@Sendable (PTYID) async -> [String: String])?
     private var nextSequence: UInt64 = 0
     private var snapshotTimer: Task<Void, Never>?
     private var isShutDown = false
+    /// `freezeForHandover`: nothing is read, written or reaped until `thaw` (or the exec of the next image).
+    private var isFrozen = false
+    /// Programs of PTYs `close` hung up that were not reaped yet (they get SIGKILL after `killGrace`).
+    private var closingPIDs: Set<pid_t> = []
     private var readBuffer = [UInt8](repeating: 0, count: 64 * 1024)
 
     public init(snapshotDirectory: URL, snapshotInterval: Duration = .seconds(5)) {
@@ -66,6 +74,12 @@ public actor PTYPool {
     /// right before the program starts: on `open` and for every terminal `restoreFromSnapshots` starts again.
     public func setTerminalEnvironment(_ provider: @escaping @Sendable (PTYID) async -> [String: String]) {
         terminalEnvironment = provider
+    }
+
+    /// Receives the outcome of every pass of snapshot writes that wrote anything — the dirty tick, a detach, before
+    /// sleep, at shutdown: nil when each write succeeded, else the first failure.
+    public func setSnapshotObserver(_ observer: @escaping @Sendable ((any Error)?) -> Void) {
+        snapshotObserver = observer
     }
 
     /// Starts `params.command` (nil: the user's login shell with `-l`) on a new PTY with `TERM=xterm-256color`,
@@ -156,6 +170,7 @@ public actor PTYPool {
     /// Sends input to the PTY. Input for a PTY whose program is gone is dropped.
     public func write(_ ptyId: PTYID, _ data: Data) throws {
         let pty = try existing(ptyId)
+        try ensureRunning()
         guard let channel = pty.channel else { return }
         try data.withUnsafeBytes { try channel.write($0) }
     }
@@ -163,6 +178,7 @@ public actor PTYPool {
     /// Resizes the tty (the foreground program gets SIGWINCH) and the headless terminal.
     public func resize(_ ptyId: PTYID, cols: Int, rows: Int) throws {
         let pty = try existing(ptyId)
+        try ensureRunning()
         try Self.validateSize(cols: cols, rows: rows)
         guard cols != pty.info.cols || rows != pty.info.rows else { return }
         if let channel = pty.channel {
@@ -189,6 +205,7 @@ public actor PTYPool {
         pty.onExit = nil
         pty.hangUp()
         if let reaper = pty.reaper, !reaper.isReaped {
+            closingPIDs.insert(reaper.pid)
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.killGrace) { reaper.signalGroup(SIGKILL) }
         }
         store.remove(ptyId)
@@ -215,9 +232,12 @@ public actor PTYPool {
     /// `snapshotInterval` after a change (never while idle).
     public func snapshotAll() throws {
         var firstError: (any Error)?
+        var wrote = false
         for pty in ptys.values where pty.dirty {
+            wrote = true
             do { try writeSnapshot(pty) } catch { firstError = firstError ?? error }
         }
+        if wrote { snapshotObserver?(firstError) }
         if let firstError { throw firstError }
     }
 
@@ -261,6 +281,7 @@ public actor PTYPool {
             restored.append(pty.info)
         }
         if !restored.isEmpty { publishChange() }
+        snapshotsRestored = true
         return restored
     }
 
@@ -270,6 +291,31 @@ public actor PTYPool {
             sessionScreens[key] = nil
             store.remove(snapshot.info.ptyId)
         }
+    }
+
+    /// Snapshot files nothing will read again (`PTYSnapshotStore.unreferenced`): of PTYs no longer in the pool whose
+    /// session, if any, is not in `sessions` (the manifest's), and leftovers of interrupted writes. Count and bytes on
+    /// disk. None before `restoreFromSnapshots()` took in what the previous daemon left.
+    public func unreferencedSnapshots(sessions: Set<SessionKey>) -> (count: Int, bytes: Int64) {
+        let files = unreferencedSnapshotFiles(sessions: sessions)
+        return (files.count, files.reduce(0) { $0 + $1.bytes })
+    }
+
+    /// Deletes what `unreferencedSnapshots` lists; returns the count and bytes removed. Snapshot writes run on the pool's
+    /// executor, so none is in flight meanwhile.
+    public func removeUnreferencedSnapshots(sessions: Set<SessionKey>) -> (count: Int, bytes: Int64) {
+        var removed = (count: 0, bytes: Int64(0))
+        for file in unreferencedSnapshotFiles(sessions: sessions) where unlink(file.url.path(percentEncoded: false)) == 0 {
+            removed.count += 1
+            removed.bytes += file.bytes
+        }
+        return removed
+    }
+
+    private func unreferencedSnapshotFiles(sessions: Set<SessionKey>) -> [(url: URL, bytes: Int64)] {
+        guard snapshotsRestored else { return [] }
+        let live = Set(ptys.keys).union(sessionScreens.values.map(\.info.ptyId))
+        return store.unreferenced(live: live, sessions: sessions)
     }
 
     /// Graceful daemon exit: snapshots every changed PTY, then hangs all of them up. Snapshots are kept for
@@ -288,6 +334,73 @@ public actor PTYPool {
         }
         ptys.removeAll()
         if let failure { throw failure }
+    }
+
+    // MARK: - In-place upgrade
+
+    /// Stops reading, writing and reaping every PTY (the master descriptors stay open, so no program notices) and
+    /// returns what the next image needs to read on from exactly here: each PTY's screen as its terminal holds it, the
+    /// input the tty has not taken yet, and its program, plus the programs of closed PTYs not reaped yet and the kept
+    /// screens of sessions. Refuses new PTYs, input and resizes until `thaw`.
+    func freezeForHandover() -> PTYPoolHandover {
+        isFrozen = true
+        snapshotTimer?.cancel()
+        snapshotTimer = nil
+        var handed: [PTYHandover] = []
+        for pty in ptys.values.sorted(by: { $0.sequence < $1.sequence }) {
+            refreshWorkingDirectory(pty)
+            pty.channel?.suspend()
+            pty.reaper?.suspend()
+            handed.append(PTYHandover(
+                info: pty.info, persistedEnv: pty.persistedEnv, sequence: pty.sequence, masterFD: pty.channel?.fd,
+                screen: pty.mirror.serialize(includePending: true), scrollbackEraseHeld: pty.historyGuard?.heldBytes,
+                pendingInput: pty.channel?.pendingInput ?? Data()))
+        }
+        return PTYPoolHandover(
+            ptys: handed, closing: closingPIDs.sorted(), sessionScreens: sessionScreens.mapValues(\.info.ptyId))
+    }
+
+    /// The handover did not happen: everything runs on, and what the programs wrote meanwhile is read now.
+    func thaw() {
+        guard isFrozen else { return }
+        isFrozen = false
+        for pty in ptys.values {
+            pty.channel?.resume()
+            pty.reaper?.resume()
+        }
+        if ptys.values.contains(where: \.dirty) { scheduleSnapshot() }
+    }
+
+    /// The next image of an in-place upgrade: takes over the PTYs `handover` describes, on the descriptors and programs
+    /// this process inherited. Each terminal continues from its handed-over screen with the next byte its master yields;
+    /// `onExit` per session PTY gets its program's exit (as `openSession`'s does), also one that happened during the
+    /// handover. Closed PTYs' programs are reaped (SIGKILL after `killGrace`), and the sessions' kept screens come back
+    /// from their snapshots.
+    func adopt(_ handover: PTYPoolHandover, onExit: [PTYID: @Sendable (PTYExit) -> Void]) {
+        for item in handover.ptys where ptys[item.info.ptyId] == nil {
+            let mirror = TerminalMirror(cols: item.info.cols, rows: item.info.rows)
+            mirror.feed([UInt8](item.screen))
+            let pty = register(ManagedPTY(info: item.info, persistedEnv: item.persistedEnv, mirror: mirror, sequence: item.sequence))
+            nextSequence = max(nextSequence, item.sequence)
+            if let held = item.scrollbackEraseHeld { pty.historyGuard = ScrollbackEraseFilter(holding: held) }
+            pty.onExit = onExit[item.info.ptyId]
+            if let master = item.masterFD {
+                _ = fcntl(master, F_SETFD, FD_CLOEXEC)
+                _ = fcntl(master, F_SETFL, fcntl(master, F_GETFL) | O_NONBLOCK)
+            }
+            wire(pty, master: item.masterFD, pid: item.info.running ? item.info.pid : nil, pendingInput: [UInt8](item.pendingInput))
+        }
+        for pid in handover.closing {
+            closingPIDs.insert(pid)
+            let reaper = ChildReaper(pid: pid) { [weak self] _ in self?.assumeIsolated { _ = $0.closingPIDs.remove(pid) } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.killGrace) { reaper.signalGroup(SIGKILL) }
+        }
+        let kept = Set(handover.sessionScreens.values)
+        for snapshot in (try? store.loadAll()) ?? [] where kept.contains(snapshot.info.ptyId) {
+            if let key = snapshot.info.sessionKey { keepSessionScreen(snapshot, of: key) }
+        }
+        snapshotsRestored = true
+        publishChange()
     }
 
     // MARK: - Lifecycle
@@ -328,20 +441,30 @@ public actor PTYPool {
                            sessionKey: sessionKey)
         let pty = register(ManagedPTY(info: info, persistedEnv: persistedEnv, mirror: mirror, sequence: takeSequence()))
         if prefill?.keepsHistory == true { pty.historyGuard = ScrollbackEraseFilter() }
-        pty.channel = MasterChannel(
-            fd: child.master,
-            onReadable: { [weak self] in self?.assumeIsolated { $0.masterReadable(id) } },
-            onWritable: { [weak self] in self?.assumeIsolated { $0.masterWritable(id) } }
-        )
-        pty.reaper = ChildReaper(pid: child.pid) { [weak self] status in
-            self?.assumeIsolated { $0.childExited(id, pid: child.pid, status: status) }
+        wire(pty, master: child.master, pid: child.pid)
+        return pty
+    }
+
+    /// Reads `master` into the PTY's terminal, reaps `pid` (its program) and routes the terminal's query replies.
+    private func wire(_ pty: ManagedPTY, master: Int32?, pid: pid_t?, pendingInput: [UInt8] = []) {
+        let id = pty.info.ptyId
+        if let master {
+            pty.channel = MasterChannel(
+                fd: master, pendingInput: pendingInput,
+                onReadable: { [weak self] in self?.assumeIsolated { $0.masterReadable(id) } },
+                onWritable: { [weak self] in self?.assumeIsolated { $0.masterWritable(id) } }
+            )
         }
-        mirror.onReply = { [unowned pty] reply in
+        if let pid {
+            pty.reaper = ChildReaper(pid: pid) { [weak self] status in
+                self?.assumeIsolated { $0.childExited(id, pid: pid, status: status) }
+            }
+        }
+        pty.mirror.onReply = { [unowned pty] reply in
             // Replies come from whoever renders the terminal: the attached UI, else the headless terminal.
             guard pty.subscribers.isEmpty, let channel = pty.channel else { return }
             reply.withUnsafeBytes { try? channel.write($0) }
         }
-        return pty
     }
 
     private func register(_ pty: ManagedPTY) -> ManagedPTY {
@@ -399,6 +522,7 @@ public actor PTYPool {
     }
 
     private func childExited(_ id: PTYID, pid: pid_t, status: Int32) {
+        closingPIDs.remove(pid)
         guard let pty = ptys[id], pty.info.pid == pid else { return }
         // The program's last paint may still sit in the master: take it before anyone looks at the screen.
         drain(pty, maxBytes: Self.exitDrainLimit)
@@ -437,7 +561,7 @@ public actor PTYPool {
     }
 
     private func scheduleSnapshot() {
-        guard snapshotTimer == nil, !isShutDown else { return }
+        guard snapshotTimer == nil, !isShutDown, !isFrozen else { return }
         let interval = snapshotInterval
         snapshotTimer = Task { [weak self] in
             try? await Task.sleep(for: interval)
@@ -455,7 +579,13 @@ public actor PTYPool {
 
     private func snapshotIfDirty(_ pty: ManagedPTY) {
         guard pty.dirty else { return }
-        if (try? writeSnapshot(pty)) == nil { scheduleSnapshot() }
+        do {
+            try writeSnapshot(pty)
+            snapshotObserver?(nil)
+        } catch {
+            snapshotObserver?(error)
+            scheduleSnapshot()
+        }
     }
 
     private func writeSnapshot(_ pty: ManagedPTY) throws {
@@ -516,6 +646,7 @@ public actor PTYPool {
 
     private func ensureRunning() throws {
         if isShutDown { throw DaemonError(.internal, "PTY pool is shut down") }
+        if isFrozen { throw DaemonError(.internal, "ompd is upgrading; try again in a moment") }
     }
 
     private static func validateSize(cols: Int, rows: Int) throws {
@@ -599,6 +730,14 @@ struct ScrollbackEraseFilter {
     private static let sequence: [UInt8] = [0x1B, 0x5B, 0x33, 0x4A] // ESC [ 3 J
     private(set) var isDone = false
     private var held: [UInt8] = []
+
+    /// `held`: what the filter of an earlier image held back (an in-place upgrade).
+    init(holding held: [UInt8] = []) {
+        self.held = held
+    }
+
+    /// What is held back now (the start of the sequence, until the next chunk shows whether it completes).
+    var heldBytes: [UInt8] { held }
 
     /// `chunk` as it should be delivered.
     mutating func filter(_ chunk: UnsafeBufferPointer<UInt8>) -> [UInt8] {

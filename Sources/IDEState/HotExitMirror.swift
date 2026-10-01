@@ -66,6 +66,27 @@ enum HotExitMirror {
             return buffer
         }
     }
+
+    /// How long a temp file must have been left alone to count as abandoned: a mirror write takes milliseconds, so one
+    /// untouched this long belongs to no write in progress, in this app or in another copy of it on the same data.
+    static let abandonedAfter: TimeInterval = 60
+
+    /// Temp files of mirror writes (`.<sha256>.tmp`, `FileIO.writeAtomically`) untouched for `abandonedAfter` before
+    /// `now`, with their bytes on disk: what a crash or power loss in the middle of a write left. Nothing reads them.
+    static func abandonedWrites(in directory: URL, now: Date = Date()) -> [(url: URL, bytes: Int64)] {
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .totalFileAllocatedSizeKey, .isRegularFileKey]
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys))) ?? []
+        return files.compactMap { url -> (url: URL, bytes: Int64)? in
+            let name = url.lastPathComponent
+            guard name.hasPrefix("."), name.hasSuffix(".tmp") else { return nil }
+            let mirror = name.dropFirst().dropLast(".tmp".count)
+            guard mirror.count == 64, mirror.allSatisfy(\.isHexDigit),
+                  let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true,
+                  let modified = values.contentModificationDate, now.timeIntervalSince(modified) >= abandonedAfter
+            else { return nil }
+            return (url, Int64(values.totalFileAllocatedSize ?? 0))
+        }
+    }
 }
 
 /// POSIX file primitives for durable writes.

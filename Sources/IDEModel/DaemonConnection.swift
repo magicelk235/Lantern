@@ -15,6 +15,10 @@ public final class DaemonConnection: TerminalBackend {
         case connected(Welcome)
         /// The last attempt failed; retrying with backoff.
         case daemonUnavailable(reason: String)
+        /// ompd refused this app's protocol version (`version_mismatch`; `message` is ompd's): another build than the app's.
+        /// A current ompd moves to the one installed at its path by itself (`daemon.upgrade auto`); an older one runs
+        /// until it is restarted. Retrying with backoff, so the app connects to the ompd that starts next.
+        case versionMismatch(message: String)
     }
 
     /// Delay before retry `n` (1-based): `initial * 2^(n-1)`, at most `maximum`.
@@ -319,7 +323,11 @@ public final class DaemonConnection: TerminalBackend {
             } catch {
                 if Task.isCancelled { return }
                 failures += 1
-                status = .daemonUnavailable(reason: Self.reason(error))
+                status = if let refusal = error as? DaemonError, refusal.code == .versionMismatch {
+                    .versionMismatch(message: refusal.message)
+                } else {
+                    .daemonUnavailable(reason: Self.reason(error))
+                }
                 do { try await Task.sleep(for: backoff.delay(afterFailures: failures)) } catch { return }
                 continue
             }
@@ -397,8 +405,6 @@ public final class DaemonConnection: TerminalBackend {
             "ompd is not running (nothing listens on its socket)."
         case let error as DaemonError where error.code == .unauthorized:
             "ompd refused the connection token: \(error.message)"
-        case let error as DaemonError where error.code == .versionMismatch:
-            "ompd speaks a different protocol version: \(error.message)"
         default:
             error.userMessage
         }

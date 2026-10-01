@@ -86,6 +86,18 @@ final class DaemonAgent {
         }
     }
 
+    /// Restarts the registered ompd: `launchctl kickstart -k gui/<uid>/com.omp-ide.ompd`. launchd SIGTERMs the one
+    /// running, which stops every omp the graceful way, and once it exited (after `ExitTimeOut`, 20 s, at
+    /// the latest) spawns the job again: the ompd bundled with the app. Returns why it failed; nil once launchd spawned
+    /// the new ompd. Never with `OMPD_HOME` set (`external`): that ompd is the developer's, and the registered one is
+    /// not touched.
+    func kickstart() async -> String? {
+        if case .external(let home) = state { return "ompd runs for OMPD_HOME=\(home); the registered ompd is left alone." }
+        let target = "gui/\(getuid())/\(Self.label)"
+        let status = await Task.detached { Self.launchctl("kickstart", "-k", target) }.value
+        return status == 0 ? nil : "launchctl kickstart exited with status \(status)."
+    }
+
     /// Exit status of `/bin/launchctl <arguments>`; -1 when it could not run.
     private nonisolated static func launchctl(_ arguments: String...) -> Int32 {
         let process = Process()

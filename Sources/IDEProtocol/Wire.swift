@@ -196,11 +196,15 @@ public struct DaemonNotice: Sendable, Equatable, Codable {
     /// The session it concerns; nil for daemon-wide notices.
     public var sessionKey: SessionKey?
     public var at: Date
-    public init(level: String, message: String, sessionKey: SessionKey? = nil, at: Date) {
+    /// What the notice is about, for clients that offer an action on it (`DaemonNotice.diskSpaceTopic`); nil for most
+    /// notices, and from older ompds.
+    public var topic: String?
+    public init(level: String, message: String, sessionKey: SessionKey? = nil, at: Date, topic: String? = nil) {
         self.level = level
         self.message = message
         self.sessionKey = sessionKey
         self.at = at
+        self.topic = topic
     }
 }
 

@@ -26,13 +26,21 @@
  * All modes veto `session_before_switch` into a daemon-owned file, so a session TUI's `/resume` cannot open another
  * IDE session's file; terminal mode also applies lock mode's load-time argv check.
  *
+ * Redial (daemon and terminal mode): when the connection to ompd ends while that ompd still runs — it upgraded itself in
+ * place (same pid, so a daemon-spawned omp is still its child) and stopped writing first, or the connection
+ * dropped — the bridge dials again with its original credentials and says `hello` again, after 0.1 s, then twice as long
+ * each time up to 5 s, at most `REDIAL_ATTEMPTS` times; a first connection that ends before its verdict is retried the
+ * same way. Events produced meanwhile wait for the welcome (beyond `MAX_QUEUED_BEFORE_WELCOME` they become a `gap`); no
+ * timer runs while connected. A redial ompd rejects ends the connection for good, without lock-mode treatment.
+ *
  * Ownership: ompd holds flock(LOCK_EX) on $APP_SUPPORT/run/owned-sessions/<sha256(canonical sessionFile)>.lock for
  * every session it owns; APP_SUPPORT = $OMPD_HOME or ~/Library/Application Support/omp-ide. The bridge probes it with
  * a shared non-blocking lock (open O_SHLOCK|O_NONBLOCK fails with EAGAIN while ompd holds it).
  *
  * Wire: JSON lines over the unix socket.
  *   bridge -> ompd  {t:"hello", v:1, sessionKey, token, pid, ompVersion, capabilities, session:{id, file, onDisk,
- *                    leafId, cwd, artifactsDir, title, paused, pausedBy, attention}} first frame, exactly once
+ *                    leafId, cwd, artifactsDir, title, paused, pausedBy, attention, activity}} first frame of each
+ *                    connection (once, and again on every redial; activity is the main agent's "busy"|"idle")
  *                   (terminal mode: ptyId and the terminal's token in place of sessionKey and token)
  *                   {t:"res", id, ok:true, result} | {t:"res", id, ok:false, error}  one per req
  *                   {t:"evt", seq, ts, agentId, kind, data}                           only after welcome
@@ -245,8 +253,14 @@ interface ExtensionApiLike {
 const WIRE_VERSION = 1;
 /** Userland socket backlog above which `evt`s are dropped (and reported with one `gap`). Replies are never dropped. */
 const MAX_BACKLOG_BYTES = 1 << 20;
-/** `evt`s produced between `hello` and the daemon's verdict are held back; beyond this they become a `gap`. */
+/** `evt`s produced between `hello` and the daemon's verdict (also while redialing) are held back; beyond this they become
+ *  a `gap`. */
 const MAX_QUEUED_BEFORE_WELCOME = 1024;
+/** Redials after the daemon connection ended: the first after `REDIAL_FIRST_MS`, each later one twice as long after the
+ *  previous up to `REDIAL_MAX_MS`, at most `REDIAL_ATTEMPTS` in a row (about half a minute). */
+const REDIAL_FIRST_MS = 100;
+const REDIAL_MAX_MS = 5000;
+const REDIAL_ATTEMPTS = 12;
 /** While background jobs outlive the main agent's run, how often the bridge checks whether the session went idle. */
 const SETTLE_RECHECK_MS = 1000;
 /** While a job of the main session runs, how often its snapshot is checked for changes (omp has no change listener). */
@@ -307,8 +321,8 @@ const EVAL_ID = crypto.randomUUID();
 /** How this process reaches ompd (see header): as the omp ompd spawned for a session, or as an omp the user started in
  *  one of the IDE's terminals. Undefined is lock mode. */
 type Wiring =
-	| { mode: "daemon"; sock: string; sessionKey: string; token: string }
-	| { mode: "terminal"; sock: string; ptyId: string; token: string };
+	| { mode: "daemon"; sock: string; sessionKey: string; token: string; daemonPid: string }
+	| { mode: "terminal"; sock: string; ptyId: string; token: string; daemonPid: string };
 
 function resolveWiring(): Wiring | undefined {
 	const sock = process.env.OMP_IDE_BRIDGE_SOCK;
@@ -319,11 +333,11 @@ function resolveWiring(): Wiring | undefined {
 	const terminalToken = process.env.OMP_IDE_TERMINAL_TOKEN;
 	if (sock && daemonPid && sessionKey && token) {
 		// Inherited by a process this daemon-spawned omp started: it must not pose as the session's bridge.
-		return String(process.ppid) === daemonPid ? { mode: "daemon", sock, sessionKey, token } : undefined;
+		return String(process.ppid) === daemonPid ? { mode: "daemon", sock, sessionKey, token, daemonPid } : undefined;
 	}
 	if (sock && daemonPid && ptyId && terminalToken && !sessionKey && !token) {
 		// The terminal's shell outlives daemons: variables of a dead ompd (its pid no longer exists) mean lock mode.
-		return daemonAlive(daemonPid) ? { mode: "terminal", sock, ptyId, token: terminalToken } : undefined;
+		return daemonAlive(daemonPid) ? { mode: "terminal", sock, ptyId, token: terminalToken, daemonPid } : undefined;
 	}
 	if (sock || daemonPid || sessionKey || token || ptyId || terminalToken) {
 		writeStderr("ide-bridge: incomplete OMP_IDE_* environment; lock mode");
@@ -367,8 +381,9 @@ const WIRING = resolveWiring();
 
 /** Bumped whenever the daemon-mode behavior changes (2: TUI sessions: shutdown, activity, title; 3: pause; 4: terminal
  *  mode; 5: session.prompt, stall watch, service events; 6: attention, jobs, service.mode; 7: agent rows re-sent on
- *  message and tool events, currentTool; 8: agent.message refuses unknown and killed agents). */
-const BRIDGE_REVISION = 8;
+ *  message and tool events, currentTool; 8: agent.message refuses unknown and killed agents; 9: redial after the daemon
+ *  connection ends, `activity` in the hello). */
+const BRIDGE_REVISION = 9;
 
 interface GuardSlot {
 	/** The evaluation of this file that serves the process. */
@@ -588,7 +603,8 @@ if (WIRING?.mode !== "daemon") {
 // Process-wide daemon-mode state (shared by every session instance of this evaluation)
 // ---------------------------------------------------------------------------------------------------------------------
 
-type Phase = "idle" | "connecting" | "accepted" | "rejected" | "closed";
+/** `redialing`: the connection ended while the daemon runs; events queue until a redial's welcome. */
+type Phase = "idle" | "connecting" | "accepted" | "redialing" | "rejected" | "closed";
 
 interface Instance {
 	api: ExtensionApiLike;
@@ -646,6 +662,13 @@ const S = {
 	/** Agents whose row is checked at the next macrotask (`rowsTimer`). */
 	rowsDue: new Set<string>(),
 	rowsTimer: undefined as Timer | undefined,
+	/** The capabilities probed for the first hello, said again in every redial's. */
+	capabilities: {} as Record<string, boolean>,
+	/** The daemon welcomed this process once: a later reject is a redial's and ends the connection for good. */
+	everAccepted: false,
+	/** Redials in a row since the last welcome, and the one scheduled. */
+	redials: 0,
+	redialTimer: undefined as Timer | undefined,
 };
 
 /** A tool call executing for an agent: the tool, and its main argument on one line. */
@@ -778,6 +801,7 @@ function sessionInfo(ctx: CtxLike): AnyRecord {
 		title: attempt(() => sm.getSessionName?.(), undefined) ?? null,
 		...pauseState(),
 		attention: attentionItems(),
+		activity: S.activity,
 	};
 }
 
@@ -851,6 +875,7 @@ async function probeCapabilities(ctx: CtxLike): Promise<Record<string, boolean>>
 		"events.attention": true,
 		"events.jobs": fn(ctx, "getAsyncJobSnapshot"),
 		"service.mode": internals.procProtocol !== undefined && mainSession()?.settings !== undefined,
+		"bridge.redial": true,
 	};
 }
 
@@ -878,11 +903,16 @@ function flushGap(): boolean {
 	return true;
 }
 
+/** Connected to the daemon or on the way to it: events go out or wait for the welcome. */
+function live(): boolean {
+	return S.phase === "connecting" || S.phase === "accepted" || S.phase === "redialing";
+}
+
 function emit(agentId: string | undefined, kind: string, data: unknown): void {
 	try {
-		if (S.phase !== "connecting" && S.phase !== "accepted") return;
+		if (!live()) return;
 		const seq = ++S.seq;
-		if (S.phase === "connecting") {
+		if (S.phase !== "accepted") {
 			if (!S.gap && S.queued.length < MAX_QUEUED_BEFORE_WELCOME) S.queued.push(evtLine(seq, agentId, kind, data));
 			else noteGap(seq);
 			return;
@@ -912,6 +942,8 @@ function reply(value: AnyRecord): void {
 
 function endConnection(next: "rejected" | "closed"): void {
 	S.phase = next;
+	clearTimeout(S.redialTimer);
+	S.redialTimer = undefined;
 	S.queued = [];
 	S.gap = undefined;
 	for (const unsubscribe of [S.registryUnsub, S.titleUnsub, S.gateUnsub]) {
@@ -945,8 +977,11 @@ function endConnection(next: "rejected" | "closed"): void {
 
 function onWelcome(): void {
 	const sock = S.sock;
-	if (S.phase !== "connecting" || !sock) return;
+	if ((S.phase !== "connecting" && S.phase !== "redialing") || !sock) return;
+	if (S.everAccepted) log("reconnected to the daemon");
 	S.phase = "accepted";
+	S.everAccepted = true;
+	S.redials = 0;
 	const queued = S.queued;
 	S.queued = [];
 	for (const line of queued) sock.write(line);
@@ -954,7 +989,13 @@ function onWelcome(): void {
 }
 
 function onReject(reason: string): void {
-	if (S.phase !== "connecting") return;
+	if (S.phase !== "connecting" && S.phase !== "redialing") return;
+	if (S.everAccepted) {
+		// A redial the daemon does not take (it is not the one this process said hello to): the bridge goes quiet.
+		log(`the omp IDE daemon refused the reconnection: ${reason}`);
+		endConnection("closed");
+		return;
+	}
 	log(`the omp IDE daemon rejected this process: ${reason}`);
 	endConnection("rejected");
 	// Not the process ompd spawned (it got OMP_IDE_* from somewhere other than ompd), or an omp in a terminal ompd
@@ -1047,7 +1088,7 @@ function settleCheck(ctx: CtxLike): void {
 	S.settleTimer = setTimeout(() => {
 		S.settleTimer = undefined;
 		try {
-			if (S.activity === "busy" && (S.phase === "connecting" || S.phase === "accepted")) settleCheck(ctx);
+			if (S.activity === "busy" && live()) settleCheck(ctx);
 		} catch (e) {
 			log(`settle check failed: ${errText(e)}`);
 		}
@@ -1061,18 +1102,23 @@ async function connectDaemon(wiring: Wiring, ctx: CtxLike): Promise<void> {
 	const slot = guardSlots[GUARD];
 	if (slot && slot.owner === EVAL_ID) slot.connected = true;
 	subscribeRegistry();
-	let capabilities: Record<string, boolean>;
 	try {
-		capabilities = await probeCapabilities(ctx);
+		S.capabilities = await probeCapabilities(ctx);
 	} catch (e) {
 		log(`capability probe failed: ${errText(e)}`);
-		capabilities = {};
 	}
 	const { pauseGate } = await loadInternals();
 	if (S.phase !== "connecting") return;
 	if (pauseGate) subscribePause(pauseGate);
+	dial(wiring);
+}
+
+/** One connection to the daemon, opened with `hello` (the first, or a redial's: the main session as it is now). */
+function dial(wiring: Wiring): void {
+	const ctx = S.main?.ctx;
 	let sock: net.Socket;
 	try {
+		if (!ctx) throw new Error("no main session");
 		sock = net.createConnection({ path: wiring.sock });
 	} catch (e) {
 		log(`cannot dial the daemon: ${errText(e)}`);
@@ -1080,6 +1126,7 @@ async function connectDaemon(wiring: Wiring, ctx: CtxLike): Promise<void> {
 		return;
 	}
 	S.sock = sock;
+	S.rx = "";
 	sock.setEncoding("utf8");
 	sock.on("data", (chunk: string | Buffer) => {
 		try {
@@ -1107,15 +1154,10 @@ async function connectDaemon(wiring: Wiring, ctx: CtxLike): Promise<void> {
 	});
 	// An unhandled socket error would be fatal to the whole omp process.
 	sock.on("error", (e: Error) => log(`daemon socket error: ${errText(e)}`));
-	sock.on("close", () => {
-		try {
-			if (S.sock !== sock) return;
-			if (S.phase === "connecting" || S.phase === "accepted") log("daemon socket closed");
-			endConnection("closed");
-		} catch {
-			// Nothing to clean up.
-		}
-	});
+	// ompd stops writing first when it upgrades itself and reads up to this side's close: from its end on, events wait
+	// for the redial (Node writes what it holds, then closes).
+	sock.on("end", () => connectionEnded(sock, wiring));
+	sock.on("close", () => connectionEnded(sock, wiring));
 	sock.write(
 		frame({
 			t: "hello",
@@ -1124,10 +1166,40 @@ async function connectDaemon(wiring: Wiring, ctx: CtxLike): Promise<void> {
 			token: wiring.token,
 			pid: process.pid,
 			ompVersion: omp.VERSION ?? "unknown",
-			capabilities,
+			capabilities: S.capabilities,
 			session: sessionInfo(ctx),
 		}),
 	);
+}
+
+/** The connection `sock` ended without a verdict against this process: redialed while its daemon still runs (an ompd
+ *  upgrade keeps the pid, and a daemon-spawned omp stays its child), else the bridge goes quiet. */
+function connectionEnded(sock: net.Socket, wiring: Wiring): void {
+	try {
+		if (S.sock !== sock || !live()) return;
+		S.sock = undefined;
+		const daemonRuns = daemonAlive(wiring.daemonPid) && (wiring.mode !== "daemon" || String(process.ppid) === wiring.daemonPid);
+		if (S.shuttingDown || !daemonRuns || S.redials >= REDIAL_ATTEMPTS) {
+			log(S.redials >= REDIAL_ATTEMPTS ? `the daemon did not take the connection back after ${REDIAL_ATTEMPTS} attempts` : "daemon socket closed");
+			endConnection("closed");
+			return;
+		}
+		if (S.phase === "accepted") {
+			log("the daemon connection ended; redialing");
+			dropStallWatchers();
+		}
+		S.phase = "redialing";
+		const delay = Math.min(REDIAL_FIRST_MS * 2 ** S.redials, REDIAL_MAX_MS);
+		S.redials++;
+		clearTimeout(S.redialTimer);
+		S.redialTimer = setTimeout(() => {
+			S.redialTimer = undefined;
+			if (S.phase === "redialing") dial(wiring);
+		}, delay);
+		S.redialTimer.unref?.();
+	} catch (e) {
+		log(`daemon connection end not handled: ${errText(e)}`);
+	}
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1400,7 +1472,7 @@ function dropAttention(owner: Instance): void {
 function checkJobs(): void {
 	clearTimeout(S.jobsTimer);
 	S.jobsTimer = undefined;
-	if (S.phase !== "connecting" && S.phase !== "accepted") return;
+	if (!live()) return;
 	const snapshot = attempt(() => S.main?.ctx?.getAsyncJobSnapshot?.({ recentLimit: JOBS_RECENT_LIMIT }), undefined);
 	if (!snapshot) return;
 	const jobs = { running: snapshot.running ?? [], recent: snapshot.recent ?? [] };
@@ -1448,7 +1520,7 @@ function noteTool(owner: Instance, event: unknown, started: boolean): void {
 /** Sends `agentId`'s row again at the next macrotask if it differs from the last one sent; every agent queued until then
  *  is checked in that one pass. */
 function queueRow(agentId: string | undefined): void {
-	if (agentId === undefined || (S.phase !== "connecting" && S.phase !== "accepted")) return;
+	if (agentId === undefined || !live()) return;
 	S.rowsDue.add(agentId);
 	if (S.rowsTimer) return;
 	S.rowsTimer = setTimeout(() => {
@@ -1951,7 +2023,7 @@ function registerDaemonMode(api: ExtensionApiLike, wiring: Wiring): void {
 				S.main = undefined;
 				S.mainRunning = false;
 				settleStallWatchers("idle");
-				if (S.phase === "connecting" || S.phase === "accepted") endConnection("closed");
+				if (live()) endConnection("closed");
 			}
 		} catch (e) {
 			log(`session_shutdown: ${errText(e)}`);

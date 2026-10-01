@@ -15,11 +15,16 @@ public protocol SessionBridgeLink: Sendable {
     /// Waits for the bridge inside the omp child to connect and say `hello`.
     func waitForHello(_ sessionKey: SessionKey, timeout: Duration) async throws -> BridgeHello
 
+    /// Waits for the bridge of `sessionKey`, whose connection ended while its omp runs, to say hello again with the
+    /// same credentials (an ompd upgrade, a dropped connection); the current connection's hello while one is up. Fails
+    /// once the key is forgotten.
+    func waitForRedial(_ sessionKey: SessionKey) async throws -> BridgeHello
+
     /// One bridge method call (`session.ensureOnDisk`, `agents.snapshot`, …); returns its result.
     func call(_ sessionKey: SessionKey, method: String, params: JSONValue, timeout: Duration) async throws -> JSONValue
 
-    /// Bridge pushes (`evt` and `gap` frames, verbatim) of the current spawn of `sessionKey`. Single consumer;
-    /// finishes when the bridge disconnects.
+    /// Bridge pushes (`evt` and `gap` frames, verbatim) of the current connection of `sessionKey`'s bridge. Single
+    /// consumer; finishes when that connection ends.
     func events(_ sessionKey: SessionKey) async -> AsyncStream<JSONValue>
 
     /// Drops everything the bridge holds for `sessionKey` (its omp exited).
@@ -41,6 +46,16 @@ public protocol SessionBridgeLink: Sendable {
 
     /// Rejects the omp of `hello`.
     func refuseTerminalHello(_ hello: TerminalHello, reason: String) async
+
+    /// An in-place upgrade: stops accepting and ends every bridge connection without losing an event; true
+    /// when all ended within `timeout`. The credentials stay for the redials.
+    func quiesce(timeout: Duration) async -> Bool
+
+    /// The credentials of every session and terminal, for the next image.
+    func handoverState() async -> BridgeHandover
+
+    /// After `quiesce`, when the handover did not happen: accepts the redials again.
+    func resumeListening() async throws
 }
 
 extension BridgeServer: SessionBridgeLink {}
@@ -51,11 +66,17 @@ public protocol SessionLockProvider: Sendable {
     /// Takes the lock of `sessionFile` (which may not exist yet). Throws `DaemonError(.sessionBusy)` when someone else
     /// holds it; any other error means the lock could not be taken for another reason.
     func acquire(sessionFile: String, sessionId: String?, sessionKey: SessionKey) throws -> any SessionLockHandle
+
+    /// The lock of `sessionFile` the previous image of this process held on `descriptor` and kept open across an
+    /// in-place upgrade: held from now on, close-on-exec again.
+    func adopt(descriptor: Int32, sessionFile: String) throws -> any SessionLockHandle
 }
 
 /// A held session-ownership lock. The kernel drops it when the daemon dies.
 public protocol SessionLockHandle: Sendable {
     func release()
+    /// The open descriptor that holds the lock, kept open across an in-place upgrade; nil once released.
+    var descriptor: Int32? { get }
 }
 
 extension OwnedSessionLock: SessionLockHandle {}
@@ -74,5 +95,9 @@ public struct OwnedSessionLocks: SessionLockProvider {
         } catch BridgeError.alreadyOwned(let file) {
             throw DaemonError(.sessionBusy, "\(file) is owned by another omp process")
         }
+    }
+
+    public func adopt(descriptor: Int32, sessionFile: String) throws -> any SessionLockHandle {
+        try OwnedSessionLock.adopt(descriptor: descriptor, sessionFile: sessionFile, dir: directory)
     }
 }

@@ -46,6 +46,11 @@ struct StatusBar: View {
                 StatusDot(color: .orange)
                 Text("ompd unavailable")
             }
+        case .versionMismatch:
+            HStack(spacing: 5) {
+                StatusDot(color: .orange)
+                Text("ompd out of date")
+            }
         case .connected:
             EmptyView()
         }

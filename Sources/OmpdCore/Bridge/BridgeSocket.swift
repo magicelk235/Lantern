@@ -144,6 +144,7 @@ final class BridgeConnection: Sendable {
     let peerPID: pid_t?
     let lines: AsyncStream<Data>
 
+    private let fd: Int32
     private let sink: AsyncStream<Data>.Continuation
     private let io: DispatchIO
     private let queue: DispatchQueue
@@ -155,9 +156,12 @@ final class BridgeConnection: Sendable {
         /// Bytes of `buffer` already searched for a newline.
         var scanned = 0
         var closed = false
+        /// `finishWriting`: nothing is sent any more.
+        var writingFinished = false
     }
 
     init(fd: Int32, id: Int, peerPID: pid_t?, maxLineBytes: Int) {
+        self.fd = fd
         self.id = id
         self.peerPID = peerPID
         self.maxLineBytes = maxLineBytes
@@ -175,13 +179,25 @@ final class BridgeConnection: Sendable {
         }
     }
 
-    /// Queues `bytes`; with `thenClose`, closes the connection once they are written (or failed).
+    /// Queues `bytes`; with `thenClose`, closes the connection once they are written (or failed). Dropped after
+    /// `finishWriting`.
     func send(_ bytes: Data, thenClose: Bool = false) {
-        guard !state.withLock({ $0.closed }) else { return }
+        guard !state.withLock({ $0.closed || $0.writingFinished }) else { return }
         let data = bytes.withUnsafeBytes { DispatchData(bytes: $0) }
         io.write(offset: 0, data: data, queue: queue) { [self] done, _, error in
             if done && (error != 0 || thenClose) { close() }
         }
+    }
+
+    /// Ends ompd's side (`shutdown(SHUT_WR)`): the peer reads the end of its input. Reading goes on until the peer
+    /// closes; later `send`s are dropped. (Not behind a DispatchIO barrier: that would wait for the read in flight.)
+    func finishWriting() {
+        let first = state.withLock { s in
+            defer { s.writingFinished = true }
+            return !s.writingFinished && !s.closed
+        }
+        guard first else { return }
+        _ = shutdown(fd, SHUT_WR)
     }
 
     /// Idempotent. Pending reads and writes are abandoned; `lines` finishes after the lines already delivered.

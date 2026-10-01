@@ -10,9 +10,12 @@ final class AppState {
     /// The main window: its scene id and its row in `state.sqlite`.
     static let mainWindowID = "main"
 
-    let connection = DaemonConnection(
-        clientVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev")
+    let connection = DaemonConnection(clientVersion: AppState.version)
     let agent = DaemonAgent()
+    /// What the app does about an ompd that refuses its version.
+    let outdatedDaemon: OutdatedDaemon
+    /// Crash reports of ompd and omp IDE the user has not seen yet (local only).
+    let crashNotices = CrashNotices()
     /// Open files and the file navigators.
     let editors: Editors
     /// Terminal emulators: `.terminal` tabs on PTYs in ompd, and `.session` tabs showing omp's TUI.
@@ -48,7 +51,8 @@ final class AppState {
     /// The project whose Open Session sheet is up (its window shows it).
     var sessionPickerProject: String?
 
-    @ObservationIgnored private let persistence: StatePersistence
+    /// `state.sqlite` and the hot-exit copies; its `writeFailure` is the window's banner while writes fail.
+    @ObservationIgnored let persistence: StatePersistence
     @ObservationIgnored private var started = false
     /// Windows `attach(_:project:)` set up, until they close, and their observers.
     @ObservationIgnored private var windowsAttached: Set<ObjectIdentifier> = []
@@ -84,6 +88,7 @@ final class AppState {
         editors = Editors(persistence: persistence)
         tabs = restored?.tabs ?? TabLayout()
         terminals = TerminalsController(registry: connection.terminals)
+        outdatedDaemon = OutdatedDaemon(connection: connection, agent: agent)
         sidebarVisible = restored?.sidebarVisible ?? true
         sidebarWidth = restored?.sidebarWidth ?? 270
         pane = UserDefaults.standard.string(forKey: SidebarPane.defaultsKey).flatMap(SidebarPane.init(rawValue:)) ?? .files
@@ -100,8 +105,18 @@ final class AppState {
     }
 
     /// launchd starts a registered ompd within a moment. A daemon still out of reach this long after launch has a
-    /// registration launchd cannot spawn (made by a bundle signed differently); it is redone once.
+    /// registration launchd cannot spawn (made by a bundle signed differently); it is redone once. One that refuses this
+    /// app's version runs, so its registration is fine (`outdatedDaemon` restarts it).
     private static let daemonStartGrace: Duration = .seconds(12)
+
+    /// This build's version the way ompd reports its own (`ompdVersion`), "0.1.0 (42)": ompd compares the two, and on a
+    /// hello of another build moves to the ompd installed at its path.
+    private static let version: String = {
+        let info = Bundle.main.infoDictionary ?? [:]
+        guard let short = info["CFBundleShortVersionString"] as? String, !short.isEmpty else { return "dev" }
+        guard let build = info["CFBundleVersion"] as? String, !build.isEmpty else { return short }
+        return "\(short) (\(build))"
+    }()
 
     /// Registers the LaunchAgent and connects to ompd. Runs at launch even when no window opens (the main window may
     /// have been closed when the app last quit); the window's `.task` calls it again, which is a no-op.
@@ -109,7 +124,9 @@ final class AppState {
         guard !started else { return }
         started = true
         agent.registerIfNeeded()
+        outdatedDaemon.start()
         connection.start()
+        crashNotices.start()
         if let reason = persistence.unavailableReason {
             alert = AlertMessage(
                 title: "The window layout will not be remembered",
@@ -117,7 +134,10 @@ final class AppState {
         }
         Task {
             try? await Task.sleep(for: Self.daemonStartGrace)
-            if !connection.isConnected { await repairDaemon() }
+            switch connection.status {
+            case .connecting, .daemonUnavailable: await repairDaemon()
+            case .connected, .versionMismatch: break
+            }
         }
     }
 
@@ -389,6 +409,16 @@ final class AppState {
                 title: leaving ? "Could not leave the interrupted work" : "Could not continue the session",
                 message: error.userMessage)
             return false
+        }
+    }
+
+    /// Restarts the session's omp on the omp installed now; its tab follows omp to the
+    /// new PTY. An alert says why ompd refused.
+    func restartSession(_ sessionKey: SessionKey) async {
+        do {
+            try await connection.restartSession(sessionKey)
+        } catch {
+            alert = AlertMessage(title: "Could not restart the session", message: error.userMessage)
         }
     }
 

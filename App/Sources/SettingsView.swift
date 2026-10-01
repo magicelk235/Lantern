@@ -1,15 +1,34 @@
 import IDEModel
 import SwiftUI
 
+/// A pane of Settings. The one showing is kept in the defaults, so `select()` from elsewhere (Free Up Space…) switches
+/// an open Settings window too.
+enum SettingsTab: String {
+    case general, terminal, storage
+
+    static let defaultsKey = "settingsTab"
+
+    /// The pane Settings shows next (and now, if open).
+    func select() {
+        UserDefaults.standard.set(rawValue, forKey: Self.defaultsKey)
+    }
+}
+
 struct SettingsView: View {
-    let connection: DaemonConnection
+    let app: AppState
+    @AppStorage(SettingsTab.defaultsKey) private var tab = SettingsTab.general
 
     var body: some View {
-        TabView {
-            GeneralSettings(connection: connection)
+        TabView(selection: $tab) {
+            GeneralSettings(connection: app.connection)
                 .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(SettingsTab.general)
             TerminalSettingsPane()
                 .tabItem { Label("Terminal", systemImage: "terminal") }
+                .tag(SettingsTab.terminal)
+            StorageSettingsPane(app: app)
+                .tabItem { Label("Storage", systemImage: "internaldrive") }
+                .tag(SettingsTab.storage)
         }
         .frame(width: 460, height: 360)
     }

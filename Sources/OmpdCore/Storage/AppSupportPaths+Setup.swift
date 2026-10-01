@@ -3,13 +3,16 @@ import IDEProtocol
 
 /// Daemon-side filesystem setup for `AppSupportPaths` (the path layout itself is shared with the app in IDEProtocol).
 extension AppSupportPaths {
-    /// Creates the layout with every directory at mode 0700, and recreates `run/` empty.
-    public func prepare() throws {
+    /// Creates the layout with every directory at mode 0700, and recreates `run/` empty — unless `keepingRun`: the next
+    /// image of an in-place upgrade keeps it (the ownership locks in it are still held, its token is the clients').
+    public func prepare(keepingRun: Bool = false) throws {
         try StorageIO.createPrivateDirectory(root)
-        do {
-            try FileManager.default.removeItem(at: run)
-        } catch CocoaError.fileNoSuchFile {
-            // First run.
+        if !keepingRun {
+            do {
+                try FileManager.default.removeItem(at: run)
+            } catch CocoaError.fileNoSuchFile {
+                // First run.
+            }
         }
         for directory in [run, ptySnapshots, hotExit] {
             try StorageIO.createPrivateDirectory(directory)

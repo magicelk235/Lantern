@@ -276,7 +276,40 @@ actor ScriptedBridge: SessionBridgeLink {
         streams.removeValue(forKey: sessionKey)?.sink.finish()
         pids[sessionKey] = nil
         paused[sessionKey] = nil
+        for waiter in redialWaiters.removeValue(forKey: sessionKey) ?? [] { waiter.resume(throwing: BridgeError.notConnected) }
     }
+
+    /// Redial waits, by session, until `redial` or `forget`.
+    private var redialWaiters: [SessionKey: [CheckedContinuation<BridgeHello, any Error>]] = [:]
+
+    func waitForRedial(_ sessionKey: SessionKey) async throws -> BridgeHello {
+        try await withCheckedThrowingContinuation { redialWaiters[sessionKey, default: []].append($0) }
+    }
+
+    /// The bridge of `sessionKey` dropped its connection (its event stream ends) and the omp lives on.
+    func dropConnection(_ sessionKey: SessionKey) {
+        streams[sessionKey]?.sink.finish()
+    }
+
+    /// The bridge of `sessionKey` redials: a new event stream, and the waiting supervisor gets `hello`.
+    func redial(_ sessionKey: SessionKey, hello: BridgeHello) {
+        let (stream, sink) = AsyncStream.makeStream(of: JSONValue.self)
+        streams[sessionKey] = (stream, sink)
+        for waiter in redialWaiters.removeValue(forKey: sessionKey) ?? [] { waiter.resume(returning: hello) }
+    }
+
+    func quiesce(timeout: Duration) -> Bool {
+        for (_, entry) in streams { entry.sink.finish() }
+        return true
+    }
+
+    func handoverState() -> BridgeHandover {
+        BridgeHandover(
+            sessions: pids.map { BridgeHandover.Session(sessionKey: $0.key, token: String(repeating: "0", count: 64), pid: $0.value, terminal: nil) },
+            terminals: [:])
+    }
+
+    func resumeListening() {}
 
     // MARK: - Terminals
 
@@ -379,6 +412,12 @@ final class FakeLocks: SessionLockProvider {
 
     fileprivate func release(_ file: String) { _ = state.withLock { $0.held.remove(file) } }
 
+    /// A handed-over lock: held again under the same (fake) descriptor.
+    func adopt(descriptor: Int32, sessionFile: String) throws -> any SessionLockHandle {
+        _ = state.withLock { $0.held.insert(sessionFile) }
+        return Handle(file: sessionFile, owner: self)
+    }
+
     private final class Handle: SessionLockHandle {
         let file: String
         let owner: FakeLocks
@@ -387,6 +426,8 @@ final class FakeLocks: SessionLockProvider {
             self.owner = owner
         }
         func release() { owner.release(file) }
+        /// A stand-in descriptor: nothing execs in these tests.
+        var descriptor: Int32? { owner.held.contains(file) ? 1000 : nil }
     }
 }
 
@@ -431,6 +472,8 @@ struct SupervisorFixture {
     let workspace: String
     let key: SessionKey = "session-1"
     let supervisor: SessionSupervisor
+    /// What `supervisor` runs with (a second supervisor of the session, as after an in-place upgrade, shares it).
+    let context: SupervisorContext
 
     init(
         bridgeConnects: Bool = true, shutdownCapable: Bool = true, locks: FakeLocks = FakeLocks(),
@@ -475,6 +518,7 @@ struct SupervisorFixture {
             persistenceFailed: { error in persistenceFailures.mutate { $0.append("\(error)") } },
             notify: { notice in notices.mutate { $0.append(notice) } },
             runtimeChanged: { runtime in runtimes.mutate { $0.append(runtime) } })
+        self.context = context
         supervisor = SessionSupervisor(entry: seeded, context: context)
     }
 

@@ -7,12 +7,14 @@ import os
 /// pool. It spawns omp from the manifest's `LaunchSpec`, follows the ide-bridge inside it (identity,
 /// busy/idle, title, session switches, pause) into the manifest, holds the session file's ownership lock, respawns omp
 /// with `--resume` when it dies, pauses omp's agents while the daemon wants them paused, and stops it the
-/// graceful way (bridge `session.shutdown`), never with a signal first.
+/// graceful way (bridge `session.shutdown`), never with a signal first. A bridge whose connection ends while
+/// omp runs redials (an in-place ompd upgrade, or a blip); it is followed again from its new hello.
 ///
 /// An adopted session (`adoptTerminalSession`) is an omp the user started in one of the IDE's terminals: the same
 /// bridge, the same manifest, the same pause policy, but the PTY is the terminal's, which ompd neither spawned nor
-/// signals. The bridge is the only handle on that omp: a graceful stop goes through it or not at all, and its
-/// disconnect is the exit — the session is `closed`, never respawned, and resumes in a session PTY like any other.
+/// signals. The bridge is the only handle on that omp: a graceful stop goes through it or not at all. Its exit (watched
+/// as a process, ompd is not its parent) closes the session — never respawned, it resumes in a session PTY like any
+/// other.
 public actor SessionSupervisor {
     public nonisolated let sessionKey: SessionKey
 
@@ -28,11 +30,16 @@ public actor SessionSupervisor {
         case user
         /// The daemon is going away; the session resumes at its next start.
         case daemonShutdown
+        /// `restart`: omp is resumed right after it exits.
+        case restart
     }
 
     private let context: SupervisorContext
     private var status: SessionStatus {
-        didSet { publishRuntime() } // the main agent's row follows it
+        didSet {
+            publishRuntime() // the main agent's row follows it
+            noteChange()
+        }
     }
 
     // The omp TUI
@@ -45,26 +52,60 @@ public actor SessionSupervisor {
     private var adopted = false
     /// Bumped per spawn; work tied to an older spawn is dropped.
     private var generation = 0
-    /// Opens when the current spawn's omp exits (an adopted omp: when its bridge disconnects).
+    /// Opens when the current spawn's omp exits.
     private var exited = ExitGate()
     private var spawnedAt = Date.distantPast
-    private var startTask: Task<Void, any Error>?
+    private var startTask: Task<Void, any Error>? {
+        didSet { noteChange() }
+    }
     private var bridgeTask: Task<Void, Never>?
     private var bridgeHello: BridgeHello?
-    /// ompd is stopping omp: its exit is expected and finished by `stop`.
-    private var stopping: StopIntent?
+    /// Where the current spawn's ide-bridge stands.
+    private var link = BridgeLink.none {
+        didSet { if link != oldValue { noteChange() } }
+    }
+    /// An adopted omp's exit (it is not ompd's child, so no PTY reaps it).
+    private var exitWatch: ProcessExitWatch?
+    /// ompd is stopping omp: its exit is expected and finished by `stop` (or by `restart`, which resumes it).
+    private var stopping: StopIntent? {
+        didSet { noteChange() }
+    }
     /// `stop` was called: nothing starts omp again until `reopen` or an adoption.
     private var stopRequested = false
     /// When automatic respawns happened (crash-loop guard).
     private var respawns: [ContinuousClock.Instant] = []
+    /// Tasks waiting for any of the above to change (`waitForChange`).
+    private var changeWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+
+    /// The ide-bridge of the current spawn, as the supervisor follows it.
+    enum BridgeLink: Sendable, Equatable {
+        /// No omp runs.
+        case none
+        /// omp was spawned; its bridge has not said hello yet.
+        case awaitingHello
+        /// omp runs without a bridge: none said hello in time.
+        case absent
+        case connected
+        /// The connection ended while omp runs: the bridge redials (an ompd upgrade, a dropped connection).
+        case redialing
+    }
 
     // Regime B recovery
-    /// What the omp that died left unfinished, found before the respawn with `--resume` and applied once the resumed
-    /// omp's bridge said hello (continuation policy, service relaunch). Only a resume carries it.
+    /// What the omp that died (or that `restart` stopped) left unfinished, found before the respawn with `--resume` and
+    /// applied once the resumed omp's bridge said hello (continuation policy, service relaunch). Only a resume carries it.
     private var recovery: Recovery?
+    /// The pass after a spawn's hello that applies the pause demand, then `recovery`; with the spawn's generation.
+    private var recoveryTask: (generation: Int, task: Task<Void, Never>)? {
+        didSet { noteChange() }
+    }
 
     private struct Recovery {
+        /// What a death left: handled per the restore policy, merged with an interruption waiting for a decision.
         var interruption: Interruption?
+        /// `restart` stopped omp: what its stop interrupted (`restarted`) is continued whatever the restore policy,
+        /// and an interruption waiting for a decision keeps waiting.
+        var restart = false
+        var restarted: Interruption?
     }
 
     // omp's pause gate
@@ -157,8 +198,8 @@ public actor SessionSupervisor {
     /// it (`hello`, as the bridge registered it under this session's key): from now on this session is that omp. Only
     /// while omp does not run for the session (a new entry, or one that is closed or given up); `lock` is the file's
     /// ownership lock the daemon already took for a new entry, nil for a session of this supervisor's own, which takes
-    /// it itself. `workspace` is omp's cwd. Follows the bridge from here as after a spawn's hello, and applies the pause
-    /// demand.
+    /// it itself. `workspace` is omp's cwd. Follows the bridge from here as after a spawn's hello, applies the pause
+    /// demand, and watches the omp process for its exit.
     public func adoptTerminalSession(
         hello: BridgeHello, terminal: PTYID, workspace: String, lock handle: (any SessionLockHandle)?
     ) async throws {
@@ -204,8 +245,10 @@ public actor SessionSupervisor {
         // The last screen of the session's own previous omp, if a PTY was kept for it: the terminal shows omp now.
         if let previous, previous != terminal { try? await context.ptys.close(previous) }
         warnAboutCapabilities(of: hello)
+        link = .connected
+        watchAdoptedExit(of: hello.pid, generation: generation, gate: gate)
         Task { await self.syncPause() }
-        bridgeTask = Task { await self.followAdoptedBridge(hello: hello, generation: generation, gate: gate) }
+        bridgeTask = Task { await self.followAdoptedBridge(hello: hello, generation: generation) }
     }
 
     /// Regime B2: the daemon restarted and this session's omp is gone. Resumed from its file, started
@@ -266,6 +309,29 @@ public actor SessionSupervisor {
             resumeFile = file
         }
 
+        // The omp this spawn runs: the pinned one or, when that is gone (an upgrade removed its Cellar folder),
+        // the one a new session would get; and the version it reports, recorded as what the session runs.
+        let pinned = entry.launch.ompPath
+        let omp: String
+        if OmpBinary.isUsable(pinned) {
+            omp = pinned
+        } else {
+            do {
+                omp = try OmpBinary.locate(explicit: context.ompExecutable, environment: context.baseEnvironment)
+            } catch {
+                notify("error", "omp is no longer at \(pinned), and no other omp was found: \(error)")
+                await setStatus(.needsAttention)
+                throw DaemonError(.ompError, "omp is gone from \(pinned): \(error)")
+            }
+        }
+        let version: String?
+        do {
+            version = try await OmpBinary.version(at: omp, timeout: .seconds(10))
+        } catch {
+            version = nil
+            supervisorLog.error("session \(self.sessionKey, privacy: .public): the version of \(omp, privacy: .public) is unknown: \(String(describing: error), privacy: .public)")
+        }
+
         await setStatus(mode == .resume ? .resuming : .starting)
         if mode == .fresh { recovery = nil }
         if let notice { notify("info", notice) }
@@ -279,8 +345,7 @@ public actor SessionSupervisor {
         do {
             info = try await context.ptys.openSession(
                 sessionKey: sessionKey, cwd: entry.workspace,
-                command: [entry.launch.ompPath]
-                    + Self.arguments(for: entry.launch, bridgeExtension: context.bridgeExtension, resume: resumeFile),
+                command: [omp] + Self.arguments(for: entry.launch, bridgeExtension: context.bridgeExtension, resume: resumeFile),
                 environment: context.baseEnvironment, overlay: entry.launch.env.merging(credentials.environment) { $1 },
                 cols: cols, rows: rows, continuing: previous,
                 onExit: { [weak self] exit in
@@ -299,6 +364,7 @@ public actor SessionSupervisor {
         adopted = false
         spawnedAt = Date()
         stopping = nil
+        link = pid == nil ? .none : .awaitingHello
         // A new omp starts with its pause gate open and its main agent waiting for input.
         pausedBy = nil
         activity = .idle
@@ -308,7 +374,16 @@ public actor SessionSupervisor {
             entry.ptyId = info.ptyId
             entry.adopted = false
             entry.spawnedAt = now
+            entry.launch.ompPath = omp
+            if let version {
+                entry.launch.ompVersion = version
+                entry.installedOmpVersion = version
+            }
         }
+        if omp != pinned {
+            notify("info", "omp is no longer at \(pinned) (an upgrade may have removed it); this session now runs \(omp)\(version.map { ", omp \($0)" } ?? "").")
+        }
+        if let version { context.ompSpawned(version, omp) }
         // Only now that the entry points to the new PTY does the old one go away (clients follow `ptyId`).
         if let previous, previous != info.ptyId { try? await context.ptys.close(previous) }
         guard generation == self.generation, !gate.isOpen else { return } // exited already: ptyExited takes over
@@ -349,7 +424,10 @@ public actor SessionSupervisor {
         if let sessionFile {
             // Merged with what a previous death left, if the resume that was to apply it never got to its hello.
             let found = InterruptionAnalyzer.analyze(sessionFile: sessionFile, since: spawnedAt, cause: "omp exited unexpectedly: \(exit)")
-            recovery = Recovery(interruption: InterruptionAnalyzer.merge(recovery?.interruption, found))
+            // A restart's continuation the resume never got to stays too.
+            var next = recovery ?? Recovery()
+            next.interruption = InterruptionAnalyzer.merge(recovery?.interruption, found)
+            recovery = next
         }
         await respawnAfterCrash()
     }
@@ -380,10 +458,10 @@ public actor SessionSupervisor {
         }
     }
 
-    /// An adopted omp's bridge went away: omp exited (`/exit`, a crash, its terminal closed) or was stopped through
-    /// the bridge. An exit ompd asked for is finished by `stop`. Any other makes the session `closed` — how omp ended
-    /// is its terminal's business, and nothing is respawned into it — with no PTY of its own: the terminal stays a
-    /// terminal, and the session resumes in a session PTY like any other.
+    /// An adopted omp exited (`/exit`, a crash, its terminal closed) or was stopped through the bridge. An exit ompd
+    /// asked for is finished by `stop`. Any other makes the session `closed` — how omp ended is its terminal's business,
+    /// and nothing is respawned into it — with no PTY of its own: the terminal stays a terminal, and the session resumes
+    /// in a session PTY like any other.
     private func adoptedOmpGone(generation: Int) async {
         guard generation == self.generation, stopping == nil, !stopRequested else { return }
         await forgetSpawn()
@@ -399,9 +477,20 @@ public actor SessionSupervisor {
         notify("info", "omp exited in its terminal; the session is closed. Open it again to resume it.")
     }
 
+    /// Watches the adopted omp `pid` (the shell of its terminal reaps it, not ompd): its exit opens `gate` and closes the
+    /// session.
+    private func watchAdoptedExit(of pid: Int32, generation: Int, gate: ExitGate) {
+        exitWatch = ProcessExitWatch(pid: pid) { [weak self] in
+            gate.open()
+            Task { await self?.adoptedOmpGone(generation: generation) }
+        }
+    }
+
     /// Drops what belonged to the omp that exited; clients get its runtime emptied. Idempotent.
     private func forgetSpawn() async {
         pid = nil
+        link = .none
+        exitWatch = nil
         bridgeTask?.cancel()
         bridgeTask = nil
         bridgeHello = nil
@@ -470,11 +559,50 @@ public actor SessionSupervisor {
         if let closing { try? await context.ptys.close(closing) }
     }
 
+    /// `session.restart`: omp stops the graceful way, then is resumed at once with
+    /// `--resume` in a new PTY that continues its screen, running whatever omp is installed at `launch.ompPath` now (a
+    /// session that never wrote its file starts afresh, as after a death). What the stop interrupts is continued whatever
+    /// the restore policy; an interruption already waiting for the user's decision keeps waiting. Refused with
+    /// `sessionBusy` while omp is not running (or is being started or stopped) and while the main agent is busy, unless
+    /// `force`; with `badParams` for an omp the user started in a terminal. Returns once the new omp runs; a stop that
+    /// comes in meanwhile wins (nothing is resumed).
+    public func restart(force: Bool) async throws {
+        if let startTask { _ = try? await startTask.value }
+        guard pid != nil, !stopRequested else {
+            throw DaemonError(.sessionBusy, "omp is not running in session \(sessionKey)")
+        }
+        guard !adopted else {
+            throw DaemonError(.badParams, "omp runs in the terminal the user started it in (session \(sessionKey)); restart it there")
+        }
+        guard stopping == nil, [.idle, .busy, .paused].contains(status) else {
+            throw DaemonError(.sessionBusy, "omp of session \(sessionKey) is starting or stopping; try again in a moment")
+        }
+        guard force || activity != .busy else {
+            throw DaemonError(.sessionBusy, "the main agent of session \(sessionKey) is busy; restart the session once it is idle")
+        }
+        let runStart = spawnedAt
+        stopping = .restart
+        await terminate()
+        await forgetSpawn()
+        guard !stopRequested else { return }
+        guard let file = await context.manifest.entry(sessionKey)?.sessionFile, FileManager.default.fileExists(atPath: file) else {
+            return try await start(.fresh)
+        }
+        let restarted = InterruptionAnalyzer.analyze(sessionFile: file, since: runStart, cause: "the session was restarted from omp IDE")
+        // What an earlier death left and a resume never got to apply (its bridge did not say hello) is kept for its policy.
+        recovery = Recovery(interruption: recovery?.interruption, restart: true, restarted: restarted)
+        try await start(.resume)
+    }
+
     private func terminate() async {
         guard let ptyId else { return }
         let gate = exited
         let timings = context.timings
         var asked = false
+        if link == .redialing {
+            // The graceful stop goes through the bridge, which is reconnecting (an ompd upgrade, a blip).
+            await waitWhile({ link == .redialing }, timeout: timings.redial)
+        }
         if bridgeHello?.capabilities["session.shutdown"] == true {
             let deadline = ContinuousClock.now + timings.stop
             do {
@@ -545,7 +673,9 @@ public actor SessionSupervisor {
     // MARK: - Recovery
 
     /// After the resumed omp's hello: its persisted subagents registered, named services relaunched, and what the dead
-    /// omp left unfinished (with any interruption still waiting for a decision) handled per the restore policy.
+    /// omp left unfinished (with any interruption still waiting for a decision) handled per the restore policy. After a
+    /// `restart`, what its stop interrupted is continued, and an interruption waiting for a decision keeps waiting (unless
+    /// an earlier death's comes along, which goes through the policy as it would have).
     private func recover(_ recovery: Recovery, generation: Int) async {
         guard generation == self.generation, pid != nil, let hello = bridgeHello else { return }
         if hello.capabilities["agents.loadPersisted"] == true {
@@ -557,9 +687,19 @@ public actor SessionSupervisor {
         }
         await relaunchServices()
         guard generation == self.generation, pid != nil else { return }
+        if !recovery.restart || recovery.interruption != nil { await applyPolicy(to: recovery.interruption) }
+        guard let restarted = recovery.restarted, generation == self.generation, pid != nil else { return }
+        if restarted.evalKernelsLost {
+            notify("info", "The eval kernels of the omp that ended are gone; variables and imports defined in them must be loaded again.")
+        }
+        await deliver(restarted, main: restarted.mainInterrupted, agents: restarted.agents, notContinued: [])
+    }
+
+    /// `found` (what a death left) merged with the interruption waiting for a decision, handled per the restore policy.
+    private func applyPolicy(to found: Interruption?) async {
         let waiting = await context.manifest.entry(sessionKey)?.pendingContinuation
-        guard let interruption = InterruptionAnalyzer.merge(waiting, recovery.interruption) else { return }
-        if interruption.evalKernelsLost, recovery.interruption?.evalKernelsLost == true {
+        guard let interruption = InterruptionAnalyzer.merge(waiting, found) else { return }
+        if interruption.evalKernelsLost, found?.evalKernelsLost == true {
             notify("info", "The eval kernels of the omp that ended are gone; variables and imports defined in them must be loaded again.")
         }
         let policy = await context.manifest.store.current.restorePolicy
@@ -763,7 +903,6 @@ public actor SessionSupervisor {
         }
     }
 
-
     // MARK: - Bridge
 
     private func followBridge(generation: Int) async {
@@ -772,6 +911,7 @@ public actor SessionSupervisor {
             hello = try await context.bridge.waitForHello(sessionKey, timeout: context.timings.hello)
         } catch {
             guard generation == self.generation, pid != nil, stopping == nil else { return }
+            link = .absent
             notify(
                 "warning",
                 "The ide-bridge extension did not connect (\(error)); status, title, graceful stop and resume after a crash are unavailable for this omp process.")
@@ -781,6 +921,7 @@ public actor SessionSupervisor {
         guard generation == self.generation, pid != nil else { return }
         bridgeHello = hello
         pausedBy = hello.pausedBy
+        link = .connected
         warnAboutCapabilities(of: hello)
         await adopt(sessionFile: hello.sessionFile, sessionId: hello.sessionId, title: hello.title, replacingTitle: false)
         await becomeIdleIfStarting()
@@ -788,31 +929,67 @@ public actor SessionSupervisor {
         // agents anything to do.
         let recovery = recovery
         self.recovery = nil
-        Task {
+        recoveryTask = (generation, Task {
             await self.syncPause()
             if let recovery { await self.recover(recovery, generation: generation) }
-        }
+            self.recoveryEnded(generation: generation)
+        })
         await seedRuntime(from: hello, generation: generation)
-        for await event in await context.bridge.events(sessionKey) {
-            guard generation == self.generation else { return }
-            await handle(bridgeEvent: event)
-        }
-        // The bridge went away, with omp or without it: nothing it reported holds any more.
-        guard generation == self.generation else { return }
-        tracker = RuntimeTracker()
-        publishRuntime()
+        await followConnections(generation: generation)
     }
 
-    /// The bridge of an adopted omp, from its hello on; its end is the omp's exit.
-    private func followAdoptedBridge(hello: BridgeHello, generation: Int, gate: ExitGate) async {
+    private func recoveryEnded(generation: Int) {
+        if recoveryTask?.generation == generation { recoveryTask = nil }
+    }
+
+    /// The bridge of an adopted omp, from its hello on.
+    private func followAdoptedBridge(hello: BridgeHello, generation: Int) async {
         await seedRuntime(from: hello, generation: generation)
-        for await event in await context.bridge.events(sessionKey) {
+        await followConnections(generation: generation)
+    }
+
+    /// The bridge's events, connection after connection. When one ends while omp runs, nothing it reported holds any
+    /// more and the bridge redials (after an ompd upgrade, or a dropped connection): followed again from its new hello
+    /// (`reconnected`). Ends when omp exits (its spawn is forgotten) or another spawn takes over.
+    private func followConnections(generation: Int) async {
+        while true {
+            for await event in await context.bridge.events(sessionKey) {
+                guard generation == self.generation else { return }
+                await handle(bridgeEvent: event)
+            }
             guard generation == self.generation else { return }
-            await handle(bridgeEvent: event)
+            tracker = RuntimeTracker()
+            publishRuntime()
+            guard pid != nil else { return }
+            link = .redialing
+            await followRedial(generation: generation)
+            guard generation == self.generation, link == .connected else { return }
         }
-        guard generation == self.generation else { return }
-        gate.open()
-        Task { await self.adoptedOmpGone(generation: generation) }
+    }
+
+    /// Waits for the bridge to redial; nothing comes of it once omp exited.
+    private func followRedial(generation: Int) async {
+        let hello: BridgeHello
+        do {
+            hello = try await context.bridge.waitForRedial(sessionKey)
+        } catch {
+            return
+        }
+        guard generation == self.generation, pid != nil else { return }
+        await reconnected(hello, generation: generation)
+    }
+
+    /// A redial's hello: what it says replaces what the gap may have hidden — the pause gate, the main agent's activity,
+    /// the session file and title — ompd's pause demand applies again, and the agent tree, what waits for the user and the
+    /// jobs are read again.
+    private func reconnected(_ hello: BridgeHello, generation: Int) async {
+        bridgeHello = hello
+        link = .connected
+        if let busy = hello.activity { activity = busy }
+        await notePause(hello.pausedBy)
+        await adopt(sessionFile: hello.sessionFile, sessionId: hello.sessionId, title: hello.title, replacingTitle: false)
+        Task { await self.syncPause() }
+        await seedRuntime(from: hello, generation: generation)
     }
 
     private func warnAboutCapabilities(of hello: BridgeHello) {
@@ -936,8 +1113,9 @@ public actor SessionSupervisor {
         }
     }
 
-    /// After the hello: the agent tree as omp has it now (`agents.snapshot`) and what waited for the user then. The
-    /// pushes buffered meanwhile are handled next and bring it forward.
+    /// After a hello (a spawn's, an adoption's or a redial's): the agent tree as omp has it now (`agents.snapshot`), its
+    /// jobs (`jobs.snapshot`) and what waited for the user then. The pushes buffered meanwhile are handled next and bring
+    /// it forward.
     private func seedRuntime(from hello: BridgeHello, generation: Int) async {
         var seeded = RuntimeTracker()
         seeded.attention = hello.attention
@@ -946,6 +1124,13 @@ public actor SessionSupervisor {
                 seeded.seed(agents: try await read("agents.snapshot")["agents"]?.arrayValue ?? [])
             } catch {
                 supervisorLog.error("session \(self.sessionKey, privacy: .public): agents.snapshot failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+        if hello.capabilities["events.jobs"] == true {
+            do {
+                seeded.replaceJobs(try await read("jobs.snapshot")["snapshot"])
+            } catch {
+                supervisorLog.error("session \(self.sessionKey, privacy: .public): jobs.snapshot failed: \(String(describing: error), privacy: .public)")
             }
         }
         guard generation == self.generation, pid != nil else { return }
@@ -1036,6 +1221,129 @@ public actor SessionSupervisor {
         guard [.busy, .idle, .paused].contains(status) else { return }
         let new: SessionStatus = owner == nil ? activity : .paused
         if new != status { await setStatus(new) }
+    }
+
+    // MARK: - In-place upgrade
+
+    /// What keeps this session from being handed to another image of ompd now; nil when nothing does. `lasting` tells a
+    /// reason that does not pass by itself (an ide-bridge too old to redial) from one that does (omp starting, stopping,
+    /// resuming or being told what an earlier run left unfinished).
+    func handoverBlocker() -> (reason: String, lasting: Bool)? {
+        if startTask != nil || [.starting, .resuming, .interrupted].contains(status) {
+            return ("omp is being started", false)
+        }
+        if pid != nil, stopping != nil { return ("omp is being stopped", false) }
+        if recoveryTask != nil { return ("omp is being told what its previous run left unfinished", false) }
+        guard pid != nil else { return nil }
+        switch link {
+        case .awaitingHello:
+            return ("omp's ide-bridge has not said hello yet", false)
+        case .connected, .redialing:
+            guard bridgeHello?.capabilities["bridge.redial"] == true else {
+                return ("omp's ide-bridge cannot reconnect (it is older than this ompd); restart the session to load the current one", true)
+            }
+            return nil
+        case .none, .absent:
+            return nil
+        }
+    }
+
+    /// Waits until nothing passing keeps the session from being handed over, at most `timeout`; returns what blocks then.
+    func waitForHandover(timeout: Duration) async -> (reason: String, lasting: Bool)? {
+        await waitWhile({ handoverBlocker().map { !$0.lasting } ?? false }, timeout: timeout)
+        return handoverBlocker()
+    }
+
+    /// The session as the next image takes it over (`takeOver`). Called once the bridge server ended every connection
+    /// (`BridgeServer.quiesce`): first handles every event the bridge sent before its connection ended, at most
+    /// `timeout`. Throws when the session cannot be handed over.
+    func handoverState(timeout: Duration) async throws -> SupervisorHandover {
+        await waitWhile({ link == .connected || handoverBlocker().map { !$0.lasting } ?? false }, timeout: timeout)
+        if let blocker = handoverBlocker() { throw HandoverError("session \(sessionKey): \(blocker.reason)") }
+        guard link != .connected else { throw HandoverError("session \(sessionKey): its ide-bridge did not hang up in time") }
+        var omp: RunningOmp?
+        if let pid, let ptyId {
+            omp = RunningOmp(
+                pid: pid, ptyId: ptyId, adopted: adopted, spawnedAt: spawnedAt, activity: activity, pausedBy: pausedBy,
+                bridge: link == .redialing)
+        }
+        let held = lock?.descriptor.flatMap { fd in lockedFile.map { LockHandover(descriptor: fd, sessionFile: $0) } }
+        return SupervisorHandover(sessionKey: sessionKey, omp: omp, lock: held)
+    }
+
+    /// The next image of an in-place upgrade: this session as the previous image handed it over. Takes over the
+    /// ownership lock and the omp that runs on: an adopted omp's exit is watched, and a bridge that was connected is
+    /// waited for to redial. Returns what the exit of omp's session PTY goes to (`PTYPool.adopt`); nil when no omp runs
+    /// on a session PTY.
+    func takeOver(_ state: SupervisorHandover) -> (@Sendable (PTYExit) -> Void)? {
+        if let held = state.lock {
+            do {
+                lock = try context.locks.adopt(descriptor: held.descriptor, sessionFile: held.sessionFile)
+                lockedFile = held.sessionFile
+            } catch {
+                // The descriptor stays open, so the lock stays held while this process lives.
+                notify("error", "The ownership lock of \(held.sessionFile) could not be taken over: \(error)")
+            }
+        }
+        guard let omp = state.omp else { return nil }
+        generation += 1
+        let generation = generation
+        let gate = ExitGate()
+        exited = gate
+        pid = omp.pid
+        ptyId = omp.ptyId
+        adopted = omp.adopted
+        spawnedAt = omp.spawnedAt
+        activity = omp.activity
+        pausedBy = omp.pausedBy
+        link = omp.bridge ? .redialing : .absent
+        if omp.bridge {
+            bridgeTask = Task {
+                await self.followRedial(generation: generation)
+                guard self.isConnected(generation: generation) else { return }
+                await self.followConnections(generation: generation)
+            }
+        }
+        if omp.adopted {
+            watchAdoptedExit(of: omp.pid, generation: generation, gate: gate)
+            return nil
+        }
+        return { [weak self] exit in
+            gate.open()
+            Task { await self?.ptyExited(exit, generation: generation) }
+        }
+    }
+
+    private func isConnected(generation: Int) -> Bool {
+        generation == self.generation && link == .connected
+    }
+
+    // MARK: - Waiting for changes
+
+    /// Waits while `condition` holds, at most `timeout`; it is checked again whenever the session's status, its start,
+    /// stop or recovery task, or its bridge link changes.
+    private func waitWhile(_ condition: () -> Bool, timeout: Duration) async {
+        let deadline = ContinuousClock.now + timeout
+        while condition(), ContinuousClock.now < deadline {
+            let id = UUID()
+            let timer = Task { [weak self] in
+                try? await Task.sleep(until: deadline)
+                await self?.wake(id)
+            }
+            await withCheckedContinuation { changeWaiters[id] = $0 }
+            timer.cancel()
+        }
+    }
+
+    private func wake(_ id: UUID) {
+        changeWaiters.removeValue(forKey: id)?.resume()
+    }
+
+    private func noteChange() {
+        guard !changeWaiters.isEmpty else { return }
+        let waiters = changeWaiters
+        changeWaiters = [:]
+        for waiter in waiters.values { waiter.resume() }
     }
 
     // MARK: - Ownership

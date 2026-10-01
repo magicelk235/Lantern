@@ -18,6 +18,11 @@ public protocol IDERequestHandler: Sendable {
     /// requests is handled. Keep it short: the connection's requests wait for it.
     func connectionOpened(_ connection: IDEConnection, hello: Hello) async
 
+    /// Called with every `hello` whose token checked out, before its protocol version is checked: a client of another
+    /// version (refused when its protocol differs) can make the daemon look for an upgrade of itself. Must
+    /// return at once; the verdict on the hello does not wait for it.
+    func helloReceived(_ hello: Hello)
+
     /// Called exactly once per connection that received its `welcome`, after the socket closed and every `handle`
     /// call for that connection has returned.
     func connectionClosed(_ connection: IDEConnection) async
@@ -25,6 +30,7 @@ public protocol IDERequestHandler: Sendable {
 
 extension IDERequestHandler {
     public func connectionOpened(_ connection: IDEConnection, hello: Hello) async {}
+    public func helloReceived(_ hello: Hello) {}
 }
 
 /// Unix-domain-socket listener for the daemon.
@@ -249,6 +255,7 @@ public final class IDEServer: Sendable {
         guard tokenMatches(hello.token) else {
             return reject(connection, responseID: Self.handshakeResponseID, .unauthorized, "invalid token")
         }
+        handler.helloReceived(hello)
         guard hello.protocolVersion == ideProtocolVersion else {
             return reject(
                 connection, responseID: Self.handshakeResponseID, .versionMismatch,

@@ -42,7 +42,7 @@ public final class OwnedSessionLock: Sendable {
     /// Canonical (`realpath`) session file the lock is named after.
     public let sessionFile: String
     public let lockURL: URL
-    private let descriptor: OSAllocatedUnfairLock<Int32>
+    private let held: OSAllocatedUnfairLock<Int32>
 
     /// A lock-mode bridge probes with a momentary shared lock; a few short retries keep that probe from making ompd
     /// believe the session is owned by someone else.
@@ -58,7 +58,7 @@ public final class OwnedSessionLock: Sendable {
     private init(sessionFile: String, lockURL: URL, fd: Int32) {
         self.sessionFile = sessionFile
         self.lockURL = lockURL
-        descriptor = OSAllocatedUnfairLock(initialState: fd)
+        held = OSAllocatedUnfairLock(initialState: fd)
     }
 
     deinit { release() }
@@ -84,10 +84,33 @@ public final class OwnedSessionLock: Sendable {
         return OwnedSessionLock(sessionFile: canonical, lockURL: url, fd: fd)
     }
 
+    /// The lock the previous image of this process held on `descriptor` (an in-place upgrade kept it open): `flock`
+    /// locks belong to the open file, so it is still held. Checked to be a lock file of `dir` and made close-on-exec
+    /// again; throws (leaving the descriptor open) when it is not.
+    static func adopt(descriptor: Int32, sessionFile: String, dir: URL) throws -> OwnedSessionLock {
+        let url = OwnershipLock.lockURL(canonicalPath: sessionFile, in: dir)
+        var inherited = stat()
+        var named = stat()
+        guard fstat(descriptor, &inherited) == 0 else {
+            throw BridgeError.system(operation: "fstat", path: StorageIO.displayPath(url), code: errno)
+        }
+        guard stat(url.path(percentEncoded: false), &named) == 0, inherited.st_dev == named.st_dev, inherited.st_ino == named.st_ino else {
+            throw BridgeError.system(operation: "adopt", path: StorageIO.displayPath(url), code: ESTALE)
+        }
+        _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
+        return OwnedSessionLock(sessionFile: sessionFile, lockURL: url, fd: descriptor)
+    }
+
+    /// The descriptor holding the lock; nil once released.
+    public var descriptor: Int32? {
+        let fd = held.withLock { $0 }
+        return fd >= 0 ? fd : nil
+    }
+
     /// Drops the lock. Idempotent. The lock file stays: unlinking it would race a concurrent acquirer, and
     /// `AppSupportPaths.prepare()` recreates `run/` on every daemon start.
     public func release() {
-        let fd = descriptor.withLock { fd in
+        let fd = held.withLock { fd in
             defer { fd = -1 }
             return fd
         }

@@ -22,7 +22,7 @@ struct ProjectWindow: View {
                 SidebarResizeHandle(app: app)
             }
             VStack(spacing: 0) {
-                StatusBanners(app: app)
+                StatusBanners(app: app, project: project)
                 if let strip = app.strip(of: project) {
                     TabStrip(app: app, strip: strip)
                 }
@@ -292,16 +292,22 @@ struct SessionMenu: View {
     }
 }
 
-/// Connection, daemon-notice and daemon-registration problems, above the detail pane.
+/// Connection, outdated-ompd, daemon-notice and daemon-registration problems, failing state writes and crash reports,
+/// above the detail pane. Notices about disk space offer Free Up Space…, which opens Settings › Storage.
 struct StatusBanners: View {
     let app: AppState
+    /// The window's project; empty for the window of no project.
+    let project: String
+    @Environment(\.openSettings) private var openSettings
 
     private var connection: DaemonConnection { app.connection }
     private var agent: DaemonAgent { app.agent }
 
     var body: some View {
         VStack(spacing: 0) {
-            if case .daemonUnavailable(let reason) = connection.status {
+            OutdatedDaemonBar(app: app, project: project)
+            // While the out-of-date ompd restarts, ompd is out of reach by design: "Restarting ompd" says so.
+            if case .daemonUnavailable(let reason) = connection.status, app.outdatedDaemon.phase != .restarting {
                 NoticeBar(
                     systemImage: "bolt.horizontal.circle", tint: .orange, title: "ompd is not reachable",
                     message: agent.isRepairing ? "Registering ompd with launchd again." : "\(reason) Retrying; running agents are not affected.",
@@ -319,7 +325,30 @@ struct StatusBanners: View {
                     tint: notice.level == "error" ? .red : notice.level == "warning" ? .orange : .blue,
                     title: "ompd", message: notice.message
                 ) {
+                    if notice.topic == DaemonNotice.diskSpaceTopic {
+                        Button("Free Up Space…", action: freeUpSpace)
+                    }
                     Button("Dismiss", action: connection.dismissNotices)
+                }
+            }
+            if let failure = app.persistence.writeFailure {
+                NoticeBar(
+                    systemImage: "exclamationmark.triangle", tint: .orange, title: "Unsaved edits may not survive a crash",
+                    message: "omp IDE could not save its state: \(failure.reason)"
+                ) {
+                    if failure.outOfSpace {
+                        Button("Free Up Space…", action: freeUpSpace)
+                    }
+                }
+            }
+            if let report = app.crashNotices.unseen.first {
+                NoticeBar(
+                    systemImage: "exclamationmark.triangle", tint: .orange,
+                    title: "\(report.process) quit unexpectedly \(Self.when(report.date))",
+                    message: app.crashNotices.unseen.count > 1 ? "\(app.crashNotices.unseen.count - 1) earlier crash reports too." : ""
+                ) {
+                    Button("Show Report", action: app.crashNotices.showReport)
+                    Button("Dismiss", action: app.crashNotices.dismiss)
                 }
             }
             switch agent.state {
@@ -355,5 +384,17 @@ struct StatusBanners: View {
     private func shownBySessionBar(_ notice: DaemonNotice) -> Bool {
         guard let key = notice.sessionKey else { return false }
         return connection.sessions.first { $0.sessionKey == key }?.status == .needsAttention
+    }
+
+    private func freeUpSpace() {
+        SettingsTab.storage.select()
+        openSettings()
+    }
+
+    /// "at 14:02" today, else "on Sep 30 at 14:02".
+    private static func when(_ date: Date) -> String {
+        let time = date.formatted(date: .omitted, time: .shortened)
+        guard !Calendar.current.isDateInToday(date) else { return "at \(time)" }
+        return "on \(date.formatted(.dateTime.month(.abbreviated).day())) at \(time)"
     }
 }

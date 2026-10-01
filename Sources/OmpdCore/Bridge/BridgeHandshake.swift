@@ -81,6 +81,9 @@ public struct BridgeHello: Sendable, Equatable {
     public let attention: [AttentionItem]
     /// The hello frame without `token`.
     public let raw: JSONValue
+    /// The main agent's activity (`busy` or `idle`) when the bridge said hello: after a redial, what it was doing while
+    /// the connection was down. Nil from bridges before redials.
+    public internal(set) var activity: SessionStatus? = nil
 }
 
 extension BridgeHello {
@@ -117,7 +120,8 @@ extension BridgeHello {
             onDisk: onDisk, cwd: cwd, artifactsDir: session["artifactsDir"]?.stringValue,
             title: session["title"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 },
             pausedBy: pausedBy, attention: RuntimeTracker.attention(session["attention"]),
-            raw: .object(raw))
+            raw: .object(raw),
+            activity: SessionStatus(rawValue: session["activity"]?.stringValue ?? "").flatMap { [.busy, .idle].contains($0) ? $0 : nil })
     }
 }
 

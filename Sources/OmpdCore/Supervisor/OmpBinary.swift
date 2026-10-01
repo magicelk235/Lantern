@@ -36,9 +36,7 @@ enum OmpBinary {
         var searched: [String] = []
         func isUsable(_ path: String) -> Bool {
             searched.append(path)
-            var isDirectory: ObjCBool = false
-            return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && !isDirectory.boolValue
-                && FileManager.default.isExecutableFile(atPath: path)
+            return Self.isUsable(path)
         }
         for configured in [explicit, environment["OMP_BIN"]] {
             guard let configured, !configured.isEmpty else { continue }
@@ -52,6 +50,13 @@ enum OmpBinary {
         }
         if isUsable(homebrewPath) { return homebrewPath }
         throw OmpBinaryError.notFound(searched: searched)
+    }
+
+    /// `path` is an executable file (following links), as omp must be to run.
+    static func isUsable(_ path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && !isDirectory.boolValue
+            && FileManager.default.isExecutableFile(atPath: path)
     }
 
     /// Runs `<path> --version` and returns the version it reports (`omp/18.3.1` → `"18.3.1"`).

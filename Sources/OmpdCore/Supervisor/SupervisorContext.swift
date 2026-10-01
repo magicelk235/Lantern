@@ -24,11 +24,15 @@ public struct SupervisorTimings: Sendable {
     /// After a wake: how long a busy main agent may go without progress (model stream, tool, turn events) before its
     /// turn is aborted and it is told to continue.
     public var wakeStallTimeout: Duration
+    /// How long a graceful stop waits for a bridge that is redialing (its connection ended while omp runs), and how long
+    /// an in-place upgrade waits for each bridge to hang up and its last events to be handled.
+    public var redial: Duration
 
     public init(
         hello: Duration = .seconds(30), bridgeCall: Duration = .seconds(30), stop: Duration = .seconds(15),
         hangup: Duration = .seconds(3), healthCheck: Duration = .seconds(10), respawnWindow: Duration = .seconds(60),
-        maxRespawns: Int = 3, resumeQuietPeriod: Duration = .seconds(1), wakeStallTimeout: Duration = .seconds(120)
+        maxRespawns: Int = 3, resumeQuietPeriod: Duration = .seconds(1), wakeStallTimeout: Duration = .seconds(120),
+        redial: Duration = .seconds(5)
     ) {
         self.hello = hello
         self.bridgeCall = bridgeCall
@@ -39,6 +43,7 @@ public struct SupervisorTimings: Sendable {
         self.maxRespawns = maxRespawns
         self.resumeQuietPeriod = resumeQuietPeriod
         self.wakeStallTimeout = wakeStallTimeout
+        self.redial = redial
     }
 }
 
@@ -70,6 +75,9 @@ public struct SupervisorContext: Sendable {
     public var bridgeExtension: String?
     /// Environment every omp starts from (the daemon's own), before `LaunchSpec.env` and the bridge credentials.
     public var baseEnvironment: [String: String]
+    /// omp for new sessions as the daemon is configured (`ompd run --omp`; nil: `$OMP_BIN`, `PATH`, Homebrew): what a
+    /// session whose pinned omp is gone runs instead (`OmpBinary.locate` against `baseEnvironment`).
+    public var ompExecutable: String?
     public var timings: SupervisorTimings
     /// Whether ompd wants the sessions paused (no omp IDE window connected).
     public var pauseDemand: PauseDemand
@@ -81,14 +89,18 @@ public struct SupervisorContext: Sendable {
     public var notify: @Sendable (DaemonNotice) -> Void
     /// Delivers a session's changed runtime to every connected client (`ServerFrame.runtime`).
     public var runtimeChanged: @Sendable (SessionRuntime) -> Void
+    /// A spawn read `version` (`omp --version`) at `path`, the omp it runs: other sessions pinned to `path` see it as
+    /// installed (`SessionManifestEntry.installedOmpVersion`).
+    public var ompSpawned: @Sendable (_ version: String, _ path: String) -> Void
 
     public init(
         manifest: ManifestPublisher, ptys: PTYPool, bridge: any SessionBridgeLink, locks: any SessionLockProvider,
         bridgeExtension: String?, baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
-        timings: SupervisorTimings = SupervisorTimings(), pauseDemand: PauseDemand = PauseDemand(),
-        services: any ServiceControl = OmpServiceControl(),
+        ompExecutable: String? = nil, timings: SupervisorTimings = SupervisorTimings(),
+        pauseDemand: PauseDemand = PauseDemand(), services: any ServiceControl = OmpServiceControl(),
         persistenceFailed: @escaping @Sendable (any Error) -> Void, notify: @escaping @Sendable (DaemonNotice) -> Void,
-        runtimeChanged: @escaping @Sendable (SessionRuntime) -> Void
+        runtimeChanged: @escaping @Sendable (SessionRuntime) -> Void,
+        ompSpawned: @escaping @Sendable (_ version: String, _ path: String) -> Void = { _, _ in }
     ) {
         self.manifest = manifest
         self.ptys = ptys
@@ -96,12 +108,14 @@ public struct SupervisorContext: Sendable {
         self.locks = locks
         self.bridgeExtension = bridgeExtension
         self.baseEnvironment = baseEnvironment
+        self.ompExecutable = ompExecutable
         self.timings = timings
         self.pauseDemand = pauseDemand
         self.services = services
         self.persistenceFailed = persistenceFailed
         self.notify = notify
         self.runtimeChanged = runtimeChanged
+        self.ompSpawned = ompSpawned
     }
 }
 

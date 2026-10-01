@@ -1,6 +1,9 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
+/// The daemon's own code is optimized for size in release builds; Debug is unchanged.
+let daemonSwiftSettings: [SwiftSetting] = [.unsafeFlags(["-Osize"], .when(configuration: .release))]
+
 let package = Package(
     name: "OmpIDE",
     platforms: [.macOS(.v14)],
@@ -25,9 +28,10 @@ let package = Package(
         // Daemon internals: manifest, session supervisors (omp TUIs in PTYs), PTY pool, ide-bridge server, power observers.
         .target(
             name: "OmpdCore",
-            dependencies: ["IDEProtocol", "IDETransport", .product(name: "SwiftTerm", package: "SwiftTerm")]
+            dependencies: ["IDEProtocol", "IDETransport", .product(name: "SwiftTerm", package: "SwiftTerm")],
+            swiftSettings: daemonSwiftSettings
         ),
-        .executableTarget(name: "ompd", dependencies: ["OmpdCore", "IDETransport"]),
+        .executableTarget(name: "ompd", dependencies: ["OmpdCore", "IDETransport"], swiftSettings: daemonSwiftSettings),
         // App-side state (no AppKit/SwiftUI): daemon connection, session TUIs and terminals on ompd's PTYs.
         .target(name: "IDEModel", dependencies: ["IDETransport"]),
         // App-owned persistent state (no AppKit/SwiftUI): windows, tabs, editor positions and hot-exit dirty buffers in

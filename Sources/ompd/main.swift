@@ -5,7 +5,7 @@ import IDETransport
 import OmpdCore
 
 let usage = """
-    usage: ompd run [--omp <path>] [--omp-arg <arg>]... [--session-dir <dir>]
+    usage: ompd run [--omp <path>] [--omp-arg <arg>]... [--session-dir <dir>] [--low-space <bytes>]
            ompd status [--json]
            ompd --version
 
@@ -13,6 +13,9 @@ let usage = """
                --omp          omp executable for new sessions (default: $OMP_BIN, PATH, /opt/homebrew/bin/omp)
                --omp-arg      argument appended to every new session's omp command line (repeatable)
                --session-dir  omp --session-dir for new sessions (default: omp's per-workspace directory)
+               --low-space    warn when free disk space drops under this many bytes (default: 1 GiB or 1% of the
+                              disk, whichever is more)
+               (--handover <file> is how a running ompd starts the next one when it upgrades itself in place.)
       status   Ask the running daemon for its sessions and PTYs (session TUIs and terminals).
     """
 
@@ -32,13 +35,25 @@ func parseRun(_ arguments: ArraySlice<String>) throws -> DaemonRunner.Options {
         guard let value = rest.popFirst() else { throw UsageError(description: "\(flag) needs a value") }
         return value
     }
-    while let argument = rest.popFirst() {
+    while !rest.isEmpty {
+        let start = rest.startIndex
+        let argument = rest.removeFirst()
         switch argument {
         case "--omp": options.ompExecutable = try value(for: argument)
         case "--omp-arg": options.ompArguments.append(try value(for: argument))
         case "--session-dir": options.sessionDirectory = try value(for: argument)
+        case "--low-space":
+            let bytes = try value(for: argument)
+            guard let threshold = Int64(bytes), threshold > 0 else {
+                throw UsageError(description: "--low-space needs a positive number of bytes, not \(bytes)")
+            }
+            options.lowSpaceThreshold = threshold
+        case "--handover":
+            options.handover = try value(for: argument)
+            continue
         default: throw UsageError(description: "unknown argument \(argument)")
         }
+        options.arguments += arguments[start..<rest.startIndex]
     }
     return options
 }
@@ -143,6 +158,9 @@ case "status":
     }
 case "--version", "version":
     print("ompd \(ompdVersion)")
+case "handover-info":
+    // What a running ompd asks before it hands over to this executable.
+    FileHandle.standardOutput.write(try JSONEncoder().encode(HandoverInfo.current) + Data("\n".utf8))
 case "--help", "-h", "help":
     print(usage)
 default:

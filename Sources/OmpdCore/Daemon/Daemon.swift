@@ -32,12 +32,22 @@ public actor Daemon {
         /// omp's launch broker: named services listed and controlled (`services.list`, `service.control`), and
         /// relaunched after a Regime-B resume.
         public var services: any ServiceControl
+        /// Free space on `$APP_SUPPORT`'s volume under which ompd warns (`LowSpaceAlarm`); nil: the larger of 1 GiB and
+        /// 1% of the volume.
+        public var lowSpaceThreshold: Int64?
+        /// The process ompd runs in and the ompd installed at its path: how it upgrades itself (`daemon.upgrade`).
+        /// Nil: it does not.
+        public var process: (any DaemonProcess)?
+        /// How long an upgrade waits for sessions that are starting, stopping or being continued before it gives up on
+        /// handing over in place.
+        public var handoverSettle: Duration
 
         public init(
             paths: AppSupportPaths, ompExecutable: String? = nil, ompArguments: [String] = [], sessionDirectory: String? = nil,
             bridgeExtension: String? = nil, baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
             timings: SupervisorTimings = SupervisorTimings(), wakeHealthCheckDelay: Duration = .seconds(10),
-            detachedPauseGrace: Duration = .seconds(3), services: any ServiceControl = OmpServiceControl()
+            detachedPauseGrace: Duration = .seconds(3), services: any ServiceControl = OmpServiceControl(),
+            lowSpaceThreshold: Int64? = nil, process: (any DaemonProcess)? = nil, handoverSettle: Duration = .seconds(10)
         ) {
             self.paths = paths
             self.ompExecutable = ompExecutable
@@ -49,6 +59,9 @@ public actor Daemon {
             self.wakeHealthCheckDelay = wakeHealthCheckDelay
             self.detachedPauseGrace = detachedPauseGrace
             self.services = services
+            self.lowSpaceThreshold = lowSpaceThreshold
+            self.process = process
+            self.handoverSettle = handoverSettle
         }
     }
 
@@ -56,7 +69,8 @@ public actor Daemon {
     static let pinnedEnvironmentKeys = ["PI_CODING_AGENT_DIR", "OMP_PROFILE"]
 
     public nonisolated let configuration: Configuration
-    public nonisolated let startedAt = Date()
+    /// When this ompd process started (kept across in-place upgrades).
+    public nonisolated let startedAt: Date
     nonisolated let router = IDERouter()
 
     private let token: String
@@ -78,16 +92,40 @@ public actor Daemon {
     /// Sleeps out `detachedPauseGrace` once no window is open, then pauses every session; a grace that was cancelled
     /// or superseded (its `id` no longer here) does nothing.
     private var detachedPause: (id: UUID, task: Task<Void, Never>)?
+    /// Upgrade decisions, one after the other (an omp IDE of another version saying hello and its `daemon.upgrade` race).
+    private var upgradeDecision: Task<DaemonUpgrade.Result, any Error>?
+    /// The in-place handover runs: no new work, the pause demand stays as it is; undone if it fails.
+    private var handover: Task<Void, Never>?
+    /// `shutdown` was called: a handover in flight gives up before the exec.
+    private var shutdownRequested = false
+    /// `daemon.upgrade whenSettled`: ompd restarts into the installed executable once every session is settled.
+    private let restartWhenSettled = Flag()
+    /// Free space and PTY snapshot writes, checked whenever ompd writes anyway.
+    private lazy var storageWatch = StorageWatch(
+        volume: configuration.paths.root, alarm: LowSpaceAlarm(fixedThreshold: configuration.lowSpaceThreshold),
+        notify: { [broadcaster] in broadcaster.send(.notice($0)) })
+    /// The version of the omp each running session is pinned to, as installed now.
+    private lazy var installations = OmpInstallations(
+        manifest: manifest,
+        locate: { [configuration] in try OmpBinary.locate(explicit: configuration.ompExecutable, environment: configuration.baseEnvironment) },
+        persistenceFailed: { [readOnly, broadcaster] in Self.enterReadOnly(readOnly, broadcaster, failedWith: $0) })
+    /// `storage.report` and `storage.clean`.
+    private lazy var storage = StorageMaintenance(
+        paths: configuration.paths, manifest: manifest, ptys: ptys, baseEnvironment: configuration.baseEnvironment,
+        ompExecutable: configuration.ompExecutable)
 
-    /// Nothing touches the disk or the socket before `start()`. `paths` must already be `prepare()`d.
+    /// Nothing touches the disk or the socket before `start()`. `paths` must already be `prepare()`d. `startedAt`: when
+    /// the process started (an in-place upgrade's next image keeps the first image's).
     public init(
-        configuration: Configuration, token: String, bridge: any SessionBridgeLink, locks: any SessionLockProvider, ptys: PTYPool
+        configuration: Configuration, token: String, bridge: any SessionBridgeLink, locks: any SessionLockProvider, ptys: PTYPool,
+        startedAt: Date = Date()
     ) {
         self.configuration = configuration
         self.token = token
         self.bridge = bridge
         self.locks = locks
         self.ptys = ptys
+        self.startedAt = startedAt
         manifest = ManifestPublisher(store: ManifestStore(url: configuration.paths.manifest))
     }
 
@@ -95,27 +133,39 @@ public actor Daemon {
 
     // MARK: - Lifecycle
 
-    /// Loads the manifest (dropping the previous daemon's runtime state: no PTY and no omp survived it), creates a
-    /// supervisor per session, and starts serving clients. No window is open yet: unless one opens within
+    /// Loads the manifest, creates a supervisor per session, and starts serving clients. Started afresh, it drops the
+    /// previous daemon's runtime state (no PTY and no omp survived it). As the next image of an in-place upgrade
+    /// (`handover`), it takes over what the previous image ran instead — PTYs, omps, ownership locks, the pause demand —
+    /// and the manifest stays as it is; the bridges redial. No window is open yet: unless one opens within
     /// `detachedPauseGrace`, the sessions are paused.
-    public func start() async throws {
+    public func start(handover: DaemonHandover? = nil) async throws {
         precondition(server == nil && shutdownTask == nil, "Daemon.start() called twice")
         try await manifest.store.load()
-        try await manifest.update { manifest in
-            for index in manifest.sessions.indices {
-                manifest.sessions[index].ptyId = nil
-                manifest.sessions[index].adopted = false
-                if manifest.sessions[index].status != .closed { manifest.sessions[index].status = .interrupted }
+        if handover == nil {
+            try await manifest.update { manifest in
+                for index in manifest.sessions.indices {
+                    manifest.sessions[index].ptyId = nil
+                    manifest.sessions[index].adopted = false
+                    if manifest.sessions[index].status != .closed { manifest.sessions[index].status = .interrupted }
+                }
             }
         }
         for entry in await manifest.sessions where supervisors[entry.sessionKey] == nil {
             supervisors[entry.sessionKey] = SessionSupervisor(entry: entry, context: supervisorContext)
         }
         let broadcaster = broadcaster
-        manifest.setSink { broadcaster.send(.sessions($0)) }
+        let storageWatch = storageWatch
+        let restartWhenSettled = restartWhenSettled
+        manifest.setSink { [weak self] list in
+            broadcaster.send(.sessions(list))
+            storageWatch.checkFreeSpace()
+            if restartWhenSettled.isOn { Task { await self?.restartIfSettled(list.sessions) } }
+        }
         await ptys.setChangeHandler { broadcaster.send(.ptys(PTYList.Result(ptys: $0))) }
+        await ptys.setSnapshotObserver { storageWatch.snapshotsWritten(failure: $0) }
         let bridge = bridge
         await ptys.setTerminalEnvironment { ptyId in await bridge.expectTerminal(ptyId: ptyId).environment }
+        if let handover { await takeOver(handover) }
         adoptionTask = Task { [weak self] in
             for await hello in await bridge.terminalHellos() {
                 guard let self else { return }
@@ -123,13 +173,18 @@ public actor Daemon {
             }
         }
         registerRoutes()
+        try await serve()
+        windowsChanged(pauseAtOnce: false)
+    }
+
+    /// Serves the IDE protocol on `$APP_SUPPORT/run/ompd.sock`.
+    private func serve() async throws {
         let server = IDEServer(
             socketPath: configuration.paths.socket.path(percentEncoded: false), token: token, daemonVersion: ompdVersion,
             startedAt: startedAt, handler: self)
         try await server.start()
         self.server = server
         broadcaster.attach(server)
-        windowsChanged(pauseAtOnce: false)
     }
 
     /// Regime B2: terminals come back from their snapshots, and every session the user did not close is
@@ -150,9 +205,13 @@ public actor Daemon {
     }
 
     /// The graceful path: terminal snapshots, then every omp stopped in parallel through its bridge
-    /// (SIGHUP/SIGKILL for stragglers), then the PTYs snapshotted again and hung up, socket closed. Idempotent; later
-    /// callers wait for the first.
+    /// (SIGHUP/SIGKILL for stragglers), then the PTYs snapshotted again and hung up, socket closed. An in-place upgrade
+    /// under way gives up first (unless it is past its point of no return). Idempotent; later callers wait for the first.
     public func shutdown() async {
+        if let shutdownTask { return await shutdownTask.value }
+        shutdownRequested = true
+        restartWhenSettled.set(false)
+        await handover?.value
         if let shutdownTask { return await shutdownTask.value }
         let task = Task { await self.performShutdown() }
         shutdownTask = task
@@ -213,12 +272,14 @@ public actor Daemon {
     private var supervisorContext: SupervisorContext {
         let readOnly = readOnly
         let broadcaster = broadcaster
+        let installations = installations
         return SupervisorContext(
             manifest: manifest, ptys: ptys, bridge: bridge, locks: locks, bridgeExtension: configuration.bridgeExtension,
-            baseEnvironment: configuration.baseEnvironment, timings: configuration.timings, pauseDemand: pauseDemand,
-            services: configuration.services,
+            baseEnvironment: configuration.baseEnvironment, ompExecutable: configuration.ompExecutable,
+            timings: configuration.timings, pauseDemand: pauseDemand, services: configuration.services,
             persistenceFailed: { error in Self.enterReadOnly(readOnly, broadcaster, failedWith: error) },
-            notify: { broadcaster.send(.notice($0)) }, runtimeChanged: { broadcaster.send(.runtime($0)) })
+            notify: { broadcaster.send(.notice($0)) }, runtimeChanged: { broadcaster.send(.runtime($0)) },
+            ompSpawned: { version, path in Task { await installations.spawned(version, at: path) } })
     }
 
     /// The manifest could not be written (disk full, I/O error): read-only for the rest of this daemon's life.
@@ -232,7 +293,7 @@ public actor Daemon {
         broadcaster.send(.notice(DaemonNotice(
             level: "error",
             message: "The session manifest could not be written (\(error)). ompd is read-only: running sessions and terminals keep going, but new sessions are refused because they could not be restored. Free disk space and restart ompd.",
-            at: Date())))
+            at: Date(), topic: StorageWatch.isOutOfSpace(error) ? DaemonNotice.diskSpaceTopic : nil)))
     }
 
     private func supervisor(_ key: SessionKey) throws -> SessionSupervisor {
@@ -240,9 +301,10 @@ public actor Daemon {
         return supervisor
     }
 
-    /// Refuses new sessions while shutting down or read-only.
+    /// Refuses new sessions while shutting down, handing over to another image of ompd, or read-only.
     private func ensureAcceptingWork() throws {
         if shutdownTask != nil { throw DaemonError(.internal, "ompd is shutting down") }
+        if handover != nil { throw DaemonError(.internal, "ompd is upgrading itself; try again in a moment") }
         if readOnly.isOn { throw DaemonError(.readOnly, "ompd is read-only: the session manifest could not be written (disk full?)") }
     }
 
@@ -460,6 +522,24 @@ public actor Daemon {
         return Empty()
     }
 
+    /// `session.restart`: refused while read-only (the new omp's PTY could not be recorded) like new sessions.
+    private func restartSession(_ params: SessionRestart.Params) async throws -> SessionManifestEntry {
+        try ensureAcceptingWork()
+        try await supervisor(params.sessionKey).restart(force: params.force)
+        guard let entry = await manifest.entry(params.sessionKey) else {
+            throw DaemonError(.noSuchSession, "session \(params.sessionKey) vanished")
+        }
+        return entry
+    }
+
+    private func storageReport() async -> StorageReport {
+        await storage.report()
+    }
+
+    private func cleanStorage() async -> StorageClean.Result {
+        await storage.clean()
+    }
+
     private func setRestorePolicy(_ policy: RestorePolicy) async throws -> RestorePolicy {
         if readOnly.isOn { throw DaemonError(.readOnly, "ompd is read-only: the session manifest could not be written (disk full?)") }
         do {
@@ -675,11 +755,192 @@ public actor Daemon {
         router.on(ServiceControlRequest.self) { [weak self] params, _ in
             try await Self.alive(self).controlService(params)
         }
+        router.on(SessionRestart.self) { [weak self] params, _ in
+            try await Self.alive(self).restartSession(params)
+        }
+        router.on(StorageReportRequest.self) { [weak self] _, _ in
+            try await Self.alive(self).storageReport()
+        }
+        router.on(StorageClean.self) { [weak self] _, _ in
+            try await Self.alive(self).cleanStorage()
+        }
+        router.on(DaemonUpgrade.self) { [weak self] params, _ in
+            try await Self.alive(self).upgrade(params.mode)
+        }
     }
 
     private static func alive(_ daemon: Daemon?) throws -> Daemon {
         guard let daemon else { throw DaemonError(.internal, "ompd is shutting down") }
         return daemon
+    }
+
+    // MARK: - Upgrades
+
+    /// How long the answer to the `daemon.upgrade` that started a handover gets to go out before its connection ends.
+    static let responseGrace: Duration = .milliseconds(100)
+
+    /// `daemon.upgrade`, and an omp IDE of another version saying hello (`auto`): decided one after the other.
+    private func upgrade(_ mode: DaemonUpgrade.Mode) async throws -> DaemonUpgrade.Result {
+        let previous = upgradeDecision
+        let decision = Task {
+            _ = try? await previous?.value
+            return try await self.decideUpgrade(mode)
+        }
+        upgradeDecision = decision
+        return try await decision.value
+    }
+
+    /// Moves to the ompd installed at this ompd's path when it is another one (`UpgradePlan`): handing over in place
+    /// when nothing blocks it, else restarting the graceful way as `mode` says. Answers before anything happens.
+    private func decideUpgrade(_ mode: DaemonUpgrade.Mode) async throws -> DaemonUpgrade.Result {
+        guard let process = configuration.process else { throw DaemonError(.internal, "this ompd cannot upgrade itself") }
+        if shutdownTask != nil || shutdownRequested { throw DaemonError(.internal, "ompd is shutting down") }
+        if handover != nil { return DaemonUpgrade.Result(outcome: .handingOver, runningVersion: ompdVersion) }
+        guard let installed = await process.installedReplacement() else {
+            return DaemonUpgrade.Result(outcome: .upToDate, runningVersion: ompdVersion)
+        }
+        let blocker = await handoverBlocker(for: installed)
+        let unsettled = await manifest.sessions.filter { !$0.status.isSettled }.map(\.sessionKey)
+        let plan = UpgradePlan.decide(mode, handoverBlocker: blocker, installedStarts: installed.failure == nil, unsettled: unsettled)
+        daemonLog.notice("upgrade \(mode.rawValue, privacy: .public) to ompd \(installed.version ?? "?", privacy: .public): \(String(describing: plan), privacy: .public)\(blocker.map { " (no handover: \($0))" } ?? "", privacy: .public)")
+        switch plan {
+        case .handOver:
+            restartWhenSettled.set(false)
+            handover = Task {
+                let failure = await self.handOverInPlace()
+                await self.handoverFailed(failure, fallback: mode)
+            }
+        case .restartNow:
+            restartWhenSettled.set(false)
+            Task { await self.restartIntoInstalled() }
+        case .restartWhenSettled:
+            restartWhenSettled.set(true)
+        case .wait:
+            break
+        }
+        return DaemonUpgrade.Result(
+            outcome: plan.outcome, runningVersion: ompdVersion, installedVersion: installed.version,
+            handoverUnavailable: blocker, unsettledSessions: unsettled)
+    }
+
+    /// Why ompd cannot hand over to `installed` in place; nil when it can. What passes by itself (omp starting,
+    /// stopping or being continued) is waited out first, at most `handoverSettle`.
+    private func handoverBlocker(for installed: InstalledExecutable) async -> String? {
+        if let failure = installed.failure { return "the installed ompd could not be started: \(failure)" }
+        guard installed.handoverFormats.contains(DaemonHandover.format) else {
+            return "the installed ompd \(installed.version ?? "") cannot take over from a running one"
+        }
+        if readOnly.isOn { return "ompd is read-only (the session manifest could not be written)" }
+        let supervisors = Array(supervisors.values)
+        let settle = configuration.handoverSettle
+        let blockers = await withTaskGroup(of: String?.self) { group in
+            for supervisor in supervisors {
+                group.addTask {
+                    await supervisor.waitForHandover(timeout: settle).map { "session \(supervisor.sessionKey): \($0.reason)" }
+                }
+            }
+            var found: [String] = []
+            for await blocker in group { if let blocker { found.append(blocker) } }
+            return found.sorted()
+        }
+        return blockers.isEmpty ? nil : blockers.joined(separator: "; ")
+    }
+
+    /// The in-place upgrade (Regime A), in order: app connections end and the socket goes; every PTY stops being read,
+    /// written and reaped with its master kept open; every bridge connection ends without losing an event (the bridges
+    /// redial the next image); the sessions' state, the bridges' credentials and the ownership locks are collected; the
+    /// process becomes the installed executable (`DaemonProcess.handOver`). Returns only when that failed, with why.
+    private func handOverInPlace() async -> String {
+        guard let process = configuration.process else { return "this ompd cannot upgrade itself" }
+        try? await Task.sleep(for: Self.responseGrace)
+        cancelDetachedPause()
+        await server?.stop()
+        broadcaster.attach(nil)
+        server = nil
+        appConnections = [:]
+        let frozen = await ptys.freezeForHandover()
+        let redial = configuration.timings.redial
+        guard await bridge.quiesce(timeout: redial) else { return "an ide-bridge did not hang up within \(redial)" }
+        var sessions: [SupervisorHandover] = []
+        for supervisor in supervisors.values {
+            do {
+                sessions.append(try await supervisor.handoverState(timeout: redial))
+            } catch {
+                return "\(error)"
+            }
+        }
+        let handover = DaemonHandover(
+            startedAt: startedAt, pauseDemand: pauseDemand.isOn, ptys: frozen, sessions: sessions,
+            bridge: await bridge.handoverState())
+        guard !shutdownRequested else { return "ompd was told to stop" }
+        daemonLog.notice("handing over \(frozen.ptys.count) PTYs and \(sessions.count) sessions to the installed ompd")
+        return "\(process.handOver(handover))"
+    }
+
+    /// The handover did not happen (`failure`): everything runs on as before — PTYs read again, bridges redial, the app
+    /// reconnects — and `mode`'s fallback applies, unless ompd is shutting down.
+    private func handoverFailed(_ failure: String, fallback mode: DaemonUpgrade.Mode) async {
+        daemonLog.error("in-place upgrade failed: \(failure, privacy: .public)")
+        await ptys.thaw()
+        do {
+            try await bridge.resumeListening()
+        } catch {
+            daemonLog.fault("the ide-bridge socket could not be bound again: \(String(describing: error), privacy: .public)")
+        }
+        do {
+            try await serve()
+        } catch {
+            daemonLog.fault("the client socket could not be bound again: \(String(describing: error), privacy: .public)")
+        }
+        handover = nil
+        windowsChanged(pauseAtOnce: false)
+        guard !shutdownRequested else { return }
+        broadcaster.send(.notice(DaemonNotice(
+            level: "warning", message: "ompd could not upgrade itself in place (\(failure)).", at: Date())))
+        let unsettled = await manifest.sessions.contains { !$0.status.isSettled }
+        switch mode {
+        case .now:
+            await restartIntoInstalled()
+        case .whenSettled, .auto:
+            if !unsettled {
+                await restartIntoInstalled()
+            } else if mode == .whenSettled {
+                restartWhenSettled.set(true)
+            }
+        }
+    }
+
+    /// `whenSettled`: the manifest changed; once every session is settled, the restart happens.
+    private func restartIfSettled(_ sessions: [SessionManifestEntry]) async {
+        guard restartWhenSettled.isOn, handover == nil, !shutdownRequested, sessions.allSatisfy(\.status.isSettled) else { return }
+        restartWhenSettled.set(false)
+        await restartIntoInstalled()
+    }
+
+    /// The graceful fallback (Regime B2): every omp stopped through its bridge and terminals snapshotted, then
+    /// the installed executable starts afresh in this process; sessions resume with `--resume` and the restore policy
+    /// decides what their interrupted agents do.
+    private func restartIntoInstalled() async {
+        guard let process = configuration.process, !shutdownRequested else { return }
+        daemonLog.notice("restarting into the installed ompd")
+        await shutdown()
+        await process.restart()
+    }
+
+    /// The next image of an in-place upgrade: the pause demand, every session's omp and lock, and every PTY, as the
+    /// previous image handed them over (`start(handover:)`).
+    private func takeOver(_ handover: DaemonHandover) async {
+        pauseDemand.set(handover.pauseDemand)
+        var exits: [PTYID: @Sendable (PTYExit) -> Void] = [:]
+        for state in handover.sessions {
+            guard let supervisor = supervisors[state.sessionKey] else {
+                daemonLog.fault("handed-over session \(state.sessionKey, privacy: .public) is not in the manifest")
+                continue
+            }
+            if let onExit = await supervisor.takeOver(state), let ptyId = state.omp?.ptyId { exits[ptyId] = onExit }
+        }
+        await ptys.adopt(handover.ptys, onExit: exits)
+        daemonLog.notice("took over \(handover.ptys.ptys.count) PTYs and \(handover.sessions.count) sessions from ompd \(handover.fromVersion, privacy: .public)")
     }
 
     // MARK: - Paused while no window is open
@@ -708,7 +969,8 @@ public actor Daemon {
     /// its last window closed, otherwise (a connection dropped, an app connected without a window, ompd started)
     /// after `detachedPauseGrace`, so an app crash-relaunch or a reconnect blip pauses nothing.
     private func windowsChanged(pauseAtOnce: Bool) {
-        guard shutdownTask == nil else { return }
+        // Handing over, the next image applies the demand; app connections end without saying anything about windows.
+        guard shutdownTask == nil, handover == nil else { return }
         if windowOpen {
             cancelDetachedPause()
             guard pauseDemand.set(false) else { return }
@@ -766,8 +1028,27 @@ extension Daemon: IDERequestHandler {
         await router.route(request, from: connection)
     }
 
+    /// An omp IDE said hello (refused when its protocol differs; it retries): ompd moves to the ompd installed at its path
+    /// if that is another executable (`daemon.upgrade auto`), so the app's retry, or its next connection, lands on it.
+    /// Every app hello checks, not only one of another version: a rebuild or an update can keep the version string, and
+    /// the check is one hash of ompd's own executable.
+    public nonisolated func helloReceived(_ hello: Hello) {
+        guard hello.clientKind == .app, configuration.process != nil else { return }
+        Task { [weak self] in
+            do {
+                _ = try await self?.upgrade(.auto)
+            } catch {
+                daemonLog.error("upgrade on a hello of omp IDE \(hello.clientVersion, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
     public func connectionOpened(_ connection: IDEConnection, hello: Hello) async {
-        if hello.clientKind == .app { appConnected(connection.id, hasWindow: hello.hasWindow) }
+        guard hello.clientKind == .app else { return }
+        appConnected(connection.id, hasWindow: hello.hasWindow)
+        // An upgrade while no app was connected shows on the sessions' tabs.
+        let installations = installations
+        Task { await installations.refresh() }
     }
 
     public func connectionClosed(_ connection: IDEConnection) async {

@@ -26,7 +26,7 @@ struct PTYSnapshotStore {
         let final = directory.appendingPathComponent("\(id).json").path
         let temporary = directory.appendingPathComponent(".\(id).json.tmp").path
         let fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { throw Self.error("open \(temporary)") }
+        guard fd >= 0 else { throw Self.error("open", temporary) }
         var written = 0
         let ok = data.withUnsafeBytes { raw -> Bool in
             while written < raw.count {
@@ -35,14 +35,14 @@ struct PTYSnapshotStore {
             }
             return fsync(fd) == 0
         }
-        let failure = ok ? nil : Self.error("write \(temporary)")
+        let failure = ok ? nil : Self.error("write", temporary)
         close(fd)
         if let failure {
             unlink(temporary)
             throw failure
         }
         guard rename(temporary, final) == 0 else {
-            let failure = Self.error("rename \(final)")
+            let failure = Self.error("rename", final)
             unlink(temporary)
             throw failure
         }
@@ -67,11 +67,38 @@ struct PTYSnapshotStore {
         }
     }
 
+    /// Files nothing will read again, with their bytes on disk: a snapshot whose PTY is not in `live` and whose session,
+    /// if any, is not in `sessions`; a `<id>.json` that is no snapshot of that PTY (`loadAll` never reads it); and a
+    /// write's temp file `.<id>.json.tmp`, left by an interrupted write (writes are synchronous: none is in flight when
+    /// the pool asks). Any other file is left alone.
+    func unreferenced(live: Set<PTYID>, sessions: Set<SessionKey>) -> [(url: URL, bytes: Int64)] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path(percentEncoded: false))) ?? []
+        let decoder = JSONDecoder()
+        return names.sorted().compactMap { name -> (url: URL, bytes: Int64)? in
+            let url = directory.appending(path: name, directoryHint: .notDirectory)
+            let bytes = { Int64((try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]))?.totalFileAllocatedSize ?? 0) }
+            if name.hasPrefix("."), name.hasSuffix(".json.tmp"), Self.isValidID(String(name.dropFirst().dropLast(".json.tmp".count))) {
+                return (url, bytes())
+            }
+            guard name.hasSuffix(".json"), !name.hasPrefix(".") else { return nil }
+            let id = String(name.dropLast(".json".count))
+            guard Self.isValidID(id), !live.contains(id) else { return nil }
+            if let data = FileManager.default.contents(atPath: url.path(percentEncoded: false)),
+               let snapshot = try? decoder.decode(PTYSnapshot.self, from: data), snapshot.info.ptyId == id,
+               let key = snapshot.info.sessionKey, sessions.contains(key)
+            {
+                return nil
+            }
+            return (url, bytes())
+        }
+    }
+
     private static func isValidID(_ id: PTYID) -> Bool {
         !id.isEmpty && !id.hasPrefix(".") && !id.contains("/") && !id.contains("\0")
     }
 
-    private static func error(_ what: String) -> DaemonError {
-        DaemonError(.internal, "\(what): \(String(cString: strerror(errno)))")
+    /// `operation` on `path` failed with the current `errno` (kept: `ENOSPC` means the disk is full).
+    private static func error(_ operation: String, _ path: String) -> StorageError {
+        .system(operation: operation, path: path, code: errno)
     }
 }

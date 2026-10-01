@@ -32,11 +32,20 @@ public final class StateStore: Sendable {
     public let hotExitDirectory: URL
     public let recovery: Recovery?
 
+    /// What a write was for (`setWriteObserver`).
+    public enum Write: Sendable, Equatable {
+        /// Window layouts and editor UI: a debounced write or `flush()`.
+        case layout
+        /// A dirty buffer saved or cleared, with its hot-exit mirror.
+        case dirtyBuffer
+    }
+
     private let database: DatabaseQueue
     private let debounce: Duration
     private let maxDelay: Duration
     private let queue = DispatchQueue(label: "com.omp-ide.state")
     private let pending = OSAllocatedUnfairLock(initialState: Pending())
+    private let writeObserver = OSAllocatedUnfairLock<(@Sendable (Write, (any Error)?) -> Void)?>(initialState: nil)
 
     /// Window and editor UI changes not written yet.
     private struct Pending: Sendable {
@@ -80,6 +89,28 @@ public final class StateStore: Sendable {
         let restored = try Self.reconcileMirrors(database, in: hotExitDirectory)
         recovery?.restoredBuffers = restored
         self.recovery = recovery
+    }
+
+    /// Receives the outcome of every write from now on, on the store's queue in write order: nil when it succeeded, else
+    /// why it failed (`isOutOfSpace` tells a full disk). A layout write that had nothing to write is no write.
+    public func setWriteObserver(_ observer: @escaping @Sendable (Write, (any Error)?) -> Void) {
+        writeObserver.withLock { $0 = observer }
+    }
+
+    private func report(_ write: Write, _ failure: (any Error)?) {
+        writeObserver.withLock { $0 }?(write, failure)
+    }
+
+    /// `body`'s outcome reported as `write`, its error rethrown.
+    private func reporting<T>(_ write: Write, _ body: () throws -> T) throws -> T {
+        do {
+            let result = try body()
+            report(write, nil)
+            return result
+        } catch {
+            report(write, error)
+            throw error
+        }
     }
 
     // MARK: - Windows and editor UI (debounced)
@@ -179,6 +210,7 @@ public final class StateStore: Sendable {
                 for state in batch.windows.values { try WindowRecord(state).upsert(db) }
                 for state in batch.editors.values { try EditorUIRecord(state).upsert(db) }
             }
+            report(.layout, nil)
         } catch {
             // Newer changes that came in meanwhile win; the rest waits for the next write.
             pending.withLock { pending in
@@ -187,6 +219,7 @@ public final class StateStore: Sendable {
                 if let first = batch.first { pending.first = min(pending.first ?? first, first) }
                 if pending.last == nil { pending.last = batch.last }
             }
+            report(.layout, error)
             throw error
         }
     }
@@ -197,8 +230,10 @@ public final class StateStore: Sendable {
     /// stable storage. Takes a few milliseconds (two `F_FULLFSYNC`s): call it off the main thread.
     public func saveDirtyBuffer(_ buffer: DirtyBuffer) throws {
         try queue.sync {
-            try writeDurably { db in try DirtyBufferRecord(buffer).upsert(db) }
-            try HotExitMirror.write(buffer, in: hotExitDirectory)
+            try reporting(.dirtyBuffer) {
+                try writeDurably { db in try DirtyBufferRecord(buffer).upsert(db) }
+                try HotExitMirror.write(buffer, in: hotExitDirectory)
+            }
         }
     }
 
@@ -206,9 +241,29 @@ public final class StateStore: Sendable {
     /// row, restored as a dirty buffer, never a mirror that would come back after the database is lost.
     public func clearDirtyBuffer(path: String) throws {
         try queue.sync {
-            try HotExitMirror.remove(path: path, in: hotExitDirectory)
-            try writeDurably { db in _ = try DirtyBufferRecord.deleteOne(db, key: path) }
+            try reporting(.dirtyBuffer) {
+                try HotExitMirror.remove(path: path, in: hotExitDirectory)
+                try writeDurably { db in _ = try DirtyBufferRecord.deleteOne(db, key: path) }
+            }
         }
+    }
+
+    /// Hot-exit temp files that interrupted mirror writes left (`HotExitMirror.abandonedWrites`), with their bytes on
+    /// disk. Mirrors themselves never count: one without a dirty buffer is the only copy of an edit whose database was
+    /// lost, and comes back as a dirty buffer at the next open.
+    public func abandonedMirrorWrites() -> (count: Int, bytes: Int64) {
+        queue.sync { Self.total(HotExitMirror.abandonedWrites(in: hotExitDirectory)) }
+    }
+
+    /// Deletes what `abandonedMirrorWrites` lists; returns the count and bytes removed.
+    public func removeAbandonedMirrorWrites() -> (count: Int, bytes: Int64) {
+        queue.sync {
+            Self.total(HotExitMirror.abandonedWrites(in: hotExitDirectory).filter { unlink($0.url.path(percentEncoded: false)) == 0 })
+        }
+    }
+
+    private static func total(_ files: [(url: URL, bytes: Int64)]) -> (count: Int, bytes: Int64) {
+        (files.count, files.reduce(0) { $0 + $1.bytes })
     }
 
     /// Every dirty buffer, by path.
@@ -227,6 +282,16 @@ public final class StateStore: Sendable {
                 try updates(db)
                 return .commit
             }
+        }
+    }
+
+    /// `error`, from a write of this store, says the disk (or the user's quota) is full.
+    public static func isOutOfSpace(_ error: any Error) -> Bool {
+        switch error {
+        case let error as DatabaseError: error.resultCode == .SQLITE_FULL
+        case let error as FileIO.Failure: error.code == ENOSPC || error.code == EDQUOT
+        case let error as CocoaError: error.code == .fileWriteOutOfSpace
+        default: false
         }
     }
 

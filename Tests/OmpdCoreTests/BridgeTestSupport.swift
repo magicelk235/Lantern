@@ -145,9 +145,10 @@ final class FakeBridge: Sendable {
         return try JSONDecoder().decode(JSONValue.self, from: line)
     }
 
-    /// Hangs up: the server reads end of file.
+    /// Hangs up: the server reads end of file. `SHUT_WR`, as a real bridge's `end()`: after ompd's own `SHUT_WR`, a
+    /// `SHUT_RDWR` from this side never reaches DispatchIO's read as end of file (observed on macOS 27).
     func close() {
-        shutdown(fd, SHUT_RDWR)
+        shutdown(fd, SHUT_WR)
     }
 
     private func blockingNextLine() throws -> Data? {

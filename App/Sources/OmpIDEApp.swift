@@ -51,10 +51,11 @@ struct OmpIDEApp: App {
             EditorCommands(app: app)
             SessionCommands(app: app)
             SourceControlCommands(app: app)
+            UpdateCommands(updates: delegate.updates)
         }
 
         Settings {
-            SettingsView(connection: app.connection)
+            SettingsView(app: app)
         }
     }
 }
@@ -66,6 +67,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let app = AppState()
     /// The Dock badge and the notifications for approvals and questions waiting in the sessions.
     private lazy var attention = AttentionAlerts(app: app)
+    /// Sparkle, when this build names a feed.
+    let updates = Updates()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         app.start()

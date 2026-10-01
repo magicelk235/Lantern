@@ -1,5 +1,6 @@
 import Darwin
 import Dispatch
+import Foundation
 import IDEProtocol
 import os
 
@@ -17,17 +18,42 @@ final class MasterChannel {
     private var pending: [UInt8] = []
     private var pendingStart = 0
     private var isClosed = false
+    /// `suspend`: the sources deliver nothing until `resume`.
+    private var isSuspended = false
 
-    init(fd: Int32, onReadable: @escaping @Sendable () -> Void, onWritable: @escaping @Sendable () -> Void) {
+    /// `pendingInput`: input an earlier image of the process queued and the tty has not taken yet (an in-place upgrade).
+    init(fd: Int32, pendingInput: [UInt8] = [], onReadable: @escaping @Sendable () -> Void, onWritable: @escaping @Sendable () -> Void) {
         self.fd = fd
         self.onWritable = onWritable
         readSource = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
         readSource.setEventHandler(handler: onReadable)
         readSource.setCancelHandler { Darwin.close(fd) }
         readSource.resume()
+        if !pendingInput.isEmpty {
+            pending = pendingInput
+            armWriteSource()
+        }
     }
 
     deinit { close() }
+
+    /// Input queued for the tty that it has not taken yet.
+    var pendingInput: Data { Data(pending[pendingStart...]) }
+
+    /// Stops reading and writing (the descriptor stays open) until `resume`.
+    func suspend() {
+        guard !isClosed, !isSuspended else { return }
+        isSuspended = true
+        readSource.suspend()
+        writeSource?.suspend()
+    }
+
+    func resume() {
+        guard isSuspended else { return }
+        isSuspended = false
+        readSource.resume()
+        writeSource?.resume()
+    }
 
     /// Writes as much as the tty accepts now and queues the rest.
     func write(_ bytes: UnsafeRawBufferPointer) throws {
@@ -75,6 +101,7 @@ final class MasterChannel {
     /// Stops reading and closes the master (the tty hangs up once no process holds it either).
     func close() {
         guard !isClosed else { return }
+        resume() // a suspended source must not be cancelled or released
         isClosed = true
         pending.removeAll()
         pendingStart = 0
@@ -102,12 +129,16 @@ final class MasterChannel {
 final class ChildReaper: Sendable {
     let pid: pid_t
     private let reaped = OSAllocatedUnfairLock(initialState: false)
+    private let source: any DispatchSourceProcess
+    /// `suspend`: nothing is reaped until `resume`.
+    private let suspended = OSAllocatedUnfairLock(initialState: false)
 
     /// `onExit` runs on the main queue with the `waitpid` status (0 if someone else reaped the child).
     init(pid: pid_t, onExit: @escaping @Sendable (Int32) -> Void) {
         self.pid = pid
-        let reaped = reaped
         let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
+        self.source = source
+        let reaped = reaped
         let reap = {
             let status: Int32? = reaped.withLock { done in
                 guard !done else { return nil }
@@ -128,6 +159,17 @@ final class ChildReaper: Sendable {
     }
 
     var isReaped: Bool { reaped.withLock { $0 } }
+
+    /// Leaves an exit unreaped (a zombie the next image of the process reaps, after an in-place upgrade) until `resume`.
+    func suspend() {
+        guard suspended.withLock({ s in defer { s = true }; return !s }) else { return }
+        source.suspend()
+    }
+
+    func resume() {
+        guard suspended.withLock({ s in defer { s = false }; return s }) else { return }
+        source.resume()
+    }
 
     /// Sends `signal` to the child's process group (it is a session leader) unless it has been reaped.
     func signalGroup(_ signal: Int32) {

@@ -5,7 +5,8 @@ import SwiftUI
 /// A session tab: omp's own TUI in a terminal emulator, following omp from PTY to PTY. While the TUI is not
 /// live, a bar under the last screen says why and offers Resume or Close Session; before the tab showed anything, a
 /// placeholder does. While it is live, a bar there asks whether the agents omp's last death interrupted should carry on
-/// (restore policy `ask`).
+/// (restore policy `ask`), and a quiet one offers to restart the session on a newer omp installed since it
+/// started.
 struct SessionTabView: View {
     let app: AppState
     let sessionKey: SessionKey
@@ -31,9 +32,14 @@ struct SessionTabView: View {
                             Button(action.title) { perform(action) }
                         }
                     }
-                } else if notice == nil, let interruption = session.entry?.pendingContinuation {
-                    ContinuationBar(app: app, sessionKey: sessionKey, interruption: interruption)
-                        .id(interruption.detectedAt)
+                } else if notice == nil {
+                    if let interruption = session.entry?.pendingContinuation {
+                        ContinuationBar(app: app, sessionKey: sessionKey, interruption: interruption)
+                            .id(interruption.detectedAt)
+                    }
+                    if let entry = session.entry, let installed = entry.ompUpgrade {
+                        UpgradeBar(app: app, entry: entry, installed: installed)
+                    }
                 }
             }
         }
@@ -225,6 +231,36 @@ private struct ContinuationBar: View {
 
     private static func clipped(_ text: String, to length: Int = 40) -> String {
         text.count > length ? String(text.prefix(length - 1)) + "…" : text
+    }
+}
+
+/// The omp at the session's pinned path is newer than the one it runs: Restart Session stops omp gracefully
+/// and resumes the conversation on the new one (`session.restart`), offered while the agent is idle. The bar goes once
+/// the restarted omp runs the installed version.
+private struct UpgradeBar: View {
+    let app: AppState
+    let entry: SessionManifestEntry
+    let installed: String
+    /// The restart is on its way to ompd.
+    @State private var restarting = false
+
+    var body: some View {
+        NoticeBar(
+            systemImage: "arrow.up.circle", tint: .secondary, title: "omp \(installed) is installed",
+            message: "This session runs \(entry.launch.ompVersion).", inProgress: restarting, rule: .top
+        ) {
+            Button("Restart Session") {
+                restarting = true
+                Task {
+                    await app.restartSession(entry.sessionKey)
+                    restarting = false
+                }
+            }
+            .disabled(restarting || entry.status != .idle)
+            .help(entry.status == .idle
+                ? "Stops omp and resumes this conversation on omp \(installed)."
+                : "Available once the agent is idle.")
+        }
     }
 }
 

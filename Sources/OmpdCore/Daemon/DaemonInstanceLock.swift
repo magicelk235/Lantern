@@ -51,6 +51,22 @@ public final class DaemonInstanceLock: Sendable {
         self.fd = fd
     }
 
+    /// The lock the previous image of this process held on `descriptor` and kept open across an in-place upgrade: held
+    /// still (`flock` locks belong to the open file), close-on-exec again. Nil when `descriptor` is not `paths`' lock file.
+    init?(adopting descriptor: Int32, in paths: AppSupportPaths) {
+        var inherited = stat()
+        var named = stat()
+        guard descriptor >= 0, fstat(descriptor, &inherited) == 0,
+              stat(Self.lockFile(in: paths).path(percentEncoded: false), &named) == 0,
+              inherited.st_dev == named.st_dev, inherited.st_ino == named.st_ino
+        else { return nil }
+        _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
+        fd = descriptor
+    }
+
+    /// The descriptor holding the lock, kept open for the next image of an in-place upgrade.
+    var descriptor: Int32 { fd }
+
     deinit {
         close(fd)
     }

@@ -1,14 +1,22 @@
 import Dispatch
+import Foundation
 import IDEModel
 import IDEState
 import os
 
 let appLog = Logger(subsystem: "com.omp-ide.app", category: "state")
 
+/// A write of `state.sqlite` or of a hot-exit copy failed: unsaved edits may not survive a crash.
+struct StateWriteFailure: Equatable, Sendable {
+    var reason: String
+    /// The disk (or the user's quota) is full.
+    var outOfSpace: Bool
+}
+
 /// The app's side of `state.sqlite`: what the previous run left, the latest UI of every editor, debounced
 /// saving, and ordered durable writes of unsaved editor text (hot-exit). Without a usable database the app still works
-/// for this run, it just does not remember it.
-@MainActor
+/// for this run, it just does not remember it. While writes fail, `writeFailure` says why.
+@MainActor @Observable
 final class StatePersistence {
     /// Why nothing is saved this run; nil when `state.sqlite` works.
     let unavailableReason: String?
@@ -17,7 +25,11 @@ final class StatePersistence {
     /// Unsaved editor buffers the previous run left (hot-exit), by path.
     let restoredDirtyBuffers: [String: DirtyBuffer]
     /// Where each file's editor was (restored at launch, then kept current).
-    private(set) var editorUI: [String: EditorUIState]
+    @ObservationIgnored private(set) var editorUI: [String: EditorUIState]
+    /// The latest write of unsaved text failed, else the latest layout write did; nil once each kind's latest write
+    /// succeeded.
+    private(set) var writeFailure: StateWriteFailure?
+    @ObservationIgnored private var failures: [StateStore.Write: StateWriteFailure] = [:]
 
     private let store: StateStore?
     /// Dirty-buffer writes run here, one after the other in call order: each is durable (two `F_FULLFSYNC`s), which
@@ -50,6 +62,27 @@ final class StatePersistence {
         self.editorUI = editorUI
         restoredDirtyBuffers = dirtyBuffers
         unavailableReason = reason
+        store?.setWriteObserver { [weak self] write, error in
+            let failure = error.map { StateWriteFailure(reason: String(describing: $0), outOfSpace: StateStore.isOutOfSpace($0)) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.wrote(write, failure: failure) }
+            }
+        }
+    }
+
+    private func wrote(_ write: StateStore.Write, failure: StateWriteFailure?) {
+        failures[write] = failure
+        let shown = failures[.dirtyBuffer] ?? failures[.layout]
+        if shown != writeFailure { writeFailure = shown }
+    }
+
+    /// Hot-exit temp files interrupted writes left (Settings › Storage).
+    func abandonedMirrorWrites() -> (count: Int, bytes: Int64) {
+        store?.abandonedMirrorWrites() ?? (0, 0)
+    }
+
+    func removeAbandonedMirrorWrites() -> (count: Int, bytes: Int64) {
+        store?.removeAbandonedMirrorWrites() ?? (0, 0)
     }
 
     func save(_ window: WindowState) {
