@@ -625,6 +625,12 @@ final class AppState {
         windowsChanged()
     }
 
+    /// The window showing `project`, while one does.
+    func window(of project: String) -> NSWindow? {
+        guard let id = windowsByProject[project] else { return nil }
+        return NSApp.windows.first { ObjectIdentifier($0) == id }
+    }
+
     private func windowClosing(_ id: ObjectIdentifier, project: String) {
         flushState()
         windowsAttached.remove(id)

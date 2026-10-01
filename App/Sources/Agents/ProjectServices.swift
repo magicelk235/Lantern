@@ -15,7 +15,13 @@ final class ProjectServices {
     /// A load was asked for while one ran.
     @ObservationIgnored private var stale = false
 
-    /// Loads the list after `delay` (a burst of changes settles meanwhile), or once more after the load under way.
+    /// How often, and how many times at most, a list holding a service that is starting, restarting or stopping is
+    /// loaded again: nothing else tells the pane when it got there.
+    private static let settleInterval: Duration = .seconds(1)
+    private static let settleChecks = 30
+
+    /// Loads the list after `delay` (a burst of changes settles meanwhile), or once more after the load under way;
+    /// then again while a service is on its way up or down.
     func load(_ project: String, from connection: DaemonConnection, after delay: Duration = .zero) {
         guard loading == nil else {
             stale = true
@@ -23,9 +29,15 @@ final class ProjectServices {
         }
         loading = Task {
             if delay > .zero { try? await Task.sleep(for: delay) }
+            var checks = 0
             repeat {
                 stale = false
                 await fetch(project, from: connection)
+                if !stale, services.contains(where: \.isSettling), checks < Self.settleChecks {
+                    checks += 1
+                    try? await Task.sleep(for: Self.settleInterval)
+                    stale = true
+                }
             } while stale
             loading = nil
         }
@@ -76,14 +88,31 @@ final class ProjectServices {
     }
 }
 
+extension ServiceInfo {
+    /// On its way up or down: the broker's state will change without anything telling the app.
+    var isSettling: Bool { ["starting", "restarting", "stopping"].contains(state) }
+}
+
 extension AppState {
     /// Show Logs: a terminal tab of the project following the service's output (`omp ps logs <name> --follow --dir
-    /// <project>`), run by the omp ompd starts the project's sessions with, else by the login shell's `omp`.
+    /// <project>`).
     func showLogs(of service: ServiceInfo, in project: String) {
-        let arguments = ["ps", "logs", service.name, "--follow", "--dir", project]
+        runOmp(["ps", "logs", service.name, "--follow", "--dir", project], in: project, preferring: service.sessionKey)
+    }
+
+    /// Open Transcript: a terminal tab of the project showing the agent's conversation as omp draws it (`omp render
+    /// <transcript>`), scrollable once drawn. Never the JSONL itself in an editor: omp appends to it, and an edit
+    /// saved over it would corrupt the session.
+    func showTranscript(_ transcript: String, of sessionKey: SessionKey, in project: String) {
+        runOmp(["render", transcript], in: project, preferring: sessionKey)
+    }
+
+    /// A terminal tab of `project` running omp with `arguments`: the omp ompd starts `sessionKey` (else the project's
+    /// sessions) with, else the login shell's `omp`.
+    private func runOmp(_ arguments: [String], in project: String, preferring sessionKey: SessionKey?) {
         let sessions = connection.sessions.filter { $0.workspace == project }
-        let recorder = sessions.filter { $0.sessionKey == service.sessionKey }
-        let omp = (recorder + sessions).map(\.launch.ompPath).first { FileManager.default.isExecutableFile(atPath: $0) }
+        let preferred = sessions.filter { $0.sessionKey == sessionKey }
+        let omp = (preferred + sessions).map(\.launch.ompPath).first { FileManager.default.isExecutableFile(atPath: $0) }
         let command =
             if let omp {
                 [omp] + arguments

@@ -123,7 +123,7 @@ struct AgentsPane: View {
                 if confirmed { control(.kill, agent, in: sessionKey) }
             }
         case .openTranscript:
-            if let transcript = agent.sessionFile { app.openEditor(transcript, in: project) }
+            if let transcript = agent.sessionFile { app.showTranscript(transcript, of: sessionKey, in: project) }
         }
     }
 
@@ -155,7 +155,8 @@ struct AgentsPane: View {
         }
     }
 
-    /// Asks first, in a sheet on the window: what `button` does cannot be undone.
+    /// Asks first, in a sheet on the project's window (the app may be in the background): what `button` does cannot
+    /// be undone.
     private func confirm(_ title: String, _ message: String, button: String) async -> Bool {
         let confirmation = NSAlert()
         confirmation.messageText = title
@@ -163,7 +164,7 @@ struct AgentsPane: View {
         confirmation.addButton(withTitle: button)
         confirmation.buttons[0].hasDestructiveAction = true
         confirmation.addButton(withTitle: "Cancel")
-        let response = if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+        let response = if let window = app.window(of: project) ?? NSApp.keyWindow ?? NSApp.mainWindow {
             await confirmation.beginSheetModal(for: window)
         } else {
             confirmation.runModal()
@@ -409,16 +410,17 @@ private struct AgentRow: View {
                 if index > 0 { Divider() }
                 ForEach(group, id: \.self) { action in
                     Button(action.title) { perform(action) }
-                        .disabled(action != .openTranscript && !connected)
+                        .disabled(!connected)
                 }
             }
         }
     }
 
-    /// What it waits on the user for, else what it is doing.
+    /// What it waits on the user for, else what it is doing while it works (omp keeps the last intent, or a resumed
+    /// agent's assignment, on agents that stopped: not what they do).
     private var detail: String? {
         if let waiting { return Self.waitingLine(waiting) }
-        guard let activity = agent.activity, !activity.isEmpty else { return nil }
+        guard agent.status == .running, let activity = agent.activity, !activity.isEmpty else { return nil }
         return activity
     }
 

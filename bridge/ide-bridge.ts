@@ -367,8 +367,8 @@ const WIRING = resolveWiring();
 
 /** Bumped whenever the daemon-mode behavior changes (2: TUI sessions: shutdown, activity, title; 3: pause; 4: terminal
  *  mode; 5: session.prompt, stall watch, service events; 6: attention, jobs, service.mode; 7: agent rows re-sent on
- *  message and tool events, currentTool). */
-const BRIDGE_REVISION = 7;
+ *  message and tool events, currentTool; 8: agent.message refuses unknown and killed agents). */
+const BRIDGE_REVISION = 8;
 
 interface GuardSlot {
 	/** The evaluation of this file that serves the process. */
@@ -1672,10 +1672,14 @@ const METHODS: Record<string, (params: AnyRecord) => Promise<unknown>> = {
 		return { agent: agentRow(id) };
 	},
 
-	/** `write agent://<id>` semantics: revives if parked; the reply reaches the sender (default Main) asynchronously. */
+	/** `write agent://<id>` semantics: revives if parked; the reply reaches the sender (default Main) asynchronously.
+	 *  Refused for an agent omp does not list or one that was killed (omp drops the message without a word). */
 	async "agent.message"(params) {
 		const id = requireString(params, "id");
 		const body = requireString(params, "body");
+		const ref = registry().get(id);
+		if (!ref) throw new Error(`unknown agent: ${id}`);
+		if (ref.status === "aborted") throw new Error(`${id} was killed; it cannot be messaged`);
 		const from = typeof params.from === "string" && params.from !== "" ? params.from : MAIN_AGENT_ID;
 		const { createAgentHubRuntime, errors } = await loadInternals();
 		if (!createAgentHubRuntime) throw new Error(`agent hub runtime unavailable: ${errors.agentHubRuntime}`);
