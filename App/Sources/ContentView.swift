@@ -59,6 +59,20 @@ struct ProjectWindow: View {
             app.openProjectWindow = { openWindow(id: OmpIDEApp.projectWindowID, value: $0) }
             app.closeProjectWindow = { dismissWindow(id: OmpIDEApp.projectWindowID, value: $0) }
         }
+        // macOS restores the windows that were open; one can name a folder the app no longer lists (its state was lost
+        // or belongs to another data folder): a folder that is still there becomes a project again, a gone one gives
+        // way to the first project's window, else to the window of no project. After the window is up: the scene
+        // ignores opening and dismissing while it is still restoring.
+        .task(id: project) {
+            guard !project.isEmpty, !app.projects.contains(project) else { return }
+            if AppState.isFolder(project) {
+                app.addProject(project)
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+            openWindow(id: OmpIDEApp.projectWindowID, value: app.projects.first ?? "")
+            dismissWindow(id: OmpIDEApp.projectWindowID, value: project)
+        }
         // The tabs are the list of sessions and terminals: whatever ompd lists gets one.
         .onChange(of: app.connection.sessions, initial: true) { app.syncTabs() }
         .onChange(of: app.connection.terminals.terminals) { app.syncTabs() }

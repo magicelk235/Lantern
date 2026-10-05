@@ -84,6 +84,19 @@ import Testing
         #expect(candidates[2].insertText == "alpha(x)" && candidates[2].deprecated && candidates[2].category == .keyword)
     }
 
+    /// The suggestion window's preview grows with its text (sourcekit-lsp sends `String`'s whole reference, which made
+    /// it thousands of points tall): only the summary is kept.
+    @Test func documentationIsCutToItsSummary() {
+        let long = String(repeating: "word ", count: 100)
+        let summary = { (text: String) in CompletionCandidate(label: "a", category: .type, insertText: "a", documentation: text).documentation }
+        #expect(summary("\n\nA Unicode string value\nthat is a collection.\n\nMore about strings.\n") == "A Unicode string value that is a collection.")
+        #expect(summary("Creates a value.\n```swift\nlet s = String()\n```") == "Creates a value.")
+        #expect(summary("Declared here.\n---\nThe rest.") == "Declared here.")
+        #expect(summary("```swift\ncode only\n```") == nil)
+        let cut = summary(long)
+        #expect(cut?.hasSuffix("word…") == true && cut!.count <= 301)
+    }
+
     @Test func filteringKeepsSubsequenceMatchesWithPrefixesFirst() {
         let candidates = ["format", "forEach", "isEmpty", "first", "isFolder"].map {
             CompletionCandidate(label: $0, category: .function, insertText: $0)

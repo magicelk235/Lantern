@@ -29,9 +29,9 @@ final class LanguageDocument {
     @ObservationIgnored private var hover: LanguageHover?
     @ObservationIgnored private var renderPending = false
     @ObservationIgnored private var isClosed = false
-
-    /// The text view's emphasis group the underlines are drawn in.
-    private static let underlines = "omp-ide.language-diagnostics"
+    /// The underlines of errors and of warnings, sublayers of the text view's layer.
+    @ObservationIgnored private var underlineLayers: [CAShapeLayer] = []
+    @ObservationIgnored private var frameObserver: (any NSObjectProtocol)?
 
     /// The language side of the editor of `path` in `workspace`, with `controller`'s text; nil for a file no language
     /// server takes. It joins (or starts) the project's server for the file's language.
@@ -106,7 +106,10 @@ final class LanguageDocument {
         hover = nil
         if let storageObserver { textView?.removeStorageDelegate(storageObserver) }
         storageObserver = nil
-        textView?.emphasisManager?.removeEmphases(for: Self.underlines)
+        for layer in underlineLayers { layer.removeFromSuperlayer() }
+        underlineLayers = []
+        if let frameObserver { NotificationCenter.default.removeObserver(frameObserver) }
+        frameObserver = nil
         if controller?.completionDelegate === completion { controller?.completionDelegate = nil }
         completion = nil
         servers.detach(self)
@@ -162,17 +165,59 @@ final class LanguageDocument {
         }
     }
 
-    /// Draws the underlines: in the text view's layer, so only once it is in a window (the editor appeared), and again
-    /// when the appearance changes (the colors are resolved when drawn).
+    /// Draws the underlines: in the text view's layer, so only once it is in a window (the editor appeared), again when
+    /// the appearance changes (the colors are resolved when drawn) and when the text view's width does (lines wrap
+    /// anew). Own shape layers, not the text view's emphases: those also lay a black copy of the text over it, which
+    /// dims the code they underline.
     func render() {
-        guard !isClosed, let textView, textView.window != nil, let emphasis = textView.emphasisManager else { return }
-        let text = textView.textStorage.mutableString
-        let underlines = diagnostics.compactMap { diagnostic -> Emphasis? in
-            guard diagnostic.severity <= .warning, let range = diagnostic.underline(in: text) else { return nil }
-            let color: NSColor = diagnostic.severity == .error ? .systemRed : .systemYellow
-            return Emphasis(range: range, style: .underline(color: color))
+        guard !isClosed, let textView, textView.window != nil, let host = textView.layer, let layoutManager = textView.layoutManager
+        else { return }
+        observeFrame(of: textView)
+        if underlineLayers.isEmpty {
+            underlineLayers = [CAShapeLayer(), CAShapeLayer()]
+            for layer in underlineLayers {
+                layer.lineWidth = 1
+                layer.lineCap = .round
+                layer.fillColor = nil
+                layer.zPosition = 1
+                layer.actions = ["path": NSNull(), "strokeColor": NSNull()]
+                host.addSublayer(layer)
+            }
         }
-        emphasis.replaceEmphases(underlines, for: Self.underlines)
+        let text = textView.textStorage.mutableString
+        let lineHeight = layoutManager.estimateLineHeight()
+        let inset = (lineHeight - lineHeight / layoutManager.lineHeightMultiplier) / 4
+        let paths = [CGMutablePath(), CGMutablePath()]
+        for diagnostic in diagnostics where diagnostic.severity <= .warning {
+            guard let range = diagnostic.underline(in: text) else { continue }
+            let path = paths[diagnostic.severity == .error ? 0 : 1]
+            for rect in layoutManager.rectsFor(range: range) {
+                path.move(to: CGPoint(x: rect.minX, y: rect.maxY - inset))
+                path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - inset))
+            }
+        }
+        textView.effectiveAppearance.performAsCurrentDrawingAppearance {
+            underlineLayers[0].strokeColor = NSColor.systemRed.cgColor
+            underlineLayers[1].strokeColor = NSColor.systemYellow.cgColor
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (layer, path) in zip(underlineLayers, paths) {
+            if layer.superlayer !== host { host.addSublayer(layer) }
+            layer.frame = host.bounds
+            layer.path = path
+        }
+        CATransaction.commit()
+    }
+
+    private func observeFrame(of textView: TextView) {
+        guard frameObserver == nil else { return }
+        textView.postsFrameChangedNotifications = true
+        frameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification, object: textView, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleRender() }
+        }
     }
 
     // MARK: - Requests
@@ -220,7 +265,9 @@ final class LanguageDocument {
 
 /// Reports the text storage's character edits as the range they replaced in the text before and the length of what
 /// replaced it. A batch of edits (multiple carets, an undo) arrives as one: the span from the first change to the last.
-private final class StorageObserver: NSObject, NSTextStorageDelegate {
+/// Every edit comes through, also those the editor's typing filters write straight to the storage (auto-indent,
+/// closing brackets, Tab), which the text view's delegate never hears of.
+final class StorageObserver: NSObject, NSTextStorageDelegate {
     private let edited: @MainActor @Sendable (NSRange, Int) -> Void
 
     init(edited: @escaping @MainActor @Sendable (NSRange, Int) -> Void) {

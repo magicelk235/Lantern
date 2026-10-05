@@ -57,6 +57,9 @@ final class EditorDocument {
     @ObservationIgnored private var stamp: FileStamp?
     /// Receives the text view's changes; the controller only holds it weakly.
     @ObservationIgnored private var coordinator: Coordinator?
+    /// Hears every edit of the text storage (`textDidChange`); made with the controller and dropped with it.
+    @ObservationIgnored private var storageObserver: StorageObserver?
+    @ObservationIgnored private var textChangePending = false
     @ObservationIgnored private var scrollObserver: (any NSObjectProtocol)?
     /// Marks the gutter with what differs from HEAD; made with the controller and dropped with it.
     @ObservationIgnored private var gitGutter: GitGutterView?
@@ -232,6 +235,9 @@ final class EditorDocument {
             cursorPositions: selections, highlightProviders: [TreeSitterClient()], coordinators: [coordinator])
         self.coordinator = coordinator
         self.controller = controller
+        let storageObserver = StorageObserver { [weak self] _, _ in self?.scheduleTextDidChange() }
+        controller.textView.addStorageDelegate(storageObserver)
+        self.storageObserver = storageObserver
         let gitGutter = GitGutterView(path: path, textView: controller.textView, repository: repository)
         gitGutter.refresh()
         self.gitGutter = gitGutter
@@ -252,6 +258,8 @@ final class EditorDocument {
     private func tearDownController() {
         if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
         scrollObserver = nil
+        if let storageObserver { controller?.textView.removeStorageDelegate(storageObserver) }
+        storageObserver = nil
         gitGutter?.detach()
         gitGutter = nil
         languageDocument?.close()
@@ -337,7 +345,19 @@ final class EditorDocument {
                 NSRange(location: prefix, length: newLength - prefix - suffix))
     }
 
-    fileprivate func textDidChange() {
+    /// The text changed: once the edit (and any the typing filters add to it) is done, the buffer's state follows.
+    private func scheduleTextDidChange() {
+        guard !textChangePending else { return }
+        textChangePending = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                self?.textChangePending = false
+                self?.textDidChange()
+            }
+        }
+    }
+
+    private func textDidChange() {
         guard var buffer, let textView = controller?.textView else { return }
         buffer.textDidChange(utf16Count: textView.textStorage.length) { textView.string }
         self.buffer = buffer
@@ -460,7 +480,8 @@ final class EditorDocument {
         tearDownController()
     }
 
-    /// Forwards the text view's changes; CodeEditSourceEditor calls it on the main thread.
+    /// Forwards the text view's appearance and selection changes; CodeEditSourceEditor calls it on the main thread. Text
+    /// changes come from the storage (`StorageObserver`): this delegate misses the typing filters' edits.
     private final class Coordinator: TextViewCoordinator {
         weak var document: EditorDocument?
 
@@ -473,11 +494,6 @@ final class EditorDocument {
         func controllerDidAppear(controller: TextViewController) {
             let document = document
             MainActor.assumeIsolated { document?.controllerDidAppear() }
-        }
-
-        func textViewDidChangeText(controller: TextViewController) {
-            let document = document
-            MainActor.assumeIsolated { document?.textDidChange() }
         }
 
         func textViewDidChangeSelection(controller: TextViewController, newPositions: [CursorPosition]) {

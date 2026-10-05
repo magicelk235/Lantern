@@ -155,6 +155,8 @@ public struct CompletionCandidate: Sendable, Hashable {
     public let label: String
     public let category: Category
     public let detail: String?
+    /// The documentation's summary: its first paragraph, at most `summaryLimit` characters (the whole of it is the
+    /// hover's). The suggestion window's preview grows with its text and has no limit of its own.
     public let documentation: String?
     /// What replaces the typed prefix.
     public let insertText: String
@@ -177,12 +179,32 @@ public struct CompletionCandidate: Sendable, Hashable {
         self.category = category
         self.insertText = insertText
         self.detail = detail
-        self.documentation = documentation
+        self.documentation = documentation.flatMap(Self.summary)
         self.replacing = replacing
         self.filterText = filterText ?? label
         self.sortText = sortText ?? label
         self.deprecated = deprecated
         self.additionalEdits = additionalEdits
+    }
+
+    static let summaryLimit = 300
+
+    /// `documentation`'s first paragraph (up to the first blank line, a fenced code block or a rule), its lines joined,
+    /// cut at a word to `summaryLimit` characters with "…"; nil when nothing is left.
+    static func summary(_ documentation: String) -> String? {
+        var lines: [Substring] = []
+        for line in documentation.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { if lines.isEmpty { continue } else { break } }
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("---") || trimmed.hasPrefix("***") { break }
+            lines.append(Substring(trimmed))
+        }
+        let paragraph = lines.joined(separator: " ")
+        guard !paragraph.isEmpty else { return nil }
+        guard paragraph.count > summaryLimit else { return paragraph }
+        let cut = paragraph.prefix(summaryLimit)
+        let word = cut.lastIndex(of: " ").map { cut[..<$0] } ?? cut
+        return word.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)) + "…"
     }
 
     /// The response's items, in the server's sort order (`sortText`, else the label).

@@ -351,6 +351,12 @@ final class AppState {
         if changed { saveWindow() }
     }
 
+    /// An existing folder at `path`.
+    static func isFolder(_ path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
     /// `path` as ompd names a workspace (`Daemon.canonicalDirectory`): symlinks resolved while the folder exists (so a
     /// folder picked through `/tmp` or a linked folder is the project its sessions report), no trailing slash. A
     /// folder's identity everywhere in the app.
