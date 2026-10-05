@@ -144,9 +144,10 @@ final class StatusMenu: NSObject {
     }
 
     /// A session: its status as a dot, its title, and its status word trailing (what it waits for, when it does). A
-    /// click opens omp IDE.
+    /// click opens omp IDE on its tab (`SessionLink`).
     private func sessionItem(_ session: MenuBarStatus.Session) -> NSMenuItem {
         let row = actionItem(session.title, #selector(openApp(_:)))
+        row.representedObject = session.sessionKey
         row.image = StatusDot.image(for: session)
         // macOS 27 hides menu item images unless asked; this one is the session's status, not decoration.
         if #available(macOS 27.0, *) { row.preferredImageVisibility = .visible }
@@ -163,7 +164,8 @@ final class StatusMenu: NSObject {
 
     // MARK: - Actions
 
-    /// Launches omp IDE, or brings it forward (a window opens if none is: the sessions resume).
+    /// Launches omp IDE, or brings it forward (a window opens if none is: the sessions resume); a session
+    /// row's click also hands it the session to show.
     @objc private func openApp(_ sender: NSMenuItem) {
         guard let app = Self.appURL else {
             menuLog.error("omp IDE not found")
@@ -173,8 +175,13 @@ final class StatusMenu: NSObject {
         configuration.activates = true
         let environment = Self.forwardedEnvironment
         if !environment.isEmpty { configuration.environment = environment }
-        NSWorkspace.shared.openApplication(at: app, configuration: configuration) { _, error in
+        let report: @Sendable (NSRunningApplication?, (any Error)?) -> Void = { _, error in
             if let error { menuLog.error("opening omp IDE failed: \(String(describing: error), privacy: .public)") }
+        }
+        if let sessionKey = sender.representedObject as? SessionKey, let link = SessionLink.url(for: sessionKey) {
+            NSWorkspace.shared.open([link], withApplicationAt: app, configuration: configuration, completionHandler: report)
+        } else {
+            NSWorkspace.shared.openApplication(at: app, configuration: configuration, completionHandler: report)
         }
     }
 

@@ -10,6 +10,18 @@
 	<!-- Sparkle downloads an update in the background and installs it when the app quits. -->
 	<key>SUAutomaticallyUpdate</key>
 	<true/>
+	<!-- omp-ide://session/<key>: the menu-bar extra opens a session's tab (SessionLink, OmpIDEApp.swift). -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.omp-ide.app.session</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>omp-ide</string>
+			</array>
+		</dict>
+	</array>
 	<!-- Services for folders (FinderServices.swift). NSRequiredContext makes them on by default. -->
 	<key>NSServices</key>
 	<array>
