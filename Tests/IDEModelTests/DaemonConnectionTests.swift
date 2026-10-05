@@ -107,6 +107,40 @@ struct DaemonConnectionTests {
         await server.stop()
     }
 
+    /// The menu-bar extra connects as a `cli` client: its hello says it is no window and it never reports
+    /// one, so ompd neither keeps the sessions running for it nor resumes them. ompd's pushes reach it all the same.
+    @Test func aClientThatIsNoWindowNeverSaysItHasOneAndFollowsWhatRuns() async throws {
+        let home = try TempHome()
+        defer { home.remove() }
+        let daemon = FakeDaemon()
+        daemon.addSession("a", ptyId: "tui-a")
+        let server = try await home.startServer(daemon)
+        let extra = DaemonConnection(paths: home.paths, clientVersion: "test", clientKind: .cli, backoff: backoff)
+        extra.start()
+        try await eventually("connected") { extra.isConnected }
+        extra.setHasWindow(true)
+        await extra.presenceReported(within: .seconds(5))
+        let app = try await connect(home)
+        app.setHasWindow(true)
+        await app.presenceReported(within: .seconds(5))
+        #expect(daemon.hellos.map { "\($0.clientKind.rawValue) \($0.hasWindow)" }.sorted() == ["app false", "cli false"])
+        #expect(daemon.presences == [true], "only the app reported a window")
+        #expect(!extra.hasWindow)
+
+        server.broadcast(.sessions(SessionList(sessions: [manifestEntry("a", status: .busy, ptyId: "tui-a")])))
+        server.broadcast(.runtime(SessionRuntime(sessionKey: "a", agents: [
+            AgentInfo(id: "Main", kind: "main", status: .running),
+            AgentInfo(id: "0-Task", kind: "task", parentId: "Main", status: .running),
+        ])))
+        try await eventually("two agents at work") {
+            MenuBarStatus(sessions: extra.sessions, runtimes: extra.runtimes).runningAgents == 2
+        }
+
+        await extra.stop()
+        await app.stop()
+        await server.stop()
+    }
+
     @Test func backoffDoublesUpToItsCap() {
         let backoff = DaemonConnection.Backoff(initial: .milliseconds(250), maximum: .seconds(5))
         #expect((1 ... 7).map(backoff.delay(afterFailures:)) == [

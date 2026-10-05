@@ -19,11 +19,12 @@ struct SettingsView: View {
     @AppStorage(SettingsTab.defaultsKey) private var tab = SettingsTab.general
 
     /// Each pane has its own height (the window resizes to the one showing, as macOS settings windows do): Storage's
-    /// clean-up outcome and explanation would sit below the fold at the others' height.
+    /// clean-up outcome and explanation, and the menu-bar extra's footer in General, would sit below the fold at
+    /// Terminal's height.
     var body: some View {
         TabView(selection: $tab) {
-            GeneralSettings(connection: app.connection)
-                .frame(width: 460, height: 360)
+            GeneralSettings(connection: app.connection, menuBar: app.menuBar)
+                .frame(width: 460, height: 420)
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(SettingsTab.general)
             TerminalSettingsPane()
@@ -40,6 +41,7 @@ struct SettingsView: View {
 
 private struct GeneralSettings: View {
     let connection: DaemonConnection
+    let menuBar: MenuBarAgent
     @AppStorage(AppSettings.defaultApprovalModeKey) private var approvalMode = ""
 
     var body: some View {
@@ -56,6 +58,7 @@ private struct GeneralSettings: View {
                 Text(explanation)
             }
             RestorePolicySection(connection: connection)
+            MenuBarSection(menuBar: menuBar)
         }
         .formStyle(.grouped)
     }
@@ -66,6 +69,38 @@ private struct GeneralSettings: View {
             return "omp decides, from tools.approvalMode in your omp config (default: never ask). \(applies)"
         }
         return "\(mode.explanation) \(applies)"
+    }
+}
+
+/// The menu-bar extra. The setting is omp IDE's (`MenuBarHelper.shownKey`); the extra's Hide from Menu Bar
+/// turns it off too.
+private struct MenuBarSection: View {
+    let menuBar: MenuBarAgent
+    @AppStorage(MenuBarHelper.shownKey) private var shown = true
+
+    var body: some View {
+        Section {
+            Toggle("Show agents in the menu bar", isOn: $shown)
+            if menuBar.state == .requiresApproval {
+                Button("Open Login Items Settings…", action: menuBar.openLoginItemsSettings)
+            }
+        } footer: {
+            Text(footer)
+        }
+        .onChange(of: shown) { menuBar.sync() }
+    }
+
+    private var footer: String {
+        switch menuBar.state {
+        case .external(let home):
+            "OMPD_HOME is \(home): omp IDE leaves the menu bar alone. Open omp IDE Menu Bar.app, in omp IDE's Contents/Library/LoginItems, with the same OMPD_HOME."
+        case .requiresApproval:
+            "macOS waits for you to allow omp IDE in System Settings › General › Login Items."
+        case .failed(let message):
+            "Could not add it to the login items: \(message)"
+        case .unknown, .shown, .hidden:
+            "How many agents work, and a dot while something waits for you, from login on and also while omp IDE is closed."
+        }
     }
 }
 

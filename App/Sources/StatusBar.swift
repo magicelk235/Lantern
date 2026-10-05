@@ -137,37 +137,7 @@ struct SessionStatusBadge: View {
 }
 
 extension SessionStatus {
-    /// One word for badges.
-    var label: String {
-        switch self {
-        case .starting: "Starting"
-        case .busy: "Working"
-        case .idle: "Idle"
-        case .interrupted: "Interrupted"
-        case .resuming: "Resuming"
-        case .closed: "Closed"
-        case .needsAttention: "Needs attention"
-        case .paused: "Paused"
-        }
-    }
-
-    /// One sentence for tooltips.
-    var explanation: String {
-        switch self {
-        case .starting: "omp is starting"
-        case .busy: "The agent is working"
-        case .idle: "omp is waiting for you"
-        case .interrupted: "omp stopped unexpectedly; ompd is resuming it"
-        case .resuming: "omp is resuming the session"
-        case .closed: "Closed: omp is not running for this session"
-        case .needsAttention: "omp kept stopping; ompd gave up resuming it"
-        case .paused: "Paused: the agents hold at their next step until you dismiss omp's pause screen"
-        }
-    }
-
-    /// Something runs that ends the status by itself: a spinner rather than a dot.
-    var isInProgress: Bool { self == .busy || self == .starting || self == .resuming }
-
+    /// The dot beside its word.
     var dotColor: Color {
         switch self {
         case .idle: .green

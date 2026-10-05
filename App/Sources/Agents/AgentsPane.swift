@@ -412,7 +412,7 @@ private struct AgentRow: View {
         }
         .padding(.leading, CGFloat(depth) * 14)
         .onHover { hovering = $0 }
-        .help("\(agent.id)\(agent.typeName.map { " (\($0))" } ?? ""): \(waiting.map(Self.waitingLine) ?? agent.status.explanation)")
+        .help("\(agent.id)\(agent.typeName.map { " (\($0))" } ?? ""): \(waiting?.waitingLine ?? agent.status.explanation)")
         .contextMenu {
             ForEach(Array(menuGroups.enumerated()), id: \.offset) { index, group in
                 if index > 0 { Divider() }
@@ -427,16 +427,9 @@ private struct AgentRow: View {
     /// What it waits on the user for, else what it is doing while it works (omp keeps the last intent, or a resumed
     /// agent's assignment, on agents that stopped: not what they do).
     private var detail: String? {
-        if let waiting { return Self.waitingLine(waiting) }
+        if let waiting { return waiting.waitingLine }
         guard agent.status == .running, let activity = agent.activity, !activity.isEmpty else { return nil }
         return activity
-    }
-
-    private static func waitingLine(_ item: AttentionItem) -> String {
-        switch item.kind {
-        case .approval: "Waiting for approval: \(item.toolName)"
-        case .ask: "Asking you"
-        }
     }
 
     private var canRevive: Bool { !isMain && (agent.status == .parked || agent.status == .interrupted) }

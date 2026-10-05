@@ -144,7 +144,7 @@ rm -f "$options"
 
 step "Verifying the signature"
 codesign --verify --deep --strict --verbose=2 "$APP"
-# Every Mach-O in the bundle: the app, ompd, Sparkle's framework and its helpers.
+# Every Mach-O in the bundle: the app, ompd, the menu-bar extra, Sparkle's framework and its helpers.
 find "$APP" -type f -print | while IFS= read -r file; do
 	case $(file -b "$file") in *Mach-O*) check_signature "$file" ;; esac
 done
@@ -156,12 +156,18 @@ plutil -extract AssociatedBundleIdentifiers xml1 -o - "$plist" | grep -q '<strin
 	die "the LaunchAgent plist is not associated with com.omp-ide.app"
 ompd="$APP/Contents/MacOS/ompd"
 codesign -dvv "$ompd" 2>&1 | grep -qx 'Identifier=com.omp-ide.ompd' || die "ompd is not signed as com.omp-ide.ompd"
-# Both are sealed into the app's signature, so replacing either breaks it.
+# The menu-bar extra, where SMAppService.loginItem looks for it.
+extra="$APP/Contents/Library/LoginItems/$APP_NAME Menu Bar.app"
+[ -d "$extra" ] || die "no menu-bar extra at ${extra#"$APP/"}"
+codesign -dvv "$extra" 2>&1 | grep -qx 'Identifier=com.omp-ide.menubar' || die "the menu-bar extra is not signed as com.omp-ide.menubar"
+# All three are sealed into the app's signature, so replacing any breaks it.
 resources="$APP/Contents/_CodeSignature/CodeResources"
 grep -q '<key>Library/LaunchAgents/com.omp-ide.ompd.plist</key>' "$resources" || die "the LaunchAgent plist is not sealed"
 grep -q '<key>MacOS/ompd</key>' "$resources" || die "ompd is not sealed as nested code"
+grep -q "<key>Library/LoginItems/$APP_NAME Menu Bar.app</key>" "$resources" || die "the menu-bar extra is not sealed as nested code"
 check_universal "$APP/Contents/MacOS/$APP_NAME"
 check_universal "$ompd"
+check_universal "$extra/Contents/MacOS/$APP_NAME Menu Bar"
 check_universal "$APP/Contents/Frameworks/Sparkle.framework/Versions/Current/Sparkle"
 # Unnotarized Developer ID is rejected until notarization; report what Gatekeeper says either way.
 spctl -a -vv -t exec "$APP" 2>&1 || true

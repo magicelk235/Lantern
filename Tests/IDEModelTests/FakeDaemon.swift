@@ -55,6 +55,10 @@ final class FakeDaemon: IDERequestHandler {
         var attachRequests = 0
         /// How long `pty.list` takes after it looked at the PTYs.
         var listDelay = 0
+        /// Every hello it welcomed, in order.
+        var hellos: [Hello] = []
+        /// `client.presence` reports: each `hasWindow`, in order.
+        var presences: [Bool] = []
     }
 
     init() {
@@ -176,6 +180,10 @@ final class FakeDaemon: IDERequestHandler {
         }
         router.on(ListSessions.self) { _, _ in
             state.withLock { SessionList(sessions: $0.sessions) }
+        }
+        router.on(ClientPresence.self) { params, _ in
+            state.withLock { $0.presences.append(params.hasWindow) }
+            return Empty()
         }
     }
 
@@ -326,6 +334,8 @@ final class FakeDaemon: IDERequestHandler {
     var creates: [SessionCreate.Params] { state.withLock { $0.creates } }
     var opens: [SessionOpen.Params] { state.withLock { $0.opens } }
     var closes: [SessionKey] { state.withLock { $0.closes } }
+    var hellos: [Hello] { state.withLock { $0.hellos } }
+    var presences: [Bool] { state.withLock { $0.presences } }
 
     // MARK: - IDERequestHandler
 
@@ -333,6 +343,10 @@ final class FakeDaemon: IDERequestHandler {
 
     func handle(_ request: Request, from connection: IDEConnection) async -> Response {
         await router.route(request, from: connection)
+    }
+
+    func connectionOpened(_ connection: IDEConnection, hello: Hello) async {
+        state.withLock { $0.hellos.append(hello) }
     }
 
     func connectionClosed(_ connection: IDEConnection) async {
