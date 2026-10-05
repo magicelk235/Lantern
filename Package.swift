@@ -14,11 +14,17 @@ let package = Package(
         .library(name: "IDEModel", targets: ["IDEModel"]),
         .library(name: "IDEState", targets: ["IDEState"]),
         .library(name: "IDEEditorModel", targets: ["IDEEditorModel"]),
+        .library(name: "IDELanguageModel", targets: ["IDELanguageModel"]),
         .executable(name: "ompd", targets: ["ompd"]),
     ],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.2.0"),
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
+        // The editor's language servers: ChimeHQ's LSP client, the protocol types and JSON-RPC it is
+        // built on. Exact: the client's few releases change API between minor versions.
+        .package(url: "https://github.com/ChimeHQ/LanguageClient", exact: "0.8.2"),
+        .package(url: "https://github.com/ChimeHQ/LanguageServerProtocol", exact: "0.14.2"),
+        .package(url: "https://github.com/ChimeHQ/JSONRPC", exact: "0.9.2"),
     ],
     targets: [
         // Daemon <-> UI wire contract (pure Codable types, shared by ompd and the app).
@@ -41,6 +47,17 @@ let package = Package(
         // buffer state machine (dirty, save, revert, external change, hot-exit restore), line diffs, the file navigator's
         // directory listing and FSEvents watching.
         .target(name: "IDEEditorModel", dependencies: ["IDEState"]),
+        // Language servers for the editor without AppKit/SwiftUI: which server takes a file and where it
+        // is found on the login shell's PATH, one server process per project and language (LanguageClient over a pipe),
+        // document sync in UTF-16 positions, and diagnostics, hover, definitions and completions as the editor shows them.
+        .target(
+            name: "IDELanguageModel",
+            dependencies: [
+                .product(name: "LanguageClient", package: "LanguageClient"),
+                .product(name: "LanguageServerProtocol", package: "LanguageServerProtocol"),
+                .product(name: "JSONRPC", package: "JSONRPC"),
+            ]
+        ),
 
         .testTarget(name: "IDEProtocolTests", dependencies: ["IDEProtocol"]),
         .testTarget(name: "IDETransportTests", dependencies: ["IDETransport"]),
@@ -48,6 +65,10 @@ let package = Package(
         .testTarget(name: "IDEModelTests", dependencies: ["IDEModel"]),
         .testTarget(name: "IDEStateTests", dependencies: ["IDEState", .product(name: "GRDB", package: "GRDB.swift")]),
         .testTarget(name: "IDEEditorModelTests", dependencies: ["IDEEditorModel", "IDEState"]),
+        .testTarget(
+            name: "IDELanguageModelTests",
+            dependencies: ["IDELanguageModel", .product(name: "LanguageServerProtocol", package: "LanguageServerProtocol")]
+        ),
     ],
     swiftLanguageModes: [.v6]
 )

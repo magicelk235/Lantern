@@ -1,4 +1,5 @@
 import AppKit
+import IDELanguageModel
 import SwiftUI
 
 extension AppState {
@@ -34,10 +35,98 @@ extension AppState {
             if response == .alertFirstButtonReturn { document.revert() }
         }
     }
+
+    // MARK: - Language server
+
+    /// Navigate › Jump to Definition (⌃⌘J) and ⌘-click: asks the editor's language server where the symbol at `offset`
+    /// (else the caret) is defined, and shows it selected: in this editor, or in the file's tab in the same project,
+    /// opened if needed. Several definitions are a menu under the symbol; none is a beep.
+    func jumpToDefinition(in document: EditorDocument, at offset: Int? = nil) {
+        guard let language = document.languageDocument, language.canJumpToDefinition, let textView = document.controller?.textView,
+              let offset = offset ?? textView.selectionManager.textSelections.first?.range.location else {
+            NSSound.beep()
+            return
+        }
+        Task {
+            let targets = await language.definitions(at: offset)
+            switch targets.count {
+            case 0: NSSound.beep()
+            case 1: show(targets[0], from: document)
+            default: chooseDefinition(among: targets, from: document, under: offset)
+            }
+        }
+    }
+
+    private func show(_ target: DefinitionTarget, from document: EditorDocument) {
+        if target.path != document.path { openEditor(target.path, in: document.workspace) }
+        editors.document(for: target.path)?.reveal(target)
+    }
+
+    /// A menu of `targets` ("file — line 12") under the symbol at `offset`; the one picked is shown.
+    private func chooseDefinition(among targets: [DefinitionTarget], from document: EditorDocument, under offset: Int) {
+        guard let textView = document.controller?.textView, let rect = textView.layoutManager.rectForOffset(offset) else { return }
+        let menu = NSMenu()
+        let choice = MenuChoice()
+        for (index, target) in targets.enumerated() {
+            let item = NSMenuItem(
+                title: "\((target.path as NSString).lastPathComponent) — line \(target.lineNumber)",
+                action: #selector(MenuChoice.choose(_:)), keyEquivalent: "")
+            item.target = choice
+            item.tag = index
+            item.toolTip = target.path
+            menu.addItem(item)
+        }
+        // Text views are flipped: maxY is the bottom of the line.
+        menu.popUp(positioning: nil, at: NSPoint(x: rect.minX, y: rect.maxY), in: textView)
+        if let index = choice.chosen { show(targets[index], from: document) }
+    }
+
+    /// ⌘-click in an editor whose language server finds definitions jumps to the one under the mouse; ⌃⌘J in an editor
+    /// to the one at the caret. Installed once at launch, before the editors' own event monitors (AppKit calls local
+    /// monitors in the order they were added): CodeEditSourceEditor answers ⌃⌘J itself, with a beep for want of a
+    /// definition provider, and has no way to be given one when the app holds its controller directly.
+    func installEditorNavigation() {
+        _ = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .keyDown]) { [weak self] event in
+            guard let self else { return event }
+            return self.editorNavigation(event)
+        }
+    }
+
+    /// The event, or nil when it was taken.
+    private func editorNavigation(_ event: NSEvent) -> NSEvent? {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        switch event.type {
+        case .leftMouseDown where modifiers == .command && event.clickCount == 1:
+            guard let view = event.window?.contentView?.hitTest(event.locationInWindow),
+                  let document = editors.document(showing: view), document.languageDocument?.canJumpToDefinition == true,
+                  let textView = document.controller?.textView,
+                  let offset = textView.layoutManager.textOffsetAtPoint(textView.convert(event.locationInWindow, from: nil))
+            else { return event }
+            // The click still puts the caret there.
+            jumpToDefinition(in: document, at: offset)
+            return event
+        case .keyDown where modifiers == [.command, .control] && event.charactersIgnoringModifiers == "j":
+            guard let responder = (event.window ?? NSApp.keyWindow)?.firstResponder as? NSView,
+                  let document = editors.document(showing: responder) else { return event }
+            jumpToDefinition(in: document)
+            return nil
+        default:
+            return event
+        }
+    }
 }
 
-/// Save and Revert to Saved in the File menu, for the editor on screen. Quitting never asks: unsaved edits survive it
-/// (hot-exit).
+/// Records which item of a pop-up menu was picked.
+private final class MenuChoice: NSObject {
+    var chosen: Int?
+
+    @objc func choose(_ sender: NSMenuItem) {
+        chosen = sender.tag
+    }
+}
+
+/// Save and Revert to Saved in the File menu, for the editor on screen, and the Navigate menu (the editor's language
+/// server). Quitting never asks: unsaved edits survive it (hot-exit).
 struct EditorCommands: Commands {
     let app: AppState
 
@@ -48,6 +137,14 @@ struct EditorCommands: Commands {
                 .disabled(!(app.selectedEditor?.canSave ?? false))
             Button("Revert to Saved…") { app.revertSelectedEditor() }
                 .disabled(!(app.selectedEditor?.canRevert ?? false))
+        }
+        CommandMenu("Navigate") {
+            let language = app.selectedEditor?.languageDocument
+            Button("Jump to Definition") { if let document = app.selectedEditor { app.jumpToDefinition(in: document) } }
+                .keyboardShortcut("j", modifiers: [.command, .control])
+                .disabled(!(language?.canJumpToDefinition ?? false))
+            Button("Show Quick Help") { language?.showQuickHelp() }
+                .disabled(!(language?.canShowQuickHelp ?? false))
         }
     }
 }

@@ -69,6 +69,10 @@ targets:
         product: SwiftTerm
       - package: OmpIDE
         product: IDEEditorModel
+      # The editor's language servers: ChimeHQ's LanguageClient comes with it, resolved from the
+      # OmpIDE package's own requirements.
+      - package: OmpIDE
+        product: IDELanguageModel
       - package: CodeEditSourceEditor
       - package: CodeEditTextView
       - package: CodeEditLanguages

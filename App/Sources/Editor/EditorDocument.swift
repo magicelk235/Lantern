@@ -3,13 +3,15 @@ import CodeEditLanguages
 import CodeEditSourceEditor
 import CodeEditTextView
 import IDEEditorModel
+import IDELanguageModel
 import IDEState
 
 /// One open file. The text lives in a CodeEditSourceEditor `TextViewController` kept for as long as
 /// the tab is open, so undo, selection and scroll survive switching tabs; an `EditorBuffer` measures it against the file
 /// on disk. Unsaved text is copied to `state.sqlite` ~300 ms after typing pauses (hot-exit), and the file is
 /// re-read when FSEvents reports a change: a buffer without edits follows it silently, one with edits gets a conflict.
-/// A `GitGutterView` over the gutter marks what differs from HEAD.
+/// A `GitGutterView` over the gutter marks what differs from HEAD, and a `LanguageDocument` connects the text to the
+/// project's language server for its language.
 @MainActor @Observable
 final class EditorDocument {
     enum Content: Equatable {
@@ -37,6 +39,8 @@ final class EditorDocument {
     private(set) var language = CodeLanguage.default
     /// Line and column (1-based) of the first caret.
     private(set) var caret: CursorPosition.Position? = nil
+    /// The text's side of its language server; nil for a file no server takes, and without text.
+    private(set) var languageDocument: LanguageDocument? = nil
     var comparison: Comparison? = nil
 
     var name: String { (path as NSString).lastPathComponent }
@@ -48,6 +52,7 @@ final class EditorDocument {
     @ObservationIgnored private var buffer: EditorBuffer?
     @ObservationIgnored private let persistence: StatePersistence
     @ObservationIgnored private let repository: GitRepository
+    @ObservationIgnored private let languageServers: LanguageServers
     /// The file as last read or written, to skip re-reading it when nothing touched it.
     @ObservationIgnored private var stamp: FileStamp?
     /// Receives the text view's changes; the controller only holds it weakly.
@@ -57,6 +62,8 @@ final class EditorDocument {
     @ObservationIgnored private var gitGutter: GitGutterView?
     /// Where the view scrolls when it first appears (restored from the previous run).
     @ObservationIgnored private var pendingScroll: CGPoint?
+    /// What a jump to a definition selects when the view first appears.
+    @ObservationIgnored private var pendingReveal: NSRange?
     /// Indentation the file uses, detected when it opened.
     @ObservationIgnored private var indent = IndentOption.spaces(count: 4)
     /// Take the keyboard focus when the view next appears (opened from the navigator).
@@ -71,15 +78,16 @@ final class EditorDocument {
 
     /// Opens `path` from disk, or from `restored` (its hot-exit copy), which wins: the unsaved text comes back even if
     /// the file changed meanwhile. `savedUI` puts the selection and scroll position back; `repository` is the
-    /// project's, whose refreshes tell the gutter marks when HEAD moved.
+    /// project's, whose refreshes tell the gutter marks when HEAD moved; `languageServers` start the text's server.
     init(
         path: String, workspace: String, restored: DirtyBuffer?, savedUI: EditorUIState?, persistence: StatePersistence,
-        repository: GitRepository
+        repository: GitRepository, languageServers: LanguageServers
     ) {
         self.path = path
         self.workspace = workspace
         self.persistence = persistence
         self.repository = repository
+        self.languageServers = languageServers
         hotExitStored = restored != nil
         content = .missing
         stamp = FileStamp(path: path)
@@ -100,6 +108,7 @@ final class EditorDocument {
         publish()
         clearHotExit()
         gitGutter?.textDidSave()
+        languageDocument?.didSave()
     }
 
     /// Throws the edits away for the file as it is on disk now (Revert to Saved, and Reload in a conflict).
@@ -226,6 +235,7 @@ final class EditorDocument {
         let gitGutter = GitGutterView(path: path, textView: controller.textView, repository: repository)
         gitGutter.refresh()
         self.gitGutter = gitGutter
+        languageDocument = LanguageDocument(path: path, workspace: workspace, controller: controller, servers: languageServers)
         if let savedUI, savedUI.scrollX != 0 || savedUI.scrollY != 0 {
             pendingScroll = CGPoint(x: savedUI.scrollX, y: savedUI.scrollY)
         }
@@ -244,14 +254,40 @@ final class EditorDocument {
         scrollObserver = nil
         gitGutter?.detach()
         gitGutter = nil
+        languageDocument?.close()
+        languageDocument = nil
+        pendingReveal = nil
         controller = nil
         coordinator = nil
         caret = nil
     }
 
-    /// The system appearance changed: the theme's colors are concrete, so the editor needs new ones.
+    /// The system appearance changed: the theme's colors are concrete, so the editor needs new ones (and keeps the
+    /// characters its language server completes after).
     func appearanceDidChange(_ appearance: NSAppearance) {
-        controller?.configuration = EditorStyle.configuration(indent: indent, appearance: appearance)
+        var configuration = EditorStyle.configuration(indent: indent, appearance: appearance)
+        configuration.peripherals.codeSuggestionTriggerCharacters = languageDocument?.completionTriggers ?? []
+        controller?.configuration = configuration
+        languageDocument?.render()
+    }
+
+    /// Selects `target` (a definition jumped to) and scrolls it into the middle of the view if it is out of sight; when
+    /// the view has not appeared yet, once it has.
+    func reveal(_ target: DefinitionTarget) {
+        guard let controller, let textView = controller.textView else { return }
+        let range = target.range(in: textView.textStorage.mutableString)
+        guard controller.isViewLoaded, textView.window != nil else {
+            pendingReveal = range
+            pendingScroll = nil
+            return
+        }
+        select(range, in: textView)
+    }
+
+    private func select(_ range: NSRange, in textView: TextView) {
+        textView.selectionManager.setSelectedRange(range)
+        textView.scrollToRange(range, center: true)
+        textView.window?.makeFirstResponder(textView)
     }
 
     /// Replaces the text with `newText` as one undoable edit of only the part that differs, so carets and the scroll
@@ -339,6 +375,7 @@ final class EditorDocument {
         let first = positions.first?.start
         if caret != first { caret = first }
         saveUI()
+        languageDocument?.selectionDidChange()
     }
 
     fileprivate func controllerDidAppear() {
@@ -352,10 +389,17 @@ final class EditorDocument {
                 controller.scrollView.reflectScrolledClipView(controller.scrollView.contentView)
             }
         }
-        if focusOnAppear {
-            focusOnAppear = false
+        if let pendingReveal {
+            self.pendingReveal = nil
+            // After the first layout pass, like the restored scroll position.
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.select(pendingReveal, in: controller.textView) }
+            }
+        } else if focusOnAppear {
             controller.view.window?.makeFirstResponder(controller.textView)
         }
+        focusOnAppear = false
+        languageDocument?.render()
     }
 
     /// Remembers the selection and scroll position (debounced by the store).

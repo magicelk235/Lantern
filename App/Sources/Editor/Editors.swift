@@ -1,9 +1,10 @@
 import AppKit
+import CodeEditTextView
 import IDEEditorModel
 import IDEState
 
-/// Every open editor document and file navigator of the window, and the FSEvents watchers (one per workspace folder)
-/// that keep them in step with the disk — the agent edits files too.
+/// Every open editor document and file navigator of the window, the FSEvents watchers (one per workspace folder) that
+/// keep them in step with the disk — the agent edits files too — and the language servers of their files.
 @MainActor @Observable
 final class Editors {
     /// A file row clicked once in the navigator, over the tab that was on screen then: it stays highlighted until the
@@ -17,6 +18,8 @@ final class Editors {
     var highlight: Highlight?
     /// The git repository of each project folder, refreshed when FSEvents reports changes under it.
     let repositories = GitRepositories()
+    /// One per project folder and language, for as long as an editor of it is open.
+    let languageServers = LanguageServers()
 
     @ObservationIgnored private let persistence: StatePersistence
     /// Hot-exit copies from the previous run not claimed by an open document yet.
@@ -41,13 +44,20 @@ final class Editors {
         documents[path]
     }
 
+    /// The document whose text view `view` is, or is inside of.
+    func document(showing view: NSView) -> EditorDocument? {
+        guard let textView = sequence(first: view, next: \.superview).first(where: { $0 is TextView }) else { return nil }
+        return documents.values.first { $0.controller?.textView === textView }
+    }
+
     /// The document of `path`, opened (from its hot-exit copy if the previous run left one) if it is not yet.
     @discardableResult
     func open(_ path: String, in workspace: String) -> EditorDocument {
         if let document = documents[path] { return document }
         let document = EditorDocument(
             path: path, workspace: workspace, restored: restoredBuffers.removeValue(forKey: path),
-            savedUI: persistence.editorUI[path], persistence: persistence, repository: repositories.repository(for: workspace))
+            savedUI: persistence.editorUI[path], persistence: persistence, repository: repositories.repository(for: workspace),
+            languageServers: languageServers)
         documents[path] = document
         watch(Self.watchRoot(for: path, in: workspace))
         return document
