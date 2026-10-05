@@ -12,6 +12,8 @@ final class AppState {
 
     let connection = DaemonConnection(clientVersion: AppState.version)
     let agent = DaemonAgent()
+    /// The menu-bar extra's login item.
+    let menuBar = MenuBarAgent()
     /// What the app does about an ompd that refuses its version.
     let outdatedDaemon: OutdatedDaemon
     /// Crash reports of ompd and omp IDE the user has not seen yet (local only).
@@ -121,12 +123,14 @@ final class AppState {
         return "\(short) (\(build))"
     }()
 
-    /// Registers the LaunchAgent and connects to ompd. Runs at launch even when no window opens (the main window may
-    /// have been closed when the app last quit); the window's `.task` calls it again, which is a no-op.
+    /// Registers the LaunchAgent and the menu-bar extra's login item, and connects to ompd. Runs at launch even when no
+    /// window opens (the main window may have been closed when the app last quit); the window's `.task` calls it again,
+    /// which is a no-op.
     func start() {
         guard !started else { return }
         started = true
         agent.registerIfNeeded()
+        menuBar.sync()
         outdatedDaemon.start()
         connection.start()
         crashNotices.start()

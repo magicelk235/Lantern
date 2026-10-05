@@ -79,6 +79,14 @@ targets:
         codeSign: true
         copy:
           destination: executables
+      # The menu-bar extra, a login item omp IDE registers with SMAppService while Settings › General shows
+      # it; SMAppService.loginItem finds it in Contents/Library/LoginItems.
+      - target: omp IDE Menu Bar
+        embed: true
+        codeSign: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Library/LoginItems
     postBuildScripts:
       # The ide-bridge extension each omp loads (`-e`) lives in the bundle's Resources. Copied when present; a
       # previously copied file is removed when the source is gone so the bundle never ships a stale bridge.
@@ -145,3 +153,28 @@ targets:
         # Optimized for size. Its package modules (OmpdCore, …) take -Osize from Package.swift.
         Release:
           SWIFT_OPTIMIZATION_LEVEL: "-Osize"
+  # The menu-bar extra: no windows, no Dock icon; a `cli` client of ompd, so it never keeps the sessions
+  # running or resumes them.
+  omp IDE Menu Bar:
+    type: application
+    platform: macOS
+    sources:
+      - path: MenuBar/Sources
+    dependencies:
+      - package: OmpIDE
+        product: IDEModel
+    settings:
+      base:
+        PRODUCT_NAME: omp IDE Menu Bar
+        PRODUCT_BUNDLE_IDENTIFIER: com.omp-ide.menubar
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SKIP_INSTALL: YES
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: omp IDE Menu Bar
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_LSUIElement: YES
+        ENABLE_APP_SANDBOX: NO
+        COMBINE_HIDPI_IMAGES: YES
+        # As for the app: library validation under the hardened runtime rejects the ad-hoc signed Debug dylib split.
+        ENABLE_DEBUG_DYLIB: NO

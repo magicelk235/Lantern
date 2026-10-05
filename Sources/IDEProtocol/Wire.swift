@@ -77,7 +77,8 @@ public struct Hello: Sendable, Equatable, Codable {
 public enum ClientKind: String, Sendable, Codable {
     /// An omp IDE window (the app). A hello without `clientKind` is one.
     case app
-    /// A command-line client such as `ompd status`: not a window, so it does not keep the sessions running.
+    /// A client that is no omp IDE window, such as `ompd status` or the menu-bar extra: it neither keeps the
+    /// sessions running nor resumes them.
     case cli
 }
 
