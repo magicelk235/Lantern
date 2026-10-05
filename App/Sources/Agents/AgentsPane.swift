@@ -132,6 +132,8 @@ struct AgentsPane: View {
             }
         case .openTranscript:
             if let transcript = agent.sessionFile { app.showTranscript(transcript, of: sessionKey, in: project) }
+        case .quickLookOutput:
+            if let output = agent.outputFile { app.toggleQuickLook(output, in: project) }
         }
     }
 
@@ -331,7 +333,7 @@ extension AgentStatus {
 }
 
 private enum AgentAction: Hashable {
-    case message, revive, park, kill, openTranscript
+    case message, revive, park, kill, openTranscript, quickLookOutput
 
     var title: String {
         switch self {
@@ -340,6 +342,7 @@ private enum AgentAction: Hashable {
         case .park: "Park"
         case .kill: "Kill…"
         case .openTranscript: "Open Transcript"
+        case .quickLookOutput: "Quick Look Output"
         }
     }
 
@@ -350,6 +353,7 @@ private enum AgentAction: Hashable {
         case .park: "moon.zzz"
         case .kill: "xmark"
         case .openTranscript: "doc.text"
+        case .quickLookOutput: "eye"
         }
     }
 }
@@ -449,11 +453,12 @@ private struct AgentRow: View {
         (canRevive ? [.revive] : canPark ? [.park] : []) + (canMessage ? [.message] : [])
     }
 
-    /// The context menu as the agent allows: talking to it, then its transcript, then Kill.
+    /// The context menu as the agent allows: talking to it, then its transcript and output, then Kill.
     private var menuGroups: [[AgentAction]] {
         let groups: [[AgentAction]] = [
             (canMessage ? [.message] : []) + (canRevive ? [.revive] : []) + (canPark ? [.park] : []),
-            agent.sessionFile != nil ? [.openTranscript] : [],
+            (agent.sessionFile != nil ? [.openTranscript] : [])
+                + (!isMain && agent.outputFile.map(FileManager.default.fileExists(atPath:)) == true ? [.quickLookOutput] : []),
             isMain || agent.status == .aborted ? [] : [.kill],
         ]
         return groups.filter { !$0.isEmpty }
@@ -479,6 +484,15 @@ private struct AgentStatusMark: View {
             case .aborted, .unknown: StatusDot(color: .secondary, hollow: true)
             }
         }
+    }
+}
+
+extension AgentInfo {
+    /// What a subagent returned, as omp writes it next to its transcript (`<artifacts>/<AgentId>.md`, read through
+    /// `agent://<id>`); nil without a transcript.
+    var outputFile: String? {
+        guard let sessionFile, sessionFile.hasSuffix(".jsonl") else { return nil }
+        return String(sessionFile.dropLast("jsonl".count)) + "md"
     }
 }
 

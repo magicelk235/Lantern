@@ -144,7 +144,7 @@ struct ProjectHeader: View {
 }
 
 /// The project's folder as an outline, each folder listed when first expanded. A click highlights a file; Return or
-/// a double-click opens it in the project's tab strip.
+/// a double-click opens it in the project's tab strip; Space shows it in Quick Look.
 private struct FilesOutline: View {
     let app: AppState
     let project: String
@@ -159,6 +159,11 @@ private struct FilesOutline: View {
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 22)
         .fileNavigatorActions(app, project: project)
+        .onKeyPress(.space) {
+            guard let path = app.filesSelection?.editorPath else { return .ignored }
+            app.toggleQuickLook(path, in: project)
+            return .handled
+        }
         .task(id: project) { tree.setExpanded(tree.root, true) }
     }
 }

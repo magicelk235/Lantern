@@ -70,6 +70,7 @@ struct ProjectWindow: View {
             dismissWindow(id: OmpIDEApp.projectWindowID, value: "")
         }
         .sessionPicker(app, project: project)
+        .quickLookPanel(app, project: project)
         .alert(item: $app.alert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message))
         }

@@ -69,10 +69,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var attention = AttentionAlerts(app: app)
     /// Sparkle, when this build names a feed.
     let updates = Updates()
+    /// Open in omp IDE / New omp Session for folders in the Finder.
+    private lazy var services = FinderServices(app: app)
+    /// The projects' sessions in Spotlight.
+    private lazy var spotlight = SpotlightSessions(app: app)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.servicesProvider = services
         app.start()
         attention.start()
+        spotlight.start()
+    }
+
+    /// A session chosen in Spotlight.
+    func application(
+        _ application: NSApplication, continue userActivity: NSUserActivity,
+        restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void
+    ) -> Bool {
+        spotlight.continue(userActivity)
     }
 
     /// The + at the end of the window tab bar: a new project tab.

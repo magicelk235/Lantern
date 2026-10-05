@@ -2,8 +2,8 @@ import AppKit
 import IDEState
 import SwiftUI
 
-/// The Files pane's context menu for one file or folder: open, a terminal there, Finder, the path, new items, rename
-/// and Trash. The basics, in Finder's words.
+/// The Files pane's context menu for one file or folder: open, Quick Look, a terminal there, Finder, the path, new
+/// items, rename and Trash. The basics, in Finder's words.
 struct FileItemMenu: View {
     let app: AppState
     let project: String
@@ -15,6 +15,7 @@ struct FileItemMenu: View {
     var body: some View {
         if !isDirectory {
             Button("Open") { app.openEditor(path, in: project) }
+            Button("Quick Look") { app.toggleQuickLook(path, in: project) }
         }
         Button("Open in Terminal") { app.newTerminal(in: folder) }
             .disabled(!app.connection.isConnected)

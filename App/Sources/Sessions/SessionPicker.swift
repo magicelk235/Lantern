@@ -103,7 +103,7 @@ struct SessionPicker: View {
     private func open(_ session: SessionFileInfo?) {
         guard let session, canOpen(session, running: runningFiles) else { return }
         dismiss()
-        app.openSessionFile(session, in: project)
+        app.openSessionFile(session.path, in: project)
     }
 
     private func move(by step: Int, in shown: [SessionFileInfo]) -> KeyPress.Result {
@@ -119,15 +119,7 @@ struct SessionPicker: View {
     }
 
     private func load() async {
-        // `--session-dir` folders ompd starts omp with (the launch spec's, or one passed through its extra arguments)
-        // hold sessions of every workspace; the folders of the session files ompd knows find them either way. The
-        // listing keeps this workspace's.
-        let sessionDirectories = Set(
-            app.connection.sessions.compactMap(\.launch.sessionDir)
-                + app.connection.sessions.compactMap { $0.sessionFile.map { ($0 as NSString).deletingLastPathComponent } }
-        ).map { URL(filePath: $0, directoryHint: .isDirectory) }
-        let listed = await SessionFileListing.list(
-            workspace: URL(filePath: project, directoryHint: .isDirectory), sessionDirectories: sessionDirectories)
+        let listed = await app.sessionFiles(of: project)
         sessions = listed
         keepSelection(in: listed.filter { $0.matches(query) })
     }
@@ -196,6 +188,19 @@ extension AppState {
     func showSessionPicker(for project: String) {
         sessionPickerProject = project
         showProject(project)
+    }
+
+    /// The omp session files of `project`, newest first (`SessionFileListing`, read off the main actor).
+    func sessionFiles(of project: String) async -> [SessionFileInfo] {
+        // `--session-dir` folders ompd starts omp with (the launch spec's, or one passed through its extra arguments)
+        // hold sessions of every workspace; the folders of the session files ompd knows find them either way. The
+        // listing keeps this workspace's.
+        let sessionDirectories = Set(
+            connection.sessions.compactMap(\.launch.sessionDir)
+                + connection.sessions.compactMap { $0.sessionFile.map { ($0 as NSString).deletingLastPathComponent } }
+        ).map { URL(filePath: $0, directoryHint: .isDirectory) }
+        return await SessionFileListing.list(
+            workspace: URL(filePath: project, directoryHint: .isDirectory), sessionDirectories: sessionDirectories)
     }
 }
 

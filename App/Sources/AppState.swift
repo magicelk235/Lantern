@@ -50,6 +50,8 @@ final class AppState {
     var pendingClose: CloseRequest?
     /// The project whose Open Session sheet is up (its window shows it).
     var sessionPickerProject: String?
+    /// The file Quick Look shows, and the project whose window shows it (`QuickLook.swift`).
+    var quickLookItem: QuickLookItem?
 
     /// `state.sqlite` and the hot-exit copies; its `writeFailure` is the window's banner while writes fail.
     @ObservationIgnored let persistence: StatePersistence
@@ -251,6 +253,15 @@ final class AppState {
         }
     }
 
+    /// Returns once connected to ompd, or after `timeout`: for what macOS hands a just-launched app (a Service, a
+    /// Spotlight result) while it is still connecting.
+    func waitUntilConnected(timeout: Duration = .seconds(10)) async {
+        let deadline = ContinuousClock.now + timeout
+        while !connection.isConnected, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
     // MARK: - Projects
 
     /// Every project folder the sidebar lists: the ones added, then those with sessions or tabs, by name.
@@ -382,10 +393,11 @@ final class AppState {
         }
     }
 
-    /// Opens an omp session file of `project` picked in the Open Session sheet: the tab of the session ompd runs for it
-    /// comes forward, the stopped session ompd keeps for it resumes, else a new session resumes it in `project`.
-    func openSessionFile(_ file: SessionFileInfo, in project: String) {
-        if let known = connection.session(forFile: file.path) {
+    /// Opens the omp session file at `path` (picked in the Open Session sheet, or in Spotlight) as a session of
+    /// `project`: the tab of the session ompd runs for it comes forward, the stopped session ompd keeps for it resumes,
+    /// else a new session resumes it in `project`.
+    func openSessionFile(_ path: String, in project: String) {
+        if let known = connection.session(forFile: path) {
             if known.isStopped {
                 resumeSession(known.sessionKey)
             } else {
@@ -397,7 +409,7 @@ final class AppState {
         Task {
             do {
                 show(try await connection.openSession(
-                    file: URL(filePath: file.path), workspace: URL(filePath: project, directoryHint: .isDirectory), size: size))
+                    file: URL(filePath: path), workspace: URL(filePath: project, directoryHint: .isDirectory), size: size))
             } catch {
                 alert = AlertMessage(title: "Could not open the session", message: error.userMessage)
             }
