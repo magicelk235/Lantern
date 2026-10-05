@@ -103,6 +103,7 @@ final class AppState {
         }
         connection.terminals.onGone = { [weak self] ptyId in self?.terminalGone(ptyId) }
         observeSystemPower()
+        installEditorNavigation()
     }
 
     /// launchd starts a registered ompd within a moment. A daemon still out of reach this long after launch has a
@@ -695,14 +696,16 @@ final class AppState {
         }
     }
 
-    /// Quitting: ompd pauses every session now instead of after it notices the app is gone. Waits for ompd a moment
-    /// at most.
+    /// Quitting: ompd pauses every session now instead of after it notices the app is gone, and the editors' language
+    /// servers shut down. Waits for ompd a moment at most, for the servers a little longer.
     func prepareToQuit() async {
         flushState()
         windowlessReport?.cancel()
         windowlessReport = nil
         connection.setHasWindow(false)
-        await connection.presenceReported(within: .milliseconds(500))
+        async let presence: Void = connection.presenceReported(within: .milliseconds(500))
+        await editors.languageServers.shutdownAll(within: .seconds(2))
+        await presence
     }
 
     /// Shows `pane` in the sidebar.

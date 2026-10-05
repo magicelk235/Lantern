@@ -1,9 +1,11 @@
+import IDELanguageModel
 import IDEModel
 import IDEState
 import SwiftUI
 
 /// The line under the detail area: the workspace on screen, the link to ompd when it is not up, and the state of the
-/// tab on screen (a session's status, a terminal's, the editor's caret and language). The only place these live.
+/// tab on screen (a session's status, a terminal's, the editor's problems, caret and language). The only place these
+/// live.
 struct StatusBar: View {
     let app: AppState
     /// The window's project; empty for the window of no project.
@@ -75,7 +77,7 @@ private struct TabState: View {
             }
         case .editor(let path):
             if let document = app.editors.document(for: path) {
-                EditorState(document: document)
+                EditorState(document: document, servers: app.editors.languageServers)
             }
         }
     }
@@ -105,9 +107,13 @@ private struct TerminalState: View {
 
 private struct EditorState: View {
     let document: EditorDocument
+    let servers: LanguageServers
 
     var body: some View {
         HStack(spacing: 14) {
+            if let language = document.languageDocument {
+                LanguageServerState(language: language, status: servers.statuses[language.key])
+            }
             if let caret = document.caret {
                 Text("Ln \(caret.line), Col \(caret.column)")
             }
@@ -115,6 +121,58 @@ private struct EditorState: View {
                 Text("Edited")
             }
             Text(document.language.id == .plainText ? "Plain Text" : document.language.tsName.capitalized)
+        }
+    }
+}
+
+/// The editor's errors and warnings from its language server, after Xcode's issue icons (nothing when there are none);
+/// a quiet note when no server for the language is installed, and when the server stopped.
+private struct LanguageServerState: View {
+    let language: LanguageDocument
+    let status: LanguageServers.Status?
+
+    var body: some View {
+        switch status {
+        case .running(let name):
+            let counts = language.counts
+            if !counts.isEmpty {
+                HStack(spacing: 8) {
+                    if counts.errors > 0 {
+                        HStack(spacing: 3) {
+                            Image(systemName: "xmark.octagon.fill").foregroundStyle(Color(nsColor: .systemRed))
+                            Text("\(counts.errors)")
+                        }
+                    }
+                    if counts.warnings > 0 {
+                        HStack(spacing: 3) {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color(nsColor: .systemYellow))
+                            Text("\(counts.warnings)")
+                        }
+                    }
+                }
+                .help("\(Self.describe(counts)) from \(name)")
+            }
+        case .unavailable(let programs):
+            Text("No Language Server")
+                .help("omp IDE looks for \(programs.joined(separator: " or ")) on your login shell’s PATH.")
+        case .failed(let reason):
+            HStack(spacing: 5) {
+                StatusDot(color: .orange)
+                Text("Language Server Stopped")
+            }
+            .help(reason)
+        case .starting, nil:
+            EmptyView()
+        }
+    }
+
+    private static func describe(_ counts: DiagnosticCounts) -> String {
+        let errors = counts.errors == 1 ? "1 error" : "\(counts.errors) errors"
+        let warnings = counts.warnings == 1 ? "1 warning" : "\(counts.warnings) warnings"
+        switch (counts.errors, counts.warnings) {
+        case (_, 0): return errors
+        case (0, _): return warnings
+        default: return "\(errors) and \(warnings)"
         }
     }
 }
