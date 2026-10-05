@@ -36,7 +36,8 @@ public final class StateStore: Sendable {
     public enum Write: Sendable, Equatable {
         /// Window layouts and editor UI: a debounced write or `flush()`.
         case layout
-        /// A dirty buffer saved or cleared, with its hot-exit mirror.
+        /// A dirty buffer saved (succeeded: its copy reached the disk) or cleared (reported only when it fails: a clear
+        /// deletes, which proves nothing about the next copy).
         case dirtyBuffer
     }
 
@@ -92,7 +93,9 @@ public final class StateStore: Sendable {
     }
 
     /// Receives the outcome of every write from now on, on the store's queue in write order: nil when it succeeded, else
-    /// why it failed (`isOutOfSpace` tells a full disk). A layout write that had nothing to write is no write.
+    /// why it failed (`isOutOfSpace` tells a full disk). A layout write that had nothing to write is no write; a dirty
+    /// buffer cleared is reported only when that fails, so a failing copy is not followed by an all-clear each time the
+    /// editor saves (the hot-exit folder can still be unwritable).
     public func setWriteObserver(_ observer: @escaping @Sendable (Write, (any Error)?) -> Void) {
         writeObserver.withLock { $0 = observer }
     }
@@ -107,6 +110,16 @@ public final class StateStore: Sendable {
             let result = try body()
             report(write, nil)
             return result
+        } catch {
+            report(write, error)
+            throw error
+        }
+    }
+
+    /// `body`'s failure reported as `write`, its error rethrown; a success is not reported.
+    private func reportingFailure<T>(_ write: Write, _ body: () throws -> T) throws -> T {
+        do {
+            return try body()
         } catch {
             report(write, error)
             throw error
@@ -241,7 +254,7 @@ public final class StateStore: Sendable {
     /// row, restored as a dirty buffer, never a mirror that would come back after the database is lost.
     public func clearDirtyBuffer(path: String) throws {
         try queue.sync {
-            try reporting(.dirtyBuffer) {
+            try reportingFailure(.dirtyBuffer) {
                 try HotExitMirror.remove(path: path, in: hotExitDirectory)
                 try writeDurably { db in _ = try DirtyBufferRecord.deleteOne(db, key: path) }
             }

@@ -92,7 +92,8 @@ final class AppState {
         sidebarVisible = restored?.sidebarVisible ?? true
         sidebarWidth = restored?.sidebarWidth ?? 270
         pane = UserDefaults.standard.string(forKey: SidebarPane.defaultsKey).flatMap(SidebarPane.init(rawValue:)) ?? .files
-        addedProjects = restored?.projects ?? []
+        var restoredProjects = Set<String>()
+        addedProjects = (restored?.projects ?? []).map(Self.normalized).filter { restoredProjects.insert($0).inserted }
         // Regime A: each restored session tab attaches to omp's TUI once connected; nothing is sent to omp.
         for sessionKey in tabs.tabs.compactMap(\.sessionKey) { connection.open(sessionKey) }
         restoreEditors()
@@ -334,9 +335,15 @@ final class AppState {
         if changed { saveWindow() }
     }
 
-    /// `path` without a trailing slash (a folder's identity everywhere in the app).
+    /// `path` as ompd names a workspace (`Daemon.canonicalDirectory`): symlinks resolved while the folder exists (so a
+    /// folder picked through `/tmp` or a linked folder is the project its sessions report), no trailing slash. A
+    /// folder's identity everywhere in the app.
     static func normalized(_ path: String) -> String {
-        path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
+        if path.hasPrefix("/"), let resolved = realpath(path, nil) {
+            defer { free(resolved) }
+            return String(cString: resolved)
+        }
+        return path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
     }
 
     static func projectName(_ path: String) -> String {

@@ -103,7 +103,8 @@ public struct OmpStorage: Codable, Sendable, Equatable {
     /// Unreferenced blobs omp would delete (a report) or deleted (a clean-up), and their bytes.
     public var blobs: Int
     public var blobBytes: Int64
-    /// Bytes in the write-ahead logs of omp's databases (`history.db`, `models.db`), which a checkpoint folds back.
+    /// Bytes in the write-ahead logs of omp's databases (`history.db`, `models.db`), which a checkpoint folds back. In
+    /// a clean-up, what is left after the checkpoint (omp measures again; 0 when it succeeded).
     public var walBytes: Int64
     /// The clean-up checkpointed the write-ahead logs; false in a report.
     public var walCheckpointed: Bool

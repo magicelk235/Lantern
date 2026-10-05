@@ -18,19 +18,23 @@ struct SettingsView: View {
     let app: AppState
     @AppStorage(SettingsTab.defaultsKey) private var tab = SettingsTab.general
 
+    /// Each pane has its own height (the window resizes to the one showing, as macOS settings windows do): Storage's
+    /// clean-up outcome and explanation would sit below the fold at the others' height.
     var body: some View {
         TabView(selection: $tab) {
             GeneralSettings(connection: app.connection)
+                .frame(width: 460, height: 360)
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(SettingsTab.general)
             TerminalSettingsPane()
+                .frame(width: 460, height: 360)
                 .tabItem { Label("Terminal", systemImage: "terminal") }
                 .tag(SettingsTab.terminal)
             StorageSettingsPane(app: app)
+                .frame(width: 460, height: 520)
                 .tabItem { Label("Storage", systemImage: "internaldrive") }
                 .tag(SettingsTab.storage)
         }
-        .frame(width: 460, height: 360)
     }
 }
 

@@ -29,7 +29,7 @@ struct StorageSettingsPane: View {
                 ForEach(report.omp, id: \.agentDir) { omp in
                     Section {
                         LabeledContent("Unreferenced blobs", value: Self.files(omp.blobs, bytes: omp.blobBytes))
-                        LabeledContent("Database logs", value: Self.size(omp.walBytes))
+                        LabeledContent("Database logs", value: omp.walBytes == 0 ? "None" : Self.size(omp.walBytes))
                     } header: {
                         Text(report.omp.count > 1 ? "omp in \(omp.agentDir)" : "omp")
                     } footer: {
@@ -109,7 +109,7 @@ struct StorageSettingsPane: View {
             do {
                 let result = try await connection.cleanStorage()
                 let mirrors = Self.leftovers(app.persistence.removeAbandonedMirrorWrites())
-                outcome = Self.describe(result, mirrors: mirrors)
+                outcome = Self.describe(result, before: report, mirrors: mirrors)
                 await load()
             } catch {
                 outcome = "Could not clean up: \(error.userMessage)"
@@ -121,20 +121,24 @@ struct StorageSettingsPane: View {
         Leftovers(count: found.count, bytes: found.bytes)
     }
 
-    /// "Deleted 12 unused files (1.3 MB) and 2 leftovers (40 KB); folded 48 KB of database logs back." or "Nothing
-    /// to clean up."
-    private static func describe(_ result: StorageClean.Result, mirrors: Leftovers) -> String {
+    /// "Deleted 12 unused files (1.3 MB) and 2 leftovers (40 KB). Folded 48 KB of database logs back." or "Nothing to
+    /// clean up." The logs folded back are what `before` (the report on screen) counted for each checkpointed agent
+    /// directory less what is left: omp reports a clean-up's log size after the checkpoint.
+    private static func describe(_ result: StorageClean.Result, before: StorageReport?, mirrors: Leftovers) -> String {
         let blobs = result.omp.reduce(0) { $0 + $1.blobs }
         let blobBytes = result.omp.reduce(Int64(0)) { $0 + $1.blobBytes }
         let leftovers = result.removedSnapshots + mirrors.count
         let leftoverBytes = result.removedSnapshotBytes + mirrors.bytes
-        let logs = result.omp.filter(\.walCheckpointed).reduce(Int64(0)) { $0 + $1.walBytes }
+        let logs = result.omp.filter(\.walCheckpointed).reduce(Int64(0)) { sum, omp in
+            let reported = before?.omp.first { $0.agentDir == omp.agentDir }?.walBytes ?? 0
+            return sum + max(0, reported - omp.walBytes)
+        }
         var deleted: [String] = []
         if blobs > 0 { deleted.append("\(files(blobs, bytes: blobBytes, noun: "unused file"))") }
         if leftovers > 0 { deleted.append("\(files(leftovers, bytes: leftoverBytes, noun: "leftover"))") }
         var sentences: [String] = []
         if !deleted.isEmpty { sentences.append("Deleted \(deleted.joined(separator: " and ")).") }
-        if result.omp.contains(where: \.walCheckpointed) { sentences.append("Folded \(size(logs)) of database logs back.") }
+        if logs > 0 { sentences.append("Folded \(size(logs)) of database logs back.") }
         let errors = result.omp.flatMap(\.errors) + result.failures
         if !errors.isEmpty { sentences.append(errors.joined(separator: " ")) }
         return sentences.isEmpty ? "Nothing to clean up." : sentences.joined(separator: " ")

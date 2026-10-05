@@ -7,8 +7,10 @@ private let buffer = DirtyBuffer(
     updatedAt: Date(timeIntervalSinceReferenceDate: 780_000_000))
 
 @Suite struct StateWriteHealthTests {
-    /// A banner shows while writes fail and goes with the next one that succeeds: every write's outcome is reported.
-    @Test func everyWriteReportsWhetherItReachedTheDisk() throws {
+    /// A banner shows while writes fail and goes with the next copy that reaches the disk: every save's and layout
+    /// write's outcome is reported; a clear (the editor saved the file) only when it fails, so a hot-exit folder that is
+    /// still unwritable does not flash the banner away after each save.
+    @Test func everyCopyReportsWhetherItReachedTheDisk() throws {
         let home = try TempHome()
         let store = try home.store()
         let outcomes = OutcomeLog()
@@ -17,6 +19,7 @@ private let buffer = DirtyBuffer(
         try FileManager.default.createDirectory(at: home.paths.hotExit, withIntermediateDirectories: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: home.paths.hotExit.path(percentEncoded: false))
         #expect(throws: (any Error).self) { try store.saveDirtyBuffer(buffer) }
+        try store.clearDirtyBuffer(path: buffer.path)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: home.paths.hotExit.path(percentEncoded: false))
         try store.saveDirtyBuffer(buffer)
         store.setWindow(WindowState(id: "main", sidebarWidth: 300))

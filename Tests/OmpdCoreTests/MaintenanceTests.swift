@@ -230,7 +230,7 @@ struct OmpInstallationsTests {
     static let applied = """
         {"agentDir": "/tmp/agent", "apply": true, "lockPath": "/tmp/agent/gc.lock",
          "blobs": {"referenced": 0, "candidates": 1, "wouldDelete": 1, "deleted": 1, "bytes": 3000, "errors": ["EACCES blobs/ab"]},
-         "wal": {"databases": [], "walBytes": 8192, "wouldCheckpoint": true, "checkpointed": true}}
+         "wal": {"databases": [], "walBytes": 0, "wouldCheckpoint": true, "checkpointed": true}}
         """
 
     @Test func aDryRunReportsWhatWouldGoAndTheArchiveCandidates() throws {
@@ -241,7 +241,7 @@ struct OmpInstallationsTests {
 
     @Test func anApplyReportsWhatWentWithoutArchiving() throws {
         #expect(try OmpGarbageCollector.parse("omp: warming up\n" + Self.applied) == OmpStorage(
-            agentDir: "/tmp/agent", blobs: 1, blobBytes: 3000, walBytes: 8192, walCheckpointed: true, archiveCandidates: nil,
+            agentDir: "/tmp/agent", blobs: 1, blobBytes: 3000, walBytes: 0, walCheckpointed: true, archiveCandidates: nil,
             errors: ["EACCES blobs/ab"]))
     }
 
