@@ -1,91 +1,126 @@
-# omp IDE
+<p align="center">
+  <img src="App/Icon/AppIcon.svg" width="128" height="128" alt="Lantern icon">
+</p>
 
-Native macOS IDE for [omp](https://github.com/can1357/oh-my-pi) (Swift 6, SwiftUI + AppKit, macOS 14+). Each session is omp's own TUI running in a terminal tab; the `ompd` daemon (a LaunchAgent) owns every omp TUI and terminal in its own PTYs and mirrors their screens, so quitting the app never ends a session and reopening shows exactly what was there. `omp` typed into one of the IDE's terminals is adopted as a session too (listed, paused and closed like the others; its tab is the terminal's). While no omp IDE window is open (the app quit, or running with every window closed), ompd pauses every session's agents with omp's own `/pause` (at once when the app quits or closes its last window, 3 s after it crashes) and resumes them when a window is back; a `/pause` of your own stays until you dismiss it.
+<h1 align="center">Lantern</h1>
 
-## Layout
+<p align="center">A native macOS IDE for <a href="https://github.com/can1357/oh-my-pi">omp</a> where agent sessions survive quits, crashes and reboots.</p>
 
-| Path | What |
-|---|---|
-| `Sources/IDEProtocol` | daemon ↔ app wire contract and `$APP_SUPPORT` layout |
-| `Sources/IDETransport` | length-prefixed frames over a unix socket (`IDEServer`, `IDEClient`, `IDERouter`) |
-| `Sources/OmpdCore` | daemon: manifest, session supervisors (omp TUIs in PTYs, respawn with `--resume`, paused while no window is open; omps typed into IDE terminals adopted as sessions), Regime-B recovery (what a dead omp left unfinished, continuation per restore policy, named-service relaunch through `omp ps`, wake stall check), agent supervision (each session's agents, jobs and pending approvals/asks folded from bridge events and pushed as `runtime`; revive/park/kill/message; named services listed and stopped/killed/restarted/re-moded), PTY pool with headless screen mirrors (terminals carry per-PTY bridge credentials), ide-bridge server + ownership lock, power observers, hardening (the omp version each spawn runs and the one installed at its path, `session.restart`, free-space and snapshot-failure notices, `omp gc` report and clean-up) |
-| `Sources/ompd` | `ompd run \| status [--json] \| --version` |
-| `Sources/IDEModel` | app-side models: daemon connection, session TUIs that follow omp from PTY to PTY (`SessionTerminal`), terminal models (PTY attach, serial input, push-driven PTY registry), a workspace's omp session files read as omp's resume picker reads them (`SessionFileListing`), local crash reports of ompd and the app (`CrashReport`), the menu-bar extra's summary (`MenuBarStatus`: agents working, what waits, sessions by project), `omp-ide://session/<key>` links (`SessionLink`) |
-| `Sources/IDEEditorModel` | editor logic without AppKit: text file read/atomic save, content-hash buffer state machine (dirty, revert, external change, hot-exit restore), line diff, navigator listing, FSEvents watcher |
-| `Sources/IDELanguageModel` | the editor's language servers without AppKit: which server takes a file and where it is on the login shell's PATH (`LanguageServerCatalog`, `LoginShellEnvironment`), one server process per project and language (`LanguageServer`: LanguageClient's handshake, server requests answered, ordered notifications, shutdown/exit), document sync in UTF-16 positions (`LineTable`, `DocumentSync`), diagnostics, hover, definitions and completions as the editor shows them |
-| `bridge/ide-bridge.ts` | omp extension loaded into every daemon-owned omp and, installed globally, into every other omp (agent registry with live activity, async jobs, pending approvals and asks, revive, pause/resume via omp's `/pause`, continuation prompts, named-service events and mode changes, wake stall watch, redial after an in-place ompd upgrade, ownership lock; terminal mode has an omp started in an IDE terminal adopted by ompd) |
-| `App/` | XcodeGen spec + SwiftUI sources for `omp IDE.app` (embeds `ompd` and its LaunchAgent plist, and the menu-bar extra `omp IDE Menu Bar.app` from `App/MenuBar` at `Contents/Library/LoginItems`) |
-| `scripts/` | `dev-launchagent.sh` (dev LaunchAgent), `acceptance.sh` (TUI-session acceptance with real omp), `chaos.sh` (Phase 3 chaos matrix with real omp), `release.sh` (signed universal DMG, notarization, Sparkle appcast) |
+Every session in Lantern is omp's own TUI, running in a tab. The sessions don't live in the app, though. A small daemon, `ompd`, owns every omp process and terminal, so you can quit Lantern in the middle of a tool call, open it again, and find the session exactly as you left it. While no Lantern window is open, ompd pauses the agents with omp's own `/pause`, and they pick up again when you come back.
 
-## Build
+## Features
 
-The checkout lives in an iCloud-synced folder, where build products pick up extended attributes that break codesign. Keep build output outside it: `.build` is a symlink to `~/Library/Developer/omp-ide/main-build`.
+- omp sessions and terminals keep their screens and scrollback across app restarts. If omp or ompd itself dies, the session is resumed from its file, and Lantern can continue the work that was cut off, ask you first, or leave it alone (Settings › General).
+- The Agents pane (⌃⌘A) shows each session's agent tree with live activity, its background jobs and the project's named services. You can message, revive, park or kill agents, and restart or stop services.
+- Tool approvals and `ask` prompts badge the Dock and post a notification while Lantern is in the background.
+- The editor has syntax highlighting, git change marks in the gutter, find and replace, and language servers (sourcekit-lsp, typescript-language-server, pyright or pylsp, rust-analyzer, gopls, clangd) when they're installed. Unsaved edits survive quitting.
+- Terminal tabs are owned by ompd too. Running `omp` in one turns it into a regular Lantern session.
+- A menu bar extra shows how many agents are working and what's waiting for you, even with every window closed.
+- Quick Look works in the Files pane, Finder's Services menu gets "Open in Lantern" and "New omp Session", and Open Session… (⇧⌘O) lists a project's saved sessions.
 
-The app must be signed with a real identity, even locally: Background Task Management refuses to spawn a bundled LaunchAgent whose executable has no Team ID (`Bundle identifiers from launchd plist ignored because the executable doesn't have a Team ID`, then `Unable to update LWCR with smd: 22`), so an ad-hoc signed ompd never starts and the app only ever shows "ompd is not reachable". `App/project.yml` signs with the Apple Development identity of team `V8K8L3ZSD5`; change `DEVELOPMENT_TEAM` for another team. Rebuilds keep the registration (launchd binds it to the Team ID and signing identifier). A registration launchd cannot spawn (left by an ad-hoc build) is repaired by the app 12 s after launch and by Restart ompd in the notice: unregister, `launchctl bootout` of the stale job, register, up to three passes 6 s apart (BTM replaces the old record with a fresh one only a moment after the first pass).
+## Requirements
+
+- macOS 14 or later
+- [omp](https://github.com/can1357/oh-my-pi) installed and on your login shell's `PATH`
+
+## Building from source
+
+You need Xcode, [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`) and the Metal toolchain, which SwiftTerm needs for its shaders:
 
 ```sh
-xcodebuild -downloadComponent MetalToolchain   # once; SwiftTerm compiles Metal shaders
-swift build && swift test                      # package + tests
-./scripts/acceptance.sh                         # acceptance with real omp (spends a few haiku calls)
-./scripts/chaos.sh ["omp SIGKILL" ...]          # chaos matrix (haiku calls; ~20 min for every row)
+xcodebuild -downloadComponent MetalToolchain   # once
+```
 
-cd App && xcodegen generate --spec project.yml
-xcodebuild -project OmpIDE.xcodeproj -scheme "omp IDE" -configuration Debug \
-  -destination platform=macOS -derivedDataPath ~/Library/Developer/omp-ide/dd-main \
+Build and test the Swift package (the daemon and every library):
+
+```sh
+swift build
+swift test
+```
+
+Then generate the Xcode project and build the app:
+
+```sh
+cd App
+xcodegen generate --spec project.yml
+xcodebuild -project Lantern.xcodeproj -scheme Lantern -configuration Debug \
+  -destination platform=macOS -derivedDataPath ~/Library/Developer/lantern/dd-main \
   -skipPackagePluginValidation build
 ```
 
-Debug builds the active architecture with Xcode's defaults. Release builds are universal (`arm64 x86_64`) and compile ompd and its package modules (`OmpdCore`) with `-Osize`.
+### Code signing
 
-## Release
+Lantern has to be signed with a real development identity, even for local builds. macOS refuses to launch a bundled LaunchAgent whose executable has no Team ID, so an ad-hoc signed build never starts ompd and only ever shows "ompd is not reachable". `App/project.yml` signs with team `V8K8L3ZSD5`; set `DEVELOPMENT_TEAM` there to your own team.
 
-```sh
-scripts/release.sh [<version> [<build>]]   # defaults: MARKETING_VERSION, CURRENT_PROJECT_VERSION in App/project.yml
-```
+### iCloud folders
 
-Prerequisites: Xcode, `xcodegen`, the Metal toolchain, the `Developer ID Application: Bella Cohen (V8K8L3ZSD5)` identity with its private key in the login keychain, and network (package resolution, Apple's timestamp server). Output goes to `~/Library/Developer/omp-ide/release` (outside iCloud; `RELEASE_DIR` moves it), derived data to `~/Library/Developer/omp-ide/dd-release` (`DERIVED_DATA`).
+If the checkout lives in an iCloud-synced folder such as Desktop or Documents, keep build output somewhere else. Synced folders add extended attributes to build products, and codesign rejects them. Making `.build` a symlink to a folder under `~/Library/Developer` is enough for the package, and the `xcodebuild` command above already puts derived data outside the checkout.
 
-The script runs `xcodegen`, archives the Release configuration, exports it with Developer ID signing and the hardened runtime (`export/omp IDE.app`), then verifies it and stops on any signing problem: `codesign --verify --deep --strict`; every Mach-O in the bundle (app, ompd, Sparkle and its helpers) signed by the Developer ID of team `V8K8L3ZSD5` with the hardened runtime, a secure timestamp and no `get-task-allow`; ompd signed as `com.omp-ide.ompd` and sealed at `Contents/MacOS/ompd`, its LaunchAgent plist sealed at `Contents/Library/LaunchAgents/` with `BundleProgram` pointing at it; app, ompd and Sparkle universal. It prints `spctl`'s verdict (an unnotarized build is rejected as `Unnotarized Developer ID`), builds `omp-IDE-<version>.dmg` (the app and an `/Applications` link), signs it and checks the mounted image. Steps whose inputs are missing are skipped and listed at the end.
+## Running a development build
 
-The script also checks the menu-bar extra: signed as `com.omp-ide.menubar`, sealed at `Contents/Library/LoginItems/`, universal.
-
-| Variable | Does | Without it |
-|---|---|---|
-| `FEED_URL` | Sparkle appcast URL baked into the app (`SUFeedURL`); needs `SPARKLE_PUBLIC_KEY` | the app never starts Sparkle: no checks, no prompts, no Check for Updates… |
-| `SPARKLE_PUBLIC_KEY` | EdDSA public key baked into the app (`SUPublicEDKey`) | — |
-| `NOTARY_PROFILE` | `notarytool submit --wait` with this keychain profile, then `stapler staple` on the DMG | not notarized: Gatekeeper rejects the download |
-| `SPARKLE_KEY_FILE` | EdDSA private key file; must match `SPARKLE_PUBLIC_KEY`. `sign_update` prints the DMG's signature and `generate_appcast` adds its item to `release/appcast/<feed file name>` | no appcast |
-| `DOWNLOAD_URL_PREFIX` | where the DMG is served, for the appcast enclosure | `FEED_URL`'s directory |
-
-Setting up the feed later (the tools are Sparkle's, under `~/Library/Developer/omp-ide/dd-release/SourcePackages/artifacts/sparkle/Sparkle/bin` after one release run):
-
-1. Once: `generate_keys` creates the EdDSA key pair in the login keychain and prints the public key; `generate_keys -x <file>` exports the private key for `SPARKLE_KEY_FILE` (keep it out of the repo). Never change the pair after a build ships: installed apps only accept updates signed with the key they carry.
-2. Once: `xcrun notarytool store-credentials <profile> --apple-id <id> --team-id V8K8L3ZSD5` stores the notarization credentials as `<profile>`.
-3. Each release: `FEED_URL=https://…/appcast.xml SPARKLE_PUBLIC_KEY=<public key> SPARKLE_KEY_FILE=<file> NOTARY_PROFILE=<profile> scripts/release.sh <version> <build>`, with `<build>` higher than every shipped build; then upload the DMG and the appcast. Keep `release/appcast` between releases: `generate_appcast` adds to the appcast already there.
-
-With a feed, Sparkle checks on its own schedule (it asks on the second launch), downloads an update in the background and installs it when the app quits. ompd keeps running from the replaced bundle (launchd keeps the old binary's inode mapped; the registration is keyed on the bundle path, Team ID and identifier, which an update keeps), and the new app's first hello upgrades it.
-
-## Run without installing the LaunchAgent
+A development build can run against its own ompd instead of the one the installed app registers:
 
 ```sh
-export OMPD_HOME=/tmp/oi                 # keep it short: the socket path must stay under 104 bytes
-.build/debug/ompd run &                  # add --omp-arg … to pass flags to every new omp session
-"$HOME/Library/Developer/omp-ide/dd-main/Build/Products/Debug/omp IDE.app/Contents/MacOS/omp IDE" &
+export OMPD_HOME=/tmp/oi       # keep it short: the socket path must stay under 104 bytes
+.build/debug/ompd run &        # add --omp-arg … to pass flags to every new omp session
+open -n --env OMPD_HOME=/tmp/oi \
+  ~/Library/Developer/lantern/dd-main/Build/Products/Debug/Lantern.app
 .build/debug/ompd status
-open -g -n --env OMPD_HOME=/tmp/oi "$HOME/Library/Developer/omp-ide/dd-main/Build/Products/Debug/omp IDE.app/Contents/Library/LoginItems/omp IDE Menu Bar.app"   # the menu-bar extra, for that ompd
 ```
 
-With `OMPD_HOME` set, the app does not register the production LaunchAgent (`com.omp-ide.ompd`) or the menu-bar extra's login item, and the daemon does not install the lock-mode bridge into `~/.omp/agent/extensions`. Its Spotlight items live in a domain of their own, so they never replace the installed app's. A Debug build registers itself with Launch Services, so the Finder's Services (Open in omp IDE, New omp Session) and `omp-ide://` links can then launch it without `OMPD_HOME`, against the installed ompd; `lsregister -u "<the Debug app>"` removes that.
+With `OMPD_HOME` set, Lantern doesn't register the production LaunchAgent or the menu bar extra's login item, and ompd doesn't install its bridge extension into `~/.omp/agent/extensions`. Spotlight items go into a separate domain, so they never replace the installed app's.
 
-## Status
+`scripts/dev-launchagent.sh` installs a development ompd as its own LaunchAgent (`com.magicelklabs.lantern.ompd.dev`) when you want launchd to keep it running.
 
-| Phase | State |
+## Tests
+
+`swift test` runs the unit and integration tests. Two scripts run end-to-end checks against real omp. Both use `anthropic/claude-haiku-4-5`, so they cost a few model calls:
+
+```sh
+./scripts/acceptance.sh                  # a session survives detach, SIGTERM and a launchd restart (a few minutes)
+./scripts/chaos.sh ["omp SIGKILL" ...]   # app, omp and ompd deaths at every point of a turn (about 20 minutes)
+```
+
+## Project layout
+
+| Path | Contents |
 |---|---|
-| 1 ompd core | done (rebuilt for TUI sessions). `scripts/acceptance.sh`: a prompt typed into the session TUI runs a nested task while a client detaches and reattaches; `launchctl kickstart -k` mid-run respawns the session with `--resume` in a new PTY that continues the old screen |
-| 2 App shell | done for Regime A: session tabs are omp's TUI; ⌘Q mid-tool, relaunch → the tab reattaches and shows the finished run; editor/terminal tabs and unsaved edits restore. Regime B2 (real logout/reboot) not yet exercised |
-| 3 Regime B (continuation policy, service relaunch) | done: an omp that dies is resumed and its interrupted agents are continued, held for the user (a bar in the session tab) or left, per the restore policy in Settings; named services relaunched; stalled turns after a wake aborted and continued; a session whose folder moved can be pointed at the new one. `scripts/chaos.sh`: 35/35 cells green (app, omp and ompd deaths × idle, streaming, mid-tool, mid-subagent, pending ask/approval, named service). Logout, reboot, power loss and sleep need a VM and are not staged |
-| 4 Agent supervision UX (agent tree, jobs, director, session picker) | done: an Agents pane (⌃⌘A) lists each running session's agent tree with live activity, its jobs and the project's named services; agents are messaged, revived, parked or killed, services stopped, killed, restarted, re-moded and their logs followed in a terminal tab; an approval or `ask` waiting in a session badges the rail and the Dock and, in the background, posts a notification; Open Session… (⇧⌘O) lists the project's saved omp sessions with their lifecycle status and opens, focuses or resumes them. Smoked against a dev ompd with real omp (haiku); notification delivery needs the user's permission, which was not granted in the smoke |
-| 5 Hardening (upgrades, disk pressure) | done: ompd upgrades in place on the next app hello after its executable changed (`execve` handover: same pid, omps, PTYs and locks; bridges redial), else restarts gracefully when settled; an app refused by an older ompd restarts it when idle or offers Restart Now / When Idle; omp upgrades show a Restart Session bar; low-disk and write-failure notices; Settings › Storage runs `omp gc` (never `--archive`); local crash-report notices; Sparkle (off until a feed is set) and `scripts/release.sh` (Developer ID, universal DMG). The app surfaces were checked on screen against an isolated ompd. Not exercised: notarization, a real Sparkle update, the production kickstart of the installed ompd |
-| Platform integration | done: the menu-bar extra (agents working and what waits, every session by project, even with no window; a session row opens its tab), editor language servers (diagnostics underlined and counted, hover / Show Quick Help, ⌘-click / ⌃⌘J Jump to Definition, completions; sourcekit-lsp, typescript-language-server, pyright/pylsp, rust-analyzer, gopls, clangd found on the login shell's PATH), Quick Look (Space in the Files pane, a subagent's output), Services for folders, Spotlight-indexed sessions. Not seen: Spotlight results (macOS 27.0 rejects app donations here), the hover popover (needs the pointer over an active window), login-item registration |
+| `App/` | The SwiftUI/AppKit app, the menu bar extra (`App/MenuBar`) and the XcodeGen spec |
+| `Sources/ompd` | The `ompd` executable: `ompd run`, `ompd status [--json]`, `ompd --version` |
+| `Sources/OmpdCore` | The daemon: session supervisors, PTY pool with screen mirrors, crash recovery, agent supervision, in-place upgrades |
+| `Sources/IDEProtocol` | The wire contract between ompd and the app, and the on-disk layout |
+| `Sources/IDETransport` | Length-prefixed frames over a unix socket |
+| `Sources/IDEModel` | App-side models: the daemon connection, terminals, session files, crash reports |
+| `Sources/IDEState` | Window and editor state in `state.sqlite` |
+| `Sources/IDEEditorModel` | Editor logic without AppKit: files, dirty tracking, diffs, git |
+| `Sources/IDELanguageModel` | Language server discovery and the LSP client |
+| `bridge/ide-bridge.ts` | The omp extension ompd loads into every session it runs |
+| `scripts/` | Release, development LaunchAgent, app icon and acceptance scripts |
 
-Known gaps: production `SMAppService` registration hasn't run with a Developer ID build. Sessions started before bridge revision 9 cannot redial, so the first ompd upgrade from today's installed daemon is a graceful restart (Regime B2), taken when every session is settled or on Restart Now.
+## Releasing
+
+```sh
+scripts/release.sh [<version> [<build>]]   # defaults to MARKETING_VERSION and CURRENT_PROJECT_VERSION in App/project.yml
+```
+
+The script archives a universal Release build, signs it with a Developer ID and the hardened runtime, checks every signature in the bundle, and packages `Lantern-<version>.dmg`. Output goes to `~/Library/Developer/omp-ide/release` (`RELEASE_DIR` overrides it). It needs the `Developer ID Application` identity in the login keychain and network access.
+
+Notarization and Sparkle updates are optional and controlled by environment variables:
+
+| Variable | Purpose | Without it |
+|---|---|---|
+| `NOTARY_PROFILE` | `notarytool` keychain profile; the DMG is notarized and stapled | Gatekeeper rejects the download |
+| `FEED_URL` | Sparkle appcast URL baked into the app; needs `SPARKLE_PUBLIC_KEY` | the app never checks for updates |
+| `SPARKLE_PUBLIC_KEY` | EdDSA public key baked into the app | |
+| `SPARKLE_KEY_FILE` | EdDSA private key used to sign the DMG and update the appcast | no appcast |
+| `DOWNLOAD_URL_PREFIX` | Where the DMG is hosted, for the appcast | the directory of `FEED_URL` |
+
+To set up updates, create the key pair once with Sparkle's `generate_keys` and store notarization credentials once with `xcrun notarytool store-credentials`. Never change the key pair after a build has shipped: installed copies only accept updates signed with the key they carry. Keep `release/appcast` between releases, since `generate_appcast` adds to the existing feed.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
+
+## License
+
+Lantern is source-available under the [PolyForm Shield License 1.0.0](LICENSE). You can use, modify and share it, but not to build a competing product.
