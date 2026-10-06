@@ -32,7 +32,7 @@ public enum DaemonStatus: DaemonMethod {
     }
 }
 
-/// An `app` client's windows: `hasWindow` false once its last omp IDE window closed (or the app quits), true when one
+/// An `app` client's windows: `hasWindow` false once its last Lantern window closed (or the app quits), true when one
 /// opens again. With no connected app holding a window, ompd pauses every session right away; a window
 /// resumes them.
 public enum ClientPresence: DaemonMethod {
@@ -254,5 +254,21 @@ public enum PTYList: DaemonMethod {
     public struct Result: Codable, Sendable, Equatable {
         public var ptys: [PTYInfo]
         public init(ptys: [PTYInfo]) { self.ptys = ptys }
+    }
+}
+
+/// What runs in the foreground of a PTY's terminal when that is not the PTY's own program (the command a shell runs,
+/// a pipeline's processes oldest first): what closing the PTY would terminate besides its program. Empty at a shell's
+/// prompt, for a program that runs on its own, and once the terminal hung up.
+public enum PTYProcesses: DaemonMethod {
+    public static let name = "pty.processes"
+    public struct Params: Codable, Sendable, Equatable {
+        public var ptyId: PTYID
+        public init(ptyId: PTYID) { self.ptyId = ptyId }
+    }
+    public struct Result: Codable, Sendable, Equatable {
+        /// Process names (`proc_name`).
+        public var processes: [String]
+        public init(processes: [String]) { self.processes = processes }
     }
 }

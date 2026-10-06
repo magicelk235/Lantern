@@ -16,12 +16,14 @@ final class AppState {
     let menuBar = MenuBarAgent()
     /// What the app does about an ompd that refuses its version.
     let outdatedDaemon: OutdatedDaemon
-    /// Crash reports of ompd and omp IDE the user has not seen yet (local only).
+    /// Crash reports of ompd and Lantern the user has not seen yet (local only).
     let crashNotices = CrashNotices()
     /// Open files and the file navigators.
     let editors: Editors
     /// Terminal emulators: `.terminal` tabs on PTYs in ompd, and `.session` tabs showing omp's TUI.
     let terminals: TerminalsController
+    /// Whether the key window is a project window, for ⌘W and the tab commands.
+    let keyWindow = KeyWindow()
     /// Detail-area tabs, one strip per workspace. The selected tab is what the detail area shows and what the sidebar
     /// highlights.
     private(set) var tabs: TabLayout
@@ -48,8 +50,9 @@ final class AppState {
     /// or tabs.
     private(set) var addedProjects: [String]
     var alert: AlertMessage?
-    /// A Close Session / Close Terminal the user asked for, waiting for their confirmation in the window.
-    var pendingClose: CloseRequest?
+    /// A project whose window closed while its sessions or terminals ran: the other windows say they keep running,
+    /// until the user has seen that once.
+    var closedProjectNotice: ClosedProject?
     /// The project whose Open Session sheet is up (its window shows it).
     var sessionPickerProject: String?
     /// The file Quick Look shows, and the project whose window shows it (`QuickLook.swift`).
@@ -66,6 +69,12 @@ final class AppState {
     @ObservationIgnored private var windowsByProject: [String: ObjectIdentifier] = [:]
     /// Size of the area below the tab strip, where a tab's content goes, and whether the strip was showing.
     @ObservationIgnored private var tabContentArea: (size: CGSize, belowStrip: Bool)?
+    /// The project windows open at the last quit still to open again, in their tab order, and the one to bring to the
+    /// front once they are all up. Each opens once the window before it is up (`reopenNextWindow`).
+    @ObservationIgnored private var windowsToReopen: [String] = []
+    @ObservationIgnored private var frontToReopen: String?
+    /// The project windows as they were when quitting began: windows closing on the way out change nothing saved.
+    @ObservationIgnored private var windowsAtQuit: (windows: [String], front: String?)?
 
     struct AlertMessage: Identifiable {
         let id = UUID()
@@ -73,17 +82,40 @@ final class AppState {
         let message: String
     }
 
-    enum CloseRequest: Identifiable {
-        case session(SessionKey)
-        /// Remove a stopped session from ompd's list.
-        case forget(SessionKey)
-
-        var id: String {
-            switch self {
-            case .session(let key): "session:\(key)"
-            case .forget(let key): "forget:\(key)"
-            }
+    /// A close that waits for the user's confirmation in the window of `project`, with what it ends (`confirm`).
+    struct CloseRequest {
+        enum Action {
+            /// Close these tabs (Close Tab, Close Other Tabs, …), or end the session or terminal (Close Session, Close
+            /// Terminal).
+            case close([TabKind])
+            /// Remove a stopped session from ompd's list.
+            case forget(SessionKey)
         }
+
+        /// A session whose omp the close ends.
+        struct EndingSession {
+            let title: String
+            /// The agent is working.
+            let working: Bool
+            /// Its session file is on disk: Open Session… resumes it afterwards.
+            let resumable: Bool
+        }
+
+        let action: Action
+        /// The window the confirmation shows in.
+        let project: String
+        var sessions: [EndingSession] = []
+        /// What runs in the foreground of the closing terminals besides their programs (`pty.processes`).
+        var processes: [String] = []
+
+        var endsSomething: Bool { !sessions.isEmpty || !processes.isEmpty }
+    }
+
+    /// See `closedProjectNotice`.
+    struct ClosedProject: Equatable {
+        let project: String
+        let sessions: Int
+        let terminals: Int
     }
 
     init() {
@@ -91,6 +123,8 @@ final class AppState {
         let restored = persistence.restoredWindow
         editors = Editors(persistence: persistence)
         tabs = restored?.tabs ?? TabLayout()
+        windowsToReopen = restored?.windows ?? []
+        frontToReopen = restored?.frontWindow
         terminals = TerminalsController(registry: connection.terminals)
         outdatedDaemon = OutdatedDaemon(connection: connection, agent: agent)
         sidebarVisible = restored?.sidebarVisible ?? true
@@ -108,6 +142,7 @@ final class AppState {
         connection.terminals.onGone = { [weak self] ptyId in self?.terminalGone(ptyId) }
         observeSystemPower()
         installEditorNavigation()
+        installFilesFirstMouse()
     }
 
     /// launchd starts a registered ompd within a moment. A daemon still out of reach this long after launch has a
@@ -138,7 +173,7 @@ final class AppState {
         if let reason = persistence.unavailableReason {
             alert = AlertMessage(
                 title: "The window layout will not be remembered",
-                message: "omp IDE could not open its state database: \(reason)")
+                message: "Lantern could not open its state database: \(reason)")
         }
         Task {
             try? await Task.sleep(for: Self.daemonStartGrace)
@@ -176,22 +211,111 @@ final class AppState {
         saveWindow()
     }
 
-    /// Closes the tab. A session tab ends its session and a terminal tab its PTY (they are gone, not hidden; asked
-    /// first when the agent is working or a program runs in the terminal). An editor with unsaved edits asks to
-    /// save them first.
+    /// The user dragged `tab` to `index` in its strip.
+    func moveTab(_ tab: TabKind, to index: Int) {
+        tabs.move(tab, to: index)
+        saveWindow()
+    }
+
+    /// Closes the tab. A session tab ends its session and a terminal tab its PTY (they are gone, not hidden); an editor
+    /// with unsaved edits asks to save them first. Asked first when that ends a running omp or a command running in the
+    /// terminal (`closeTabs`).
     func closeTab(_ tab: TabKind) {
-        switch tab {
-        case .session(let sessionKey):
-            requestCloseSession(sessionKey)
-        case .terminal(let ptyId):
-            requestCloseTerminal(ptyId)
-        case .editor(let path):
-            Task {
-                guard await editors.closeIfConfirmed(path, window: NSApp.keyWindow) else { return }
-                tabs.close(tab)
-                saveWindow()
+        closeTabs([tab])
+    }
+
+    /// Closes `closing` (Close Tab, Close Other Tabs, Close Tabs to the Right, Close All Tabs). What ends with them,
+    /// running omp sessions and commands running in terminals, is asked about once, for all of them, in their window;
+    /// Cancel keeps every tab. Then they close one after another, and an unsaved editor the user keeps stops the rest.
+    func closeTabs(_ closing: [TabKind]) {
+        Task {
+            let request = await closeRequest(for: closing)
+            if request.endsSomething { confirm(request) } else { await close(closing) }
+        }
+    }
+
+    /// Asks about `request` the way Terminal does: an alert sheet on its window whose default button (Return) closes,
+    /// Cancel answering Esc and ⌘. (wording in `ContentView`'s `CloseRequest` extension).
+    private func confirm(_ request: CloseRequest) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = request.title
+        alert.informativeText = request.message
+        alert.addButton(withTitle: request.confirmation)
+        alert.addButton(withTitle: "Cancel")
+        let answered = { [weak self] (response: NSApplication.ModalResponse) in
+            if response == .alertFirstButtonReturn { self?.confirmed(request) }
+        }
+        if let window = window(of: request.project) ?? NSApp.keyWindow {
+            alert.beginSheetModal(for: window, completionHandler: answered)
+        } else {
+            answered(alert.runModal())
+        }
+    }
+
+    /// The user confirmed `request`.
+    private func confirmed(_ request: CloseRequest) {
+        switch request.action {
+        case .close(let closing): Task { await close(closing) }
+        case .forget(let sessionKey): forgetSession(sessionKey)
+        }
+    }
+
+    /// What closing `closing` ends: the sessions whose omp runs, what runs in the terminals besides their programs.
+    private func closeRequest(for closing: [TabKind]) async -> CloseRequest {
+        var request = CloseRequest(action: .close(closing), project: confirmationProject(for: closing))
+        guard connection.isConnected else { return request }
+        for tab in closing {
+            switch tab {
+            case .session(let sessionKey):
+                guard let entry = entry(for: sessionKey), entry.runsOmp else { continue }
+                request.sessions.append(CloseRequest.EndingSession(
+                    title: sessionTitle(sessionKey), working: entry.status == .busy,
+                    resumable: entry.sessionFile != nil && !entry.sessionFileIsGone))
+            case .terminal(let ptyId):
+                guard terminals.model(ptyId) != nil else { continue }
+                // An ompd that cannot tell (an older one) leaves the terminal to close as it did.
+                request.processes += (try? await connection.ptyProcesses(ptyId)) ?? []
+            case .editor:
+                continue
             }
         }
+        return request
+    }
+
+    /// The window a confirmation about `closing` shows in: the project window of the first of them that has one, else
+    /// the key window.
+    private func confirmationProject(for closing: [TabKind]) -> String {
+        for tab in closing {
+            let project = tabs.strips.first { $0.tabs.contains(tab) }?.workspace ?? tab.sessionKey.flatMap { entry(for: $0)?.workspace }
+            if let project, windowsByProject[project] != nil { return project }
+        }
+        return keyProject ?? windowsByProject.keys.first ?? ""
+    }
+
+    /// Closes `closing` one after another without asking about what ends with them; an unsaved editor the user keeps
+    /// stops the rest.
+    private func close(_ closing: [TabKind]) async {
+        for tab in closing {
+            switch tab {
+            case .session(let sessionKey):
+                closeSession(sessionKey)
+            case .terminal(let ptyId):
+                closeTerminal(ptyId)
+            case .editor(let path):
+                guard tabs.contains(tab) else { continue }
+                guard await closeEditorTab(path) else { return }
+            }
+        }
+    }
+
+    /// Closes an editor's tab, asking first about unsaved edits; false when the user kept it.
+    @discardableResult
+    private func closeEditorTab(_ path: String) async -> Bool {
+        guard await editors.closeIfConfirmed(path, window: NSApp.keyWindow) else { return false }
+        tabs.close(.editor(path: path))
+        saveWindow()
+        return true
     }
 
     /// Closes the editor tabs of `path` and of everything under it; false when the user kept an unsaved one.
@@ -205,6 +329,18 @@ final class AppState {
         return true
     }
 
+    /// `path` was renamed to `destination`: the editor tabs of it, or of the files under it, follow with their unsaved
+    /// edits, selection and scroll position.
+    func moveEditors(from path: String, to destination: String) {
+        for tab in tabs.tabs {
+            guard let open = tab.editorPath, open == path || open.hasPrefix(path + "/") else { continue }
+            let moved = destination + open.dropFirst(path.count)
+            editors.move(open, to: moved)
+            tabs.replace(tab, with: .editor(path: moved))
+        }
+        saveWindow()
+    }
+
     /// Closes a session's tab without touching the session.
     private func dropSessionTab(_ sessionKey: SessionKey) {
         guard tabs.contains(.session(sessionKey)) else { return }
@@ -214,7 +350,7 @@ final class AppState {
         saveWindow()
     }
 
-    /// Shows `path` in its editor tab, opening one at the end of `workspace`'s strip first if needed.
+    /// Shows `path` in its editor tab, opening one after the tab on screen in `workspace`'s strip first if needed.
     func openEditor(_ path: String, in workspace: String) {
         editors.open(path, in: workspace).focusOnAppear = true
         editors.highlight = nil
@@ -299,10 +435,18 @@ final class AppState {
         currentProject.flatMap(selectedTab(in:))
     }
 
-    /// Brings `workspace`'s window forward (opening it as a tab of the group if needed).
+    /// Brings `workspace`'s window forward (opening it as a tab of the group if needed). The first project opens in
+    /// the window of no project, which keeps its place and size.
     func showProject(_ workspace: String) {
         let workspace = Self.normalized(workspace)
         guard projects.contains(workspace) else { return }
+        if windowsByProject[workspace] == nil, let blank = window(of: ""), let showInBlank = showInNoProjectWindow {
+            showInNoProjectWindow = nil
+            windowClosing(ObjectIdentifier(blank), project: "")
+            attach(blank, project: workspace)
+            showInBlank(workspace)
+            return
+        }
         openProjectWindow?(workspace)
     }
 
@@ -452,18 +596,19 @@ final class AppState {
         }
     }
 
-    /// Ends the session: at once, or after a confirmation while the agent is working (it lives in the window).
+    /// Ends the session (Close Session), asking first while its omp runs (`closeTabs`).
     func requestCloseSession(_ sessionKey: SessionKey) {
-        guard connection.isConnected, let entry = entry(for: sessionKey) else {
-            dropSessionTab(sessionKey)
-            return
-        }
-        if entry.status == .busy { pendingClose = .session(sessionKey) } else { closeSession(sessionKey) }
+        closeTabs([.session(sessionKey)])
     }
 
     /// Ends omp for the session gracefully and drops the session from ompd's list; its tab closes. The conversation
-    /// file on disk stays (resumable through `session.open`).
-    func closeSession(_ sessionKey: SessionKey) {
+    /// file on disk stays (resumable through `session.open`). A session ompd does not list, or any while ompd is out of
+    /// reach, only loses its tab.
+    private func closeSession(_ sessionKey: SessionKey) {
+        guard connection.isConnected, entry(for: sessionKey) != nil else {
+            dropSessionTab(sessionKey)
+            return
+        }
         Task {
             do {
                 if let entry = entry(for: sessionKey), !entry.isStopped {
@@ -488,11 +633,11 @@ final class AppState {
     /// Asks before dropping a stopped session from the list (the confirmation lives in the window).
     func requestForgetSession(_ sessionKey: SessionKey) {
         guard connection.isConnected, let entry = entry(for: sessionKey), entry.isStopped else { return }
-        pendingClose = .forget(sessionKey)
+        confirm(CloseRequest(action: .forget(sessionKey), project: confirmationProject(for: [.session(sessionKey)])))
     }
 
     /// Drops the session from ompd's list; its tab closes. The session file on disk stays.
-    func forgetSession(_ sessionKey: SessionKey) {
+    private func forgetSession(_ sessionKey: SessionKey) {
         Task {
             do {
                 try await connection.forgetSession(sessionKey)
@@ -588,19 +733,20 @@ final class AppState {
         if let workspace = tabs.strips.first(where: { $0.tabs.contains(.terminal(ptyId)) })?.workspace { showProject(workspace) }
     }
 
-    /// Ends the PTY and everything on it; its tab closes.
+    /// Ends the PTY and everything on it (Close Terminal), asking first while a command runs in it (`closeTabs`).
     func requestCloseTerminal(_ ptyId: PTYID) {
+        closeTabs([.terminal(ptyId)])
+    }
+
+    /// Ends the PTY and everything running on it; its tab closes. A terminal ompd does not have, or any while ompd is out
+    /// of reach, only loses its tab.
+    private func closeTerminal(_ ptyId: PTYID) {
         guard connection.isConnected, terminals.model(ptyId) != nil else {
             tabs.close(.terminal(ptyId))
             terminals.release(ptyId)
             saveWindow()
             return
         }
-        closeTerminal(ptyId)
-    }
-
-    /// Ends the PTY and everything running on it; its tab closes.
-    func closeTerminal(_ ptyId: PTYID) {
         Task {
             do {
                 try await terminals.close(ptyId)
@@ -639,12 +785,14 @@ final class AppState {
     // MARK: - Windows
 
     /// Every project window is a native tab of one tab group (Terminal-style); the tab's title is the project.
-    static let windowTabbingIdentifier = "com.omp-ide.project"
+    static let windowTabbingIdentifier = "com.magicelklabs.lantern.project"
 
     /// Opens (or brings forward) the window of a project; set by the scene, which owns `openWindow`.
     @ObservationIgnored var openProjectWindow: ((String) -> Void)?
     /// Closes the window of a project; set by the scene.
     @ObservationIgnored var closeProjectWindow: ((String) -> Void)?
+    /// Makes the window of no project show a project; set by that window's scene, which owns its value.
+    @ObservationIgnored var showInNoProjectWindow: ((String) -> Void)?
 
     /// Called with the window hosting `project`'s scene each time it (re)appears: it joins the tab group and, while
     /// it is key, it is the project in focus.
@@ -660,10 +808,13 @@ final class AppState {
         window.isRestorable = true
         window.tabbingMode = .preferred
         window.tabbingIdentifier = Self.windowTabbingIdentifier
-        // A window SwiftUI opened on its own joins the group of the others as a tab.
+        // The window may have turned key before it became a project window here.
+        keyWindow.update()
+        NewProjectTab.install(in: window) { [weak self] in self?.addProject() }
+        // A window SwiftUI opened on its own joins the group the user is in, as its last tab (Terminal's +).
         if (window.tabGroup?.windows.count ?? 1) <= 1,
-           let group = NSApp.windows.first(where: { $0 !== window && $0.isVisible && $0.tabbingIdentifier == Self.windowTabbingIdentifier }) {
-            group.addTabbedWindow(window, ordered: .above)
+           let front = NSApp.orderedWindows.first(where: { $0 !== window && $0.isVisible && KeyWindow.isProject($0) }) {
+            (front.tabGroup?.windows.last ?? front).addTabbedWindow(window, ordered: .above)
             window.makeKeyAndOrderFront(nil)
         }
         if window.tabGroup?.isTabBarVisible == false { window.toggleTabBar(nil) }
@@ -682,6 +833,8 @@ final class AppState {
             },
         ]
         windowObservers[id] = observers
+        windowsToReopen.removeAll { $0 == project }
+        reopenNextWindow()
         windowsChanged()
     }
 
@@ -693,6 +846,7 @@ final class AppState {
 
     private func windowClosing(_ id: ObjectIdentifier, project: String) {
         flushState()
+        noteClosedProject(project)
         windowsAttached.remove(id)
         if windowsByProject[project] == id { windowsByProject[project] = nil }
         for observer in windowObservers.removeValue(forKey: id) ?? [] { NotificationCenter.default.removeObserver(observer) }
@@ -700,10 +854,28 @@ final class AppState {
         windowsChanged()
     }
 
+    /// The first time a project's window closes while omp runs in its sessions or a terminal of it runs, the other
+    /// windows say they keep running (ompd pauses the agents once no window is left; terminals go on).
+    private func noteClosedProject(_ project: String) {
+        guard !project.isEmpty, !UserDefaults.standard.bool(forKey: Self.closedProjectNoticeSeenKey) else { return }
+        let sessions = connection.sessions.filter { $0.workspace == project && $0.runsOmp && !$0.adopted }.count
+        let terminals = (strip(of: project)?.tabs.compactMap(\.ptyId) ?? []).filter { connection.terminals.info($0)?.running == true }.count
+        guard sessions + terminals > 0 else { return }
+        closedProjectNotice = ClosedProject(project: project, sessions: sessions, terminals: terminals)
+    }
+
+    /// `closedProjectNotice` goes away; once the user acted on it (`seen`), it never shows again.
+    func dismissClosedProjectNotice(seen: Bool) {
+        closedProjectNotice = nil
+        if seen { UserDefaults.standard.set(true, forKey: Self.closedProjectNoticeSeenKey) }
+    }
+
+    private static let closedProjectNoticeSeenKey = "closedProjectNoticeSeen"
+
     /// A window closing only to give way to another (the no-project window to the first project's) pauses nothing.
     private static let windowlessDelay: Duration = .milliseconds(500)
 
-    /// ompd pauses every session while no omp IDE window is open and resumes them when one opens.
+    /// ompd pauses every session while no Lantern window is open and resumes them when one opens.
     private func windowsChanged() {
         windowlessReport?.cancel()
         windowlessReport = nil
@@ -721,6 +893,7 @@ final class AppState {
     /// Quitting: ompd pauses every session now instead of after it notices the app is gone, and the editors' language
     /// servers shut down. Waits for ompd a moment at most, for the servers a little longer.
     func prepareToQuit() async {
+        windowsAtQuit = openWindows()
         flushState()
         windowlessReport?.cancel()
         windowlessReport = nil
@@ -749,12 +922,51 @@ final class AppState {
         persistence.flush()
     }
 
-    /// The layout (window frames are AppKit's to restore, per project window).
+    /// The layout and the project windows open (window frames are AppKit's to restore, per project window).
     private func saveWindow() {
+        let open = windowsAtQuit ?? openWindows()
         persistence.save(
             WindowState(
                 id: Self.mainWindowID, sidebarWidth: sidebarWidth, sidebarVisible: sidebarVisible,
-                projects: addedProjects, tabs: tabs))
+                projects: addedProjects, tabs: tabs, windows: open.windows, frontWindow: open.front))
+    }
+
+    /// The project the scene's first window shows at launch: the first of the windows open at the last quit, else the
+    /// first project.
+    var launchProject: String? {
+        windowsToReopen.first ?? projects.first
+    }
+
+    /// The projects whose windows are open, in the order of their window tabs (the frontmost window's group first),
+    /// and the one in front.
+    private func openWindows() -> (windows: [String], front: String?) {
+        let projectOf = Dictionary(windowsByProject.map { ($0.value, $0.key) }) { first, _ in first }
+        var seen = Set<ObjectIdentifier>()
+        var windows: [String] = []
+        for window in NSApp.orderedWindows where KeyWindow.isProject(window) {
+            for tab in window.tabGroup?.windows ?? [window] where seen.insert(ObjectIdentifier(tab)).inserted {
+                if let project = projectOf[ObjectIdentifier(tab)], !project.isEmpty { windows.append(project) }
+            }
+        }
+        let front = NSApp.orderedWindows.first(where: KeyWindow.isProject).flatMap { projectOf[ObjectIdentifier($0)] }
+        return (windows, front.flatMap { $0.isEmpty ? nil : $0 })
+    }
+
+    /// At launch: opens the next project window that was open at the last quit, which joins the group as its last tab
+    /// (`attach`), once the scene takes it (it ignores opening while it restores); with none left, brings the one that
+    /// was in front forward.
+    private func reopenNextWindow() {
+        guard !windowsToReopen.isEmpty || frontToReopen != nil else { return }
+        Task {
+            try? await Task.sleep(for: .milliseconds(100))
+            windowsToReopen.removeAll { $0.isEmpty || windowsByProject[$0] != nil }
+            if let next = windowsToReopen.first {
+                openProjectWindow?(next)
+            } else if let front = frontToReopen {
+                frontToReopen = nil
+                window(of: front)?.makeKeyAndOrderFront(nil)
+            }
+        }
     }
 
     private func observeSystemPower() {
@@ -771,6 +983,8 @@ final class AppState {
 extension SessionManifestEntry {
     /// ompd can resume the session and its session file is still on disk.
     var isResumable: Bool { canResume && !sessionFileIsGone }
+    /// omp runs for the session, or is being started: closing it ends that omp.
+    var runsOmp: Bool { [.starting, .busy, .idle, .resuming, .paused].contains(status) }
     /// ompd could resume the session but its folder is gone: the user can point at where it is now.
     var canLocateFolder: Bool { isResumable && workspaceIsGone }
 }

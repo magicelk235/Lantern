@@ -337,13 +337,13 @@ struct ChaosMatrixTests {
         return text.split(separator: "\n").compactMap { try? JSONDecoder().decode(JSONValue.self, from: Data($0.utf8)) }
     }
 
-    /// Indices of ompd's continuation prompts (user messages starting with `[omp IDE]`).
+    /// Indices of ompd's continuation prompts (user messages starting with `[Lantern]`).
     private static func continuationPrompts(_ entries: [JSONValue]) -> [Int] {
         entries.indices.filter { index in
             let message = entries[index]["message"]
             guard entries[index]["type"] == "message", message?["role"] == "user" else { return false }
             let text = (message?["content"]?.arrayValue ?? []).compactMap { $0["text"]?.stringValue }.joined()
-            return text.hasPrefix("[omp IDE]")
+            return text.hasPrefix("[Lantern]")
         }
     }
 

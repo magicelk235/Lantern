@@ -30,7 +30,7 @@ enum SidebarPane: String, CaseIterable {
         }
     }
 
-    /// As shown in tooltips; the shortcuts live in `OmpIDEApp`'s View menu.
+    /// As shown in tooltips; the shortcuts live in `LanternApp`'s View menu.
     var shortcut: String {
         switch self {
         case .files: "⇧⌘E"
@@ -42,7 +42,8 @@ enum SidebarPane: String, CaseIterable {
 }
 
 /// The sidebar pane the activity bar picked: the project in focus (its title is the menu that switches projects and
-/// adds one) with its files, its git changes or what omp runs in it, or the list of projects.
+/// adds one) with its files, its git changes or what omp runs in it, or the list of projects. The window of no
+/// project shows nothing here but the list of projects: its detail area offers Add Project.
 struct SidebarPaneView: View {
     @Bindable var app: AppState
     /// The window's project; empty for the window of no project.
@@ -56,8 +57,6 @@ struct SidebarPaneView: View {
                     ProjectHeader(app: app, project: project)
                     Divider()
                     FilesOutline(app: app, project: project)
-                } else {
-                    noProject
                 }
             case .changes:
                 if !project.isEmpty {
@@ -66,8 +65,6 @@ struct SidebarPaneView: View {
                     SourceControlPanel(app: app, repository: app.editors.repositories.repository(for: project))
                         .id(project)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    noProject
                 }
             case .agents:
                 if !project.isEmpty {
@@ -76,8 +73,6 @@ struct SidebarPaneView: View {
                     AgentsPane(app: app, project: project)
                         .id(project)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    noProject
                 }
             case .projects:
                 ProjectsPane(app: app, project: project)
@@ -86,22 +81,10 @@ struct SidebarPaneView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Chrome.surface)
     }
-
-    private var noProject: some View {
-        ContentUnavailableView {
-            Text("No Project")
-        } description: {
-            Text("Add a folder to start omp in it, open terminals, and browse its files.")
-        } actions: {
-            Button("Add Project…") { app.addProject() }
-                .controlSize(.small)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
 }
 
-/// The project's name as the switcher (the projects, Add Project, then what this project offers), and + for a new
-/// session.
+/// The project's name as the switcher (the projects, Add Project, then what this project offers), and + with what
+/// can be added to the project: a file or folder at its top level, a session or a terminal.
 struct ProjectHeader: View {
     let app: AppState
     let project: String
@@ -118,24 +101,34 @@ struct ProjectHeader: View {
                 Divider()
                 ProjectMenu(app: app, project: project)
             } label: {
-                Text(AppState.projectName(project))
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 4) {
+                    Text(AppState.projectName(project))
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    MenuChevron()
+                }
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
+            .paneHeaderMenu()
             .help(project)
             Spacer(minLength: 4)
-            Button {
-                app.newSession(in: project)
+            Menu {
+                Button("New File…") { app.newFile(in: project, project: project) }
+                Button("New Folder…") { app.newFolder(in: project) }
+                Divider()
+                Button("New Session") { app.newSession(in: project) }
+                    .disabled(!app.connection.isConnected)
+                Button("New Terminal") { app.newTerminal(in: project) }
+                    .disabled(!app.connection.isConnected)
             } label: {
                 Image(systemName: "plus")
             }
-            .buttonStyle(.plain)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
             .foregroundStyle(.secondary)
-            .disabled(!app.connection.isConnected)
-            .help("Start omp in \(AppState.projectName(project)) (⌘N)")
+            .help("New File, Folder, Session or Terminal in \(AppState.projectName(project))")
+            .accessibilityLabel("New File, Folder, Session or Terminal")
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
@@ -143,17 +136,41 @@ struct ProjectHeader: View {
     }
 }
 
+/// The pull-down chevron after a pane header's menu title.
+struct MenuChevron: View {
+    var body: some View {
+        Image(systemName: "chevron.down")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(.secondary)
+    }
+}
+
+extension View {
+    /// A pane header's title menu (the project switcher, the branch menu): its label is drawn as given, so a long title
+    /// truncates in the middle (a borderless pop-up button cuts its own title at the end), and it is never wider than
+    /// its title nor than the room the header leaves it.
+    func paneHeaderMenu() -> some View {
+        menuStyle(.button)
+            .buttonStyle(.plain)
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
+    }
+}
+
 /// The project's folder as an outline, each folder listed when first expanded. A click highlights a file; Return or
-/// a double-click opens it in the project's tab strip; Space shows it in Quick Look.
+/// a double-click opens it in the project's tab strip; Space shows it in Quick Look. The row a context menu is open
+/// for is ringed, as in Finder, while the highlight stays where it was.
 private struct FilesOutline: View {
     let app: AppState
     let project: String
+    /// The row whose context menu is open.
+    @State private var menuTarget: String?
 
     var body: some View {
         let tree = app.editors.tree(for: project)
         let marks = GitMarks(repository: app.editors.repositories.repository(for: project), root: project)
         List(selection: Binding(get: { app.filesSelection }, set: { app.selectInFiles($0) })) {
-            FileRows(app: app, tree: tree, folder: tree.root, marks: marks)
+            FileRows(app: app, tree: tree, folder: tree.root, marks: marks, menuTarget: menuTarget)
         }
         .listStyle(.inset)
         .scrollContentBackground(.hidden)
@@ -164,7 +181,71 @@ private struct FilesOutline: View {
             app.toggleQuickLook(path, in: project)
             return .handled
         }
+        // A right-click (or Control-click) opens a context menu for the row under it, wherever the pointer was before.
+        .onReceive(NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification)) { _ in
+            guard let event = NSApp.currentEvent,
+                  event.type == .rightMouseDown || (event.type == .leftMouseDown && event.modifierFlags.contains(.control)),
+                  let path = FileRowMarker.row(at: event)?.path, path.hasPrefix(project + "/")
+            else { return }
+            menuTarget = path
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSMenu.didEndTrackingNotification)) { _ in
+            if menuTarget != nil { menuTarget = nil }
+        }
         .task(id: project) { tree.setExpanded(tree.root, true) }
+    }
+}
+
+/// Marks a Files row in AppKit's view tree, so that the row under a click is found from where the click was: the row
+/// a context menu opens for, the row clicked in a window that is not key.
+private struct FileRowMarker: NSViewRepresentable {
+    let path: String
+
+    final class Marker: NSView {
+        var path = ""
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    func makeNSView(context: Context) -> Marker {
+        let marker = Marker()
+        marker.path = path
+        return marker
+    }
+
+    func updateNSView(_ marker: Marker, context: Context) {
+        marker.path = path
+    }
+
+    /// The Files row under `event`'s location and the outline it is a row of.
+    @MainActor
+    static func row(at event: NSEvent) -> (path: String, outline: NSTableView)? {
+        guard let content = event.window?.contentView else { return nil }
+        var view = content.hitTest(content.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow)
+        while let current = view, !(current is NSTableRowView) { view = current.superview }
+        guard let row = view, let outline = row.superview as? NSTableView, let marker = marker(in: row) else { return nil }
+        return (marker.path, outline)
+    }
+
+    @MainActor
+    private static func marker(in view: NSView) -> Marker? {
+        if let marker = view as? Marker { return marker }
+        for subview in view.subviews {
+            if let marker = marker(in: subview) { return marker }
+        }
+        return nil
+    }
+}
+
+/// Finder's ring around the row a context menu is open for.
+private struct MenuTargetRing: View {
+    let isShown: Bool
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 5, style: .continuous)
+            .strokeBorder(Color.accentColor, lineWidth: 2)
+            .padding(.horizontal, 10)
+            .opacity(isShown ? 1 : 0)
     }
 }
 
@@ -223,15 +304,10 @@ private struct ProjectsPane: View {
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 24)
         .overlay {
+            // The window of no project: its detail area offers Add Project.
             if app.projects.isEmpty {
-                ContentUnavailableView {
-                    Text("No Projects")
-                } description: {
-                    Text("Add a folder to start.")
-                } actions: {
-                    Button("Add Project…") { app.addProject() }
-                        .controlSize(.small)
-                }
+                Text("No Projects")
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -295,6 +371,23 @@ extension AppState {
             openEditor(path, in: workspace)
         }
     }
+
+    /// A click on a Files row of a window that is not key acts on the row at once, as in Finder: the first click of a
+    /// double-click that brings the window forward opens the file with the second. AppKit hands that click to the view
+    /// under it only when the view takes the first mouse, and a list row's SwiftUI cell never does: the click only
+    /// made the window key, and the second click of the double-click arrived as the row's first. Here the window
+    /// becomes key first and gets the click as any other. Installed once at launch.
+    func installFilesFirstMouse() {
+        LocalEventMonitors.add(matching: .leftMouseDown) { event in
+            guard let window = event.window, !window.isKeyWindow, window.canBecomeKey,
+                  FileRowMarker.row(at: event) != nil
+            else { return event }
+            window.makeKeyAndOrderFront(nil)
+            guard window.isKeyWindow else { return event }
+            window.sendEvent(event)
+            return nil
+        }
+    }
 }
 
 @MainActor
@@ -308,6 +401,7 @@ private struct FileRows: View {
     let tree: FileTree
     let folder: String
     let marks: GitMarks
+    let menuTarget: String?
 
     var body: some View {
         if let failure = tree.failures[folder] {
@@ -318,14 +412,14 @@ private struct FileRows: View {
         ForEach(tree.children[folder] ?? []) { entry in
             if entry.isDirectory {
                 DisclosureGroup(isExpanded: expansion(of: entry.path, in: tree)) {
-                    FileRows(app: app, tree: tree, folder: entry.path, marks: marks)
+                    FileRows(app: app, tree: tree, folder: entry.path, marks: marks, menuTarget: menuTarget)
                 } label: {
                     FileRow(
                         name: entry.name, path: entry.path, isDirectory: true, isIgnored: tree.isIgnored(entry.path), isDirty: false,
                         mark: marks.folders[entry.path])
-                        .contentShape(Rectangle())
                         .onTapGesture { tree.setExpanded(entry.path, !tree.isExpanded(entry.path)) }
                         .contextMenu { FileItemMenu(app: app, project: tree.root, path: entry.path, isDirectory: true) }
+                        .listRowBackground(MenuTargetRing(isShown: menuTarget == entry.path))
                 }
                 .listRowSeparator(.hidden)
             } else {
@@ -335,6 +429,7 @@ private struct FileRows: View {
                 )
                 .tag(TabKind.editor(path: entry.path))
                 .listRowSeparator(.hidden)
+                .listRowBackground(MenuTargetRing(isShown: menuTarget == entry.path))
             }
         }
     }
@@ -376,6 +471,10 @@ private struct FileRow: View {
                     .help(mark.explanation)
             }
         }
+        // The whole row: a click anywhere on it is on it.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .background(FileRowMarker(path: path))
         .opacity(isIgnored ? 0.5 : 1)
         .help(path)
         .accessibilityLabel(name + (isDirty ? ", edited" : ""))
@@ -399,22 +498,24 @@ enum FileSymbol {
     }
 }
 
-/// What git says about the files of a project, for the Files pane: new files (untracked or added) in green,
-/// changed ones in yellow; a folder carries the mark of what it holds (changed wins).
+/// What git says about the files of a project, for the Files pane, with the Changes list's letters: untracked files
+/// (U) and staged additions (A) in green, changed ones (M) in yellow; a folder carries the color of what it holds
+/// (changed wins).
 @MainActor
 struct GitMarks {
     enum Mark {
-        case added, modified
+        case untracked, added, modified
 
         var color: Color {
             switch self {
-            case .added: Chrome.gitAdded
+            case .untracked, .added: Chrome.gitAdded
             case .modified: Chrome.gitModified
             }
         }
 
         var letter: String {
             switch self {
+            case .untracked: "U"
             case .added: "A"
             case .modified: "M"
             }
@@ -422,7 +523,8 @@ struct GitMarks {
 
         var explanation: String {
             switch self {
-            case .added: "New to the repository"
+            case .untracked: "Untracked: not in the repository yet"
+            case .added: "Added to the repository, staged"
             case .modified: "Changed since the last commit"
             }
         }
@@ -434,7 +536,7 @@ struct GitMarks {
     init(repository: GitRepository, root: String) {
         guard repository.isRepository else { return }
         for change in repository.changes {
-            let mark: Mark = change.isNewToHead ? .added : .modified
+            let mark: Mark = change.isUntracked ? .untracked : change.staged == "A" ? .added : .modified
             files[change.path] = mark
             var folder = (change.path as NSString).deletingLastPathComponent
             while folder.hasPrefix(root), folder != root {

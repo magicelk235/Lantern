@@ -18,7 +18,7 @@ public enum StorageError: Error, Sendable, Equatable, CustomStringConvertible {
 /// Thin POSIX layer shared by the storage types: explicit fds, `pread`/`write` loops, and flushes that reach
 /// stable storage.
 enum StorageIO {
-    static let log = Logger(subsystem: "com.omp-ide.ompd", category: "storage")
+    static let log = Logger(subsystem: "com.magicelklabs.lantern.ompd", category: "storage")
 
     static func displayPath(_ url: URL) -> String { url.path(percentEncoded: false) }
 

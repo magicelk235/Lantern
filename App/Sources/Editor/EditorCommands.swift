@@ -8,6 +8,11 @@ extension AppState {
         selectedTab?.editorPath.flatMap(editors.document(for:))
     }
 
+    /// The find bar of the editor on screen, when it shows text.
+    var selectedFind: EditorFind? {
+        selectedEditor.flatMap { $0.content == .text ? $0.find : nil }
+    }
+
     /// File › Save (⌘S). A failure leaves the edits unsaved (and in hot-exit) and says why.
     func saveSelectedEditor() {
         guard let document = selectedEditor, document.canSave else { return }
@@ -82,11 +87,12 @@ extension AppState {
     }
 
     /// ⌘-click in an editor whose language server finds definitions jumps to the one under the mouse; ⌃⌘J in an editor
-    /// to the one at the caret. Installed once at launch, before the editors' own event monitors (AppKit calls local
-    /// monitors in the order they were added): CodeEditSourceEditor answers ⌃⌘J itself, with a beep for want of a
-    /// definition provider, and has no way to be given one when the app holds its controller directly.
+    /// to the one at the caret; ⌘F in an editor opens its find bar (`EditorFind`). Installed at launch and kept ahead of
+    /// the editors' own event monitors (`LocalEventMonitors`): CodeEditSourceEditor answers ⌃⌘J itself, with a beep for
+    /// want of a definition provider, and has no way to be given one when the app holds its controller directly; and it
+    /// answers ⌘F with a find panel of its own.
     func installEditorNavigation() {
-        _ = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .keyDown]) { [weak self] event in
+        LocalEventMonitors.add(matching: [.leftMouseDown, .keyDown]) { [weak self] event in
             guard let self else { return event }
             return self.editorNavigation(event)
         }
@@ -110,6 +116,11 @@ extension AppState {
                   let document = editors.document(showing: responder) else { return event }
             jumpToDefinition(in: document)
             return nil
+        case .keyDown where modifiers == .command && event.charactersIgnoringModifiers == "f":
+            guard let responder = (event.window ?? NSApp.keyWindow)?.firstResponder as? NSView,
+                  let document = editors.document(showing: responder) else { return event }
+            document.find.show(.find)
+            return nil
         default:
             return event
         }
@@ -125,8 +136,8 @@ private final class MenuChoice: NSObject {
     }
 }
 
-/// Save and Revert to Saved in the File menu, for the editor on screen, and the Navigate menu (the editor's language
-/// server). Quitting never asks: unsaved edits survive it (hot-exit).
+/// Save and Revert to Saved in the File menu, for the editor on screen; Edit › Find (the editor's find bar); and the
+/// Navigate menu (Jump to Line, the editor's language server). Quitting never asks: unsaved edits survive it (hot-exit).
 struct EditorCommands: Commands {
     let app: AppState
 
@@ -138,9 +149,30 @@ struct EditorCommands: Commands {
             Button("Revert to Saved…") { app.revertSelectedEditor() }
                 .disabled(!(app.selectedEditor?.canRevert ?? false))
         }
+        CommandGroup(replacing: .textEditing) {
+            let find = app.selectedFind
+            Menu("Find") {
+                Button("Find…") { find?.show(.find) }
+                    .keyboardShortcut("f")
+                Button("Find and Replace…") { find?.show(.replace) }
+                    .keyboardShortcut("f", modifiers: [.command, .option])
+                Button("Find Next") { find?.next() }
+                    .keyboardShortcut("g")
+                Button("Find Previous") { find?.previous() }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+                Button("Use Selection for Find") { find?.useSelection() }
+                    .keyboardShortcut("e")
+            }
+            .disabled(find == nil)
+        }
         CommandMenu("Navigate") {
-            let language = app.selectedEditor?.languageDocument
-            Button("Jump to Definition") { if let document = app.selectedEditor { app.jumpToDefinition(in: document) } }
+            let document = app.selectedEditor
+            let language = document?.languageDocument
+            Button("Jump to Line…") { document?.isJumpingToLine = true }
+                .keyboardShortcut("l")
+                .disabled(document?.content != .text)
+            Divider()
+            Button("Jump to Definition") { if let document { app.jumpToDefinition(in: document) } }
                 .keyboardShortcut("j", modifiers: [.command, .control])
                 .disabled(!(language?.canJumpToDefinition ?? false))
             Button("Show Quick Help") { language?.showQuickHelp() }

@@ -1,5 +1,6 @@
 import AppKit
 import IDEModel
+import IDEState
 import Observation
 import SwiftTerm
 
@@ -104,6 +105,15 @@ final class TerminalsController {
     /// The session's tab closed: its emulator goes. omp keeps running.
     func releaseSession(_ sessionKey: SessionKey) {
         sessionEmulators.removeValue(forKey: sessionKey)?.close()
+    }
+
+    /// The emulator `tab` shows, once it was shown: a terminal's or a session's.
+    func shownEmulator(for tab: TabKind) -> TerminalTab? {
+        switch tab {
+        case .terminal(let ptyId): emulators[ptyId]
+        case .session(let sessionKey): sessionEmulators[sessionKey]
+        case .editor: nil
+        }
     }
 
     // MARK: - Commands

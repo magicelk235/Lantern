@@ -154,6 +154,32 @@ enum PTYSpawner {
         return path.isEmpty ? nil : path
     }
 
+    /// Names of the processes in the foreground process group of the terminal whose master is `master`, oldest first;
+    /// none while `program` (the PTY's own program) is in the foreground, or when the terminal has no foreground group.
+    static func foregroundProcesses(master: Int32, program: pid_t?) -> [String] {
+        let group = tcgetpgrp(master)
+        guard group > 0, group != program else { return [] }
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PGRP, group]
+        var size = 0
+        guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0, size > 0 else { return [] }
+        // Room for processes started between the two calls.
+        size += 8 * MemoryLayout<kinfo_proc>.stride
+        var processes = [kinfo_proc](repeating: kinfo_proc(), count: size / MemoryLayout<kinfo_proc>.stride)
+        guard sysctl(&mib, UInt32(mib.count), &processes, &size, nil, 0) == 0 else { return [] }
+        let started = { (process: kinfo_proc) in
+            (process.kp_proc.p_starttime.tv_sec, process.kp_proc.p_starttime.tv_usec, process.kp_proc.p_pid)
+        }
+        return processes.prefix(size / MemoryLayout<kinfo_proc>.stride)
+            .filter { Int32($0.kp_proc.p_stat) != SZOMB && $0.kp_proc.p_pid != program }
+            .sorted { started($0) < started($1) }
+            .map { process in
+                var name = [CChar](repeating: 0, count: 2 * Int(MAXCOMLEN) + 1)
+                if proc_name(process.kp_proc.p_pid, &name, UInt32(name.count)) > 0 { return String(cString: name) }
+                var command = process.kp_proc.p_comm
+                return withUnsafeBytes(of: &command) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+            }
+    }
+
     // MARK: - Internals
 
     /// `<sys/ttydefaults.h>` settings plus IUTF8 (correct erase of multi-byte characters in canonical mode).

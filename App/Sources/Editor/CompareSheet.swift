@@ -29,13 +29,19 @@ struct CompareSheet: View {
 }
 
 /// A sheet that shows one unified line diff: a title, two legends, the hunks (or "No differences"), and the actions
-/// under a hairline, Close last. `CompareSheet` and `ChangeDiffSheet` are made of it.
+/// under a hairline, Close last. `CompareSheet` and `ChangeDiffSheet` are made of it. Every row is as wide as the
+/// view, or as the widest line shown so far, so the red and green washes span it.
 struct DiffSheet<Actions: View>: View {
     let title: String
     let removedLegend: String
     let insertedLegend: String
     let hunks: [LineDiff.Hunk]
     @ViewBuilder let actions: Actions
+    @State private var visibleWidth = 0.0
+    /// Rows lay out lazily: the widest seen so far.
+    @State private var widestLine = 0.0
+
+    private var rowWidth: Double { max(visibleWidth, widestLine) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -63,16 +69,17 @@ struct DiffSheet<Actions: View>: View {
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .frame(minWidth: rowWidth, alignment: .leading)
                                 .background(Color.secondary.opacity(0.08))
                             ForEach(Array(hunk.lines.enumerated()), id: \.offset) { _, line in
-                                DiffLineRow(line: line)
+                                DiffLineRow(line: line, width: rowWidth) { if $0 > widestLine { widestLine = $0 } }
                             }
                         }
                     }
                     .font(.system(size: 12, design: .monospaced))
                     .textSelection(.enabled)
                 }
+                .onGeometryChange(for: Double.self) { Double($0.size.width) } action: { visibleWidth = $0 }
             }
             Divider()
             HStack { actions }
@@ -96,6 +103,10 @@ private struct Legend: View {
 
 private struct DiffLineRow: View {
     let line: LineDiff.Line
+    /// The row's width at least: its wash spans it.
+    let width: Double
+    /// Hears the width the line's text needs.
+    let measured: (Double) -> Void
 
     var body: some View {
         HStack(spacing: 0) {
@@ -105,8 +116,9 @@ private struct DiffLineRow: View {
                 .frame(width: 16)
             Text(line.text.isEmpty ? " " : line.text)
                 .fixedSize(horizontal: true, vertical: false)
-            Spacer(minLength: 0)
         }
+        .onGeometryChange(for: Double.self) { Double($0.size.width) } action: { measured($0) }
+        .frame(minWidth: width, alignment: .leading)
         .padding(.vertical, 1)
         .background(background)
     }

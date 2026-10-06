@@ -12,7 +12,7 @@ public enum DaemonUpgrade: DaemonMethod {
 
     public enum Mode: String, Sendable, Codable, CaseIterable {
         /// Hand over; failing that, restart at once when every session is settled, else do nothing (`busy`). What ompd
-        /// does by itself when an omp IDE of another version connects.
+        /// does by itself when a Lantern of another version connects.
         case auto
         /// Hand over; failing that, restart at the next moment every session is settled.
         case whenSettled

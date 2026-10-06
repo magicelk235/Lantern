@@ -1,7 +1,7 @@
 import Foundation
 import IDEProtocol
 
-// Hardening: restarting a session on the omp installed now, and what omp and omp IDE can reclaim on disk.
+// Hardening: restarting a session on the omp installed now, and what omp and Lantern can reclaim on disk.
 // An ompd older than these methods answers `unknown_method`; the error then says to restart ompd.
 extension DaemonConnection {
     /// Stops the session's omp gracefully and resumes it on the omp installed now (`session.restart`); its tab follows
@@ -11,7 +11,7 @@ extension DaemonConnection {
         try await callNewer(SessionRestart.self, .init(sessionKey: sessionKey, force: force), doing: "restart sessions")
     }
 
-    /// What `omp gc` and omp IDE could reclaim, and the free disk space (`storage.report`; runs `omp gc --json`, a dry
+    /// What `omp gc` and Lantern could reclaim, and the free disk space (`storage.report`; runs `omp gc --json`, a dry
     /// run, in every agent directory the sessions use).
     public func storageReport() async throws -> StorageReport {
         try await callNewer(StorageReportRequest.self, Empty(), doing: "report storage")
@@ -28,7 +28,7 @@ extension DaemonConnection {
         do {
             return try await connectedClient().call(method, params)
         } catch let error as DaemonError where error.code == .unknownMethod {
-            throw DaemonError(.unknownMethod, "The running ompd is older than omp IDE and cannot \(what). Restart ompd to update it.")
+            throw DaemonError(.unknownMethod, "The running ompd is older than Lantern and cannot \(what). Restart ompd to update it.")
         }
     }
 }

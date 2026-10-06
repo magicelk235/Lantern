@@ -6,7 +6,7 @@ import os
 
 /// ompd: owns every omp session (one `SessionSupervisor` per manifest entry, each running omp's TUI on a
 /// session PTY, or — adopted — in a terminal the user typed `omp` into) and every terminal (the PTY pool), and serves
-/// the IDE protocol on `$APP_SUPPORT/run/ompd.sock`. While no omp IDE window is open, every session is paused.
+/// the IDE protocol on `$APP_SUPPORT/run/ompd.sock`. While no Lantern window is open, every session is paused.
 ///
 /// Lifecycle: `start()` (manifest, supervisors, socket) → `restore()` (Regime B2: terminals from their snapshots,
 /// every session the user did not close respawned with `--resume`) → … → `shutdown()` (the graceful path).
@@ -26,7 +26,7 @@ public actor Daemon {
         public var timings: SupervisorTimings
         /// Wake to the per-session `session.info` health check.
         public var wakeHealthCheckDelay: Duration
-        /// How long no omp IDE window must be connected (after the last one disconnected, or after `start()`) before
+        /// How long no Lantern window must be connected (after the last one disconnected, or after `start()`) before
         /// every session is paused: an app relaunch or a reconnect blip within it pauses nothing.
         public var detachedPauseGrace: Duration
         /// omp's launch broker: named services listed and controlled (`services.list`, `service.control`), and
@@ -86,13 +86,13 @@ public actor Daemon {
     private var shutdownTask: Task<Void, Never>?
     /// Serves the bridge's terminal-mode hellos (`adoptTerminal`).
     private var adoptionTask: Task<Void, Never>?
-    /// Connected omp IDE apps (`ClientKind.app`) and whether each has a window open; `ompd status` and other cli
+    /// Connected Lantern apps (`ClientKind.app`) and whether each has a window open; `ompd status` and other cli
     /// clients do not count.
     private var appConnections: [UUID: Bool] = [:]
     /// Sleeps out `detachedPauseGrace` once no window is open, then pauses every session; a grace that was cancelled
     /// or superseded (its `id` no longer here) does nothing.
     private var detachedPause: (id: UUID, task: Task<Void, Never>)?
-    /// Upgrade decisions, one after the other (an omp IDE of another version saying hello and its `daemon.upgrade` race).
+    /// Upgrade decisions, one after the other (a Lantern of another version saying hello and its `daemon.upgrade` race).
     private var upgradeDecision: Task<DaemonUpgrade.Result, any Error>?
     /// The in-place handover runs: no new work, the pause demand stays as it is; undone if it fails.
     private var handover: Task<Void, Never>?
@@ -399,7 +399,7 @@ public actor Daemon {
             return entry
         }
         let key = UUID().uuidString.lowercased()
-        // Ownership first: nothing is created for a file another omp IDE daemon owns.
+        // Ownership first: nothing is created for a file another Lantern daemon owns.
         let lock = try locks.acquire(sessionFile: file, sessionId: nil, sessionKey: key)
         let supervisor: SessionSupervisor
         do {
@@ -448,7 +448,7 @@ public actor Daemon {
                 key = existing.sessionKey
             } else {
                 key = UUID().uuidString.lowercased()
-                // Ownership first: nothing is created for a file another omp IDE daemon owns.
+                // Ownership first: nothing is created for a file another Lantern daemon owns.
                 lock = try locks.acquire(sessionFile: hello.sessionFile, sessionId: hello.sessionId, sessionKey: key)
                 do {
                     launch = try await launchSpec(approvalMode: nil, model: nil)
@@ -736,6 +736,9 @@ public actor Daemon {
         router.on(PTYList.self) { [weak self] _, _ in
             PTYList.Result(ptys: try await Self.alive(self).ptys.list())
         }
+        router.on(PTYProcesses.self) { [weak self] params, _ in
+            PTYProcesses.Result(processes: try await Self.alive(self).ptys.foregroundProcesses(params.ptyId))
+        }
         router.on(ClientPresence.self) { [weak self] params, connection in
             try await Self.alive(self).presence(connection.id, hasWindow: params.hasWindow)
             return Empty()
@@ -779,7 +782,7 @@ public actor Daemon {
     /// How long the answer to the `daemon.upgrade` that started a handover gets to go out before its connection ends.
     static let responseGrace: Duration = .milliseconds(100)
 
-    /// `daemon.upgrade`, and an omp IDE of another version saying hello (`auto`): decided one after the other.
+    /// `daemon.upgrade`, and a Lantern of another version saying hello (`auto`): decided one after the other.
     private func upgrade(_ mode: DaemonUpgrade.Mode) async throws -> DaemonUpgrade.Result {
         let previous = upgradeDecision
         let decision = Task {
@@ -974,11 +977,11 @@ public actor Daemon {
         if windowOpen {
             cancelDetachedPause()
             guard pauseDemand.set(false) else { return }
-            daemonLog.notice("an omp IDE window is open; resuming the sessions ompd paused")
+            daemonLog.notice("a Lantern window is open; resuming the sessions ompd paused")
             syncPauses()
         } else if pauseAtOnce {
             cancelDetachedPause()
-            pauseEverySession(because: "the last omp IDE window closed")
+            pauseEverySession(because: "the last Lantern window closed")
         } else if detachedPause == nil, !pauseDemand.isOn {
             scheduleDetachedPause()
         }
@@ -1002,7 +1005,7 @@ public actor Daemon {
         guard detachedPause?.id == id else { return } // cancelled or superseded meanwhile
         detachedPause = nil
         guard !windowOpen, shutdownTask == nil else { return }
-        pauseEverySession(because: "no omp IDE window for \(configuration.detachedPauseGrace)")
+        pauseEverySession(because: "no Lantern window for \(configuration.detachedPauseGrace)")
     }
 
     private func pauseEverySession(because reason: String) {
@@ -1028,7 +1031,7 @@ extension Daemon: IDERequestHandler {
         await router.route(request, from: connection)
     }
 
-    /// An omp IDE said hello (refused when its protocol differs; it retries): ompd moves to the ompd installed at its path
+    /// A Lantern said hello (refused when its protocol differs; it retries): ompd moves to the ompd installed at its path
     /// if that is another executable (`daemon.upgrade auto`), so the app's retry, or its next connection, lands on it.
     /// Every app hello checks, not only one of another version: a rebuild or an update can keep the version string, and
     /// the check is one hash of ompd's own executable.
@@ -1038,7 +1041,7 @@ extension Daemon: IDERequestHandler {
             do {
                 _ = try await self?.upgrade(.auto)
             } catch {
-                daemonLog.error("upgrade on a hello of omp IDE \(hello.clientVersion, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+                daemonLog.error("upgrade on a hello of Lantern \(hello.clientVersion, privacy: .public) failed: \(String(describing: error), privacy: .public)")
             }
         }
     }
@@ -1070,4 +1073,4 @@ final class Broadcaster: Sendable {
     }
 }
 
-let daemonLog = Logger(subsystem: "com.omp-ide.ompd", category: "daemon")
+let daemonLog = Logger(subsystem: "com.magicelklabs.lantern.ompd", category: "daemon")

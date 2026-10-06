@@ -47,7 +47,7 @@ public struct Hello: Sendable, Equatable, Codable {
     public var token: String
     /// What connects. Only an `app` with a window open keeps the sessions running.
     public var clientKind: ClientKind
-    /// An `app` client has an omp IDE window open. ompd pauses every session while no connected app has one; the app
+    /// An `app` client has a Lantern window open. ompd pauses every session while no connected app has one; the app
     /// reports changes through `ClientPresence`. A hello without it has one (apps before the field).
     public var hasWindow: Bool
 
@@ -75,9 +75,9 @@ public struct Hello: Sendable, Equatable, Codable {
 }
 
 public enum ClientKind: String, Sendable, Codable {
-    /// An omp IDE window (the app). A hello without `clientKind` is one.
+    /// A Lantern window (the app). A hello without `clientKind` is one.
     case app
-    /// A client that is no omp IDE window, such as `ompd status` or the menu-bar extra: it neither keeps the
+    /// A client that is no Lantern window, such as `ompd status` or the menu-bar extra: it neither keeps the
     /// sessions running nor resumes them.
     case cli
 }

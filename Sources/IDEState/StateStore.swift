@@ -44,7 +44,7 @@ public final class StateStore: Sendable {
     private let database: DatabaseQueue
     private let debounce: Duration
     private let maxDelay: Duration
-    private let queue = DispatchQueue(label: "com.omp-ide.state")
+    private let queue = DispatchQueue(label: "com.magicelklabs.lantern.state")
     private let pending = OSAllocatedUnfairLock(initialState: Pending())
     private let writeObserver = OSAllocatedUnfairLock<(@Sendable (Write, (any Error)?) -> Void)?>(initialState: nil)
 

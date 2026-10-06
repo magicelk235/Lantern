@@ -2,7 +2,7 @@ import Foundation
 import Network
 import os
 
-let transportLog = Logger(subsystem: "com.omp-ide", category: "transport")
+let transportLog = Logger(subsystem: "com.magicelklabs.lantern", category: "transport")
 
 /// Why a `FrameChannel` ended. The first cause recorded wins.
 enum ChannelEnd: Sendable, Equatable {

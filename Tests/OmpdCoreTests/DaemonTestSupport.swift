@@ -64,7 +64,7 @@ struct DaemonFixture {
             temp: temp, omp: omp, pausable: pausable, pauseGrace: pauseGrace, capabilities: capabilities, services: services)
     }
 
-    /// An omp IDE window (`app`; `hasWindow` false: an app whose windows are all closed), or a command-line client
+    /// A Lantern window (`app`; `hasWindow` false: an app whose windows are all closed), or a command-line client
     /// like `ompd status` (`cli`).
     func client(_ kind: ClientKind = .app, hasWindow: Bool = true) async throws -> Connected {
         let client = IDEClient(

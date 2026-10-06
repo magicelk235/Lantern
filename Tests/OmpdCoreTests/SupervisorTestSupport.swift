@@ -72,7 +72,7 @@ struct FakeOmp: Sendable {
 
     /// The daemon environment omp starts from in these tests.
     var environment: [String: String] {
-        var environment = ProcessInfo.processInfo.environment.filter { !$0.key.hasPrefix("OMP_IDE_") && !$0.key.hasPrefix("FAKE_OMP") }
+        var environment = ProcessInfo.processInfo.environment.filter { !$0.key.hasPrefix("LANTERN_") && !$0.key.hasPrefix("FAKE_OMP") }
         var path = directory.path(percentEncoded: false)
         if path.hasSuffix("/") { path.removeLast() }
         environment["FAKE_OMP_DIR"] = path

@@ -50,7 +50,7 @@ public final class FileSystemWatcher: Sendable {
             kCFAllocatorDefault, Self.callback, &context, [realRoot] as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency, flags)
         else { return nil }
-        FSEventStreamSetDispatchQueue(created, DispatchQueue(label: "com.omp-ide.fsevents", qos: .utility))
+        FSEventStreamSetDispatchQueue(created, DispatchQueue(label: "com.magicelklabs.lantern.fsevents", qos: .utility))
         guard FSEventStreamStart(created) else {
             FSEventStreamInvalidate(created)
             FSEventStreamRelease(created)

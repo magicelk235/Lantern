@@ -10,7 +10,7 @@ enum ContinuationMessages {
     /// just before, their results reach the main agent the usual way; `leftAgents` were not.
     static func main(_ interruption: Interruption, continuedAgents: [String], leftAgents: [String]) -> String {
         var lines = [
-            "[omp IDE] Your omp process ended while you were in the middle of a turn (\(interruption.cause)), and this session was resumed from its file."
+            "[Lantern] Your omp process ended while you were in the middle of a turn (\(interruption.cause)), and this session was resumed from its file."
         ]
         lines += pendingLines(interruption.pendingToolCalls)
         if !continuedAgents.isEmpty {
@@ -32,7 +32,7 @@ enum ContinuationMessages {
 
     /// For an interrupted subagent, delivered like `write agent://<id>` (`agent.message`, which revives it).
     static func agent(_ agent: InterruptedAgent, cause: String) -> String {
-        var lines = ["[omp IDE] Your omp process ended (\(cause)) before you finished your assignment, and you were revived from your transcript."]
+        var lines = ["[Lantern] Your omp process ended (\(cause)) before you finished your assignment, and you were revived from your transcript."]
         lines += pendingLines(agent.pendingToolCalls)
         lines.append("")
         lines.append("Check the effects of anything that may not have completed before re-running it, then finish your assignment.")
@@ -40,7 +40,7 @@ enum ContinuationMessages {
     }
 
     /// After a wake from sleep, for a turn whose model stream stalled and was aborted.
-    static let wake = "[omp IDE] The machine slept and the model stream made no progress after it woke, so your turn was aborted. Check whether your last tool calls completed, then continue where you left off."
+    static let wake = "[Lantern] The machine slept and the model stream made no progress after it woke, so your turn was aborted. Check whether your last tool calls completed, then continue where you left off."
 
     private static func pendingLines(_ calls: [InterruptedToolCall]) -> [String] {
         guard !calls.isEmpty else { return [] }

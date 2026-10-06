@@ -10,7 +10,7 @@ final class ProcessExitWatch: Sendable {
 
     init(pid: pid_t, onExit: @escaping @Sendable () -> Void) {
         let source = DispatchSource.makeProcessSource(
-            identifier: pid, eventMask: .exit, queue: DispatchQueue(label: "com.omp-ide.ompd.exit-watch"))
+            identifier: pid, eventMask: .exit, queue: DispatchQueue(label: "com.magicelklabs.lantern.ompd.exit-watch"))
         self.source = source
         let fired = OSAllocatedUnfairLock(initialState: false)
         let fire = {

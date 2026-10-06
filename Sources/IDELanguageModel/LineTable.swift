@@ -2,7 +2,7 @@ import Foundation
 import LanguageServerProtocol
 
 /// Where each line of a text starts, to turn the editor's UTF-16 offsets into LSP positions and back. LSP counts a
-/// position's character in UTF-16 code units (the default `positionEncoding`, the only one omp IDE offers) and breaks
+/// position's character in UTF-16 code units (the default `positionEncoding`, the only one Lantern offers) and breaks
 /// lines after "\n", "\r\n" and a lone "\r" — not after U+2028 and friends, which `NSString`'s line ranges also break at.
 ///
 /// The table follows edits (`replace`) without reading more of the text than the lines around the edit, so the editor

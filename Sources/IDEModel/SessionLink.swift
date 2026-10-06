@@ -1,10 +1,10 @@
 import Foundation
 import IDEProtocol
 
-/// `omp-ide://session/<sessionKey>`: what the menu-bar extra opens omp IDE with to show one session's tab (the app
+/// `com.magicelklabs.lantern://session/<sessionKey>`: what the menu-bar extra opens Lantern with to show one session's tab (the app
 /// declares the scheme, `CFBundleURLTypes`).
 public enum SessionLink {
-    public static let scheme = "omp-ide"
+    public static let scheme = "com.magicelklabs.lantern"
 
     public static func url(for sessionKey: SessionKey) -> URL? {
         var components = URLComponents()

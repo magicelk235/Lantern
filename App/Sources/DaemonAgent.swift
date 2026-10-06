@@ -4,7 +4,7 @@ import Observation
 import ServiceManagement
 
 /// Registers ompd, bundled at `Contents/MacOS/ompd` and described by
-/// `Contents/Library/LaunchAgents/com.omp-ide.ompd.plist`, as the user's LaunchAgent: launchd keeps it
+/// `Contents/Library/LaunchAgents/com.magicelklabs.lantern.ompd.plist`, as the user's LaunchAgent: launchd keeps it
 /// running across app quits, crashes and logins.
 ///
 /// launchd binds the registration to the bundle's Team ID and signing identifier, so rebuilds keep it. A registration
@@ -28,7 +28,7 @@ final class DaemonAgent {
     private(set) var state: State = .unknown
     /// A `repair()` is under way.
     private(set) var isRepairing = false
-    private let service = SMAppService.agent(plistName: "com.omp-ide.ompd.plist")
+    private let service = SMAppService.agent(plistName: "com.magicelklabs.lantern.ompd.plist")
 
     func registerIfNeeded() {
         if let home = ProcessInfo.processInfo.environment[AppSupportPaths.homeEnvironmentKey], !home.isEmpty {
@@ -72,9 +72,9 @@ final class DaemonAgent {
     /// How long a freshly registered ompd gets to come up before the next pass.
     private static let repairGrace: Duration = .seconds(6)
 
-    private static let label = "com.omp-ide.ompd"
+    private static let label = "com.magicelklabs.lantern.ompd"
 
-    /// `launchctl bootout gui/<uid>/com.omp-ide.ompd`, then waits (3 s at most) until launchd no longer lists the job.
+    /// `launchctl bootout gui/<uid>/com.magicelklabs.lantern.ompd`, then waits (3 s at most) until launchd no longer lists the job.
     /// launchctl answers "Bad request" for a job in that state and removes it anyway.
     private static func bootOut() async {
         let target = "gui/\(getuid())/\(label)"
@@ -86,7 +86,7 @@ final class DaemonAgent {
         }
     }
 
-    /// Restarts the registered ompd: `launchctl kickstart -k gui/<uid>/com.omp-ide.ompd`. launchd SIGTERMs the one
+    /// Restarts the registered ompd: `launchctl kickstart -k gui/<uid>/com.magicelklabs.lantern.ompd`. launchd SIGTERMs the one
     /// running, which stops every omp the graceful way, and once it exited (after `ExitTimeOut`, 20 s, at
     /// the latest) spawns the job again: the ompd bundled with the app. Returns why it failed; nil once launchd spawned
     /// the new ompd. Never with `OMPD_HOME` set (`external`): that ompd is the developer's, and the registered one is

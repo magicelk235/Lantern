@@ -5,12 +5,12 @@ import IDEProtocol
 /// What ompd adds to the environment of an omp it spawns so the ide-bridge inside can dial back.
 /// Never persisted: the token is fresh per spawn and worthless once that omp is gone. The omp must be a
 /// direct child of the daemon process (no forking wrapper): processes that omp spawns inherit these variables, and the
-/// bridge tells them apart by `getppid() == OMP_IDE_DAEMON_PID`.
+/// bridge tells them apart by `getppid() == LANTERN_DAEMON_PID`.
 public struct BridgeCredentials: Sendable, Equatable {
-    public static let socketVariable = "OMP_IDE_BRIDGE_SOCK"
-    public static let sessionKeyVariable = "OMP_IDE_SESSION_KEY"
-    public static let tokenVariable = "OMP_IDE_BRIDGE_TOKEN"
-    public static let daemonPIDVariable = "OMP_IDE_DAEMON_PID"
+    public static let socketVariable = "LANTERN_BRIDGE_SOCK"
+    public static let sessionKeyVariable = "LANTERN_SESSION_KEY"
+    public static let tokenVariable = "LANTERN_BRIDGE_TOKEN"
+    public static let daemonPIDVariable = "LANTERN_DAEMON_PID"
 
     public let socketPath: String
     public let sessionKey: SessionKey
@@ -19,7 +19,7 @@ public struct BridgeCredentials: Sendable, Equatable {
     /// The process that spawns omp (ompd).
     public let daemonPID: Int32
 
-    /// The `OMP_IDE_*` variables to merge into the omp child's environment.
+    /// The `LANTERN_*` variables to merge into the omp child's environment.
     public var environment: [String: String] {
         [
             Self.socketVariable: socketPath, Self.sessionKeyVariable: sessionKey, Self.tokenVariable: token,
@@ -35,8 +35,8 @@ public struct BridgeCredentials: Sendable, Equatable {
 /// (the omp is the shell's child, not ompd's). The token serves every omp started in that terminal, one at a time,
 /// until the PTY is closed; never persisted (a restored terminal gets fresh credentials).
 public struct TerminalCredentials: Sendable, Equatable {
-    public static let ptyVariable = "OMP_IDE_TERMINAL_PTY"
-    public static let tokenVariable = "OMP_IDE_TERMINAL_TOKEN"
+    public static let ptyVariable = "LANTERN_TERMINAL_PTY"
+    public static let tokenVariable = "LANTERN_TERMINAL_TOKEN"
 
     public let socketPath: String
     public let ptyId: PTYID
@@ -44,7 +44,7 @@ public struct TerminalCredentials: Sendable, Equatable {
     public let token: String
     public let daemonPID: Int32
 
-    /// The `OMP_IDE_*` variables to merge into the terminal program's environment.
+    /// The `LANTERN_*` variables to merge into the terminal program's environment.
     public var environment: [String: String] {
         [
             BridgeCredentials.socketVariable: socketPath, Self.ptyVariable: ptyId, Self.tokenVariable: token,

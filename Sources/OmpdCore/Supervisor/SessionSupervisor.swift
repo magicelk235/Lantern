@@ -588,7 +588,7 @@ public actor SessionSupervisor {
         guard let file = await context.manifest.entry(sessionKey)?.sessionFile, FileManager.default.fileExists(atPath: file) else {
             return try await start(.fresh)
         }
-        let restarted = InterruptionAnalyzer.analyze(sessionFile: file, since: runStart, cause: "the session was restarted from omp IDE")
+        let restarted = InterruptionAnalyzer.analyze(sessionFile: file, since: runStart, cause: "the session was restarted from Lantern")
         // What an earlier death left and a resume never got to apply (its bridge did not say hello) is kept for its policy.
         recovery = Recovery(interruption: recovery?.interruption, restart: true, restarted: restarted)
         try await start(.resume)
@@ -793,7 +793,7 @@ public actor SessionSupervisor {
         _ = try await context.bridge.call(sessionKey, method: "session.prompt", params: ["text": .string(text)], timeout: context.timings.bridgeCall)
     }
 
-    /// Appends the `com.omp-ide.interrupted` entry (IDE bookkeeping, not model context): the interruption is handled,
+    /// Appends the `com.magicelklabs.lantern.interrupted` entry (IDE bookkeeping, not model context): the interruption is handled,
     /// and is not reported again at a later death.
     private func mark(_ interruption: Interruption, decision: String, main: Bool, agents: [String]) async {
         guard bridgeHello?.capabilities["entry.append"] == true else { return }
@@ -925,7 +925,7 @@ public actor SessionSupervisor {
         warnAboutCapabilities(of: hello)
         await adopt(sessionFile: hello.sessionFile, sessionId: hello.sessionId, title: hello.title, replacingTitle: false)
         await becomeIdleIfStarting()
-        // An omp spawned while no omp IDE window is connected is paused right away, before a recovery gives its
+        // An omp spawned while no Lantern window is connected is paused right away, before a recovery gives its
         // agents anything to do.
         let recovery = recovery
         self.recovery = nil
@@ -994,9 +994,9 @@ public actor SessionSupervisor {
 
     private func warnAboutCapabilities(of hello: BridgeHello) {
         if hello.capabilities["events.activity"] != true {
-            notify("warning", "An older copy of the ide-bridge serves this omp (no activity or title events); the session's status and title will not update until it is restarted with the current omp IDE.")
+            notify("warning", "An older copy of the ide-bridge serves this omp (no activity or title events); the session's status and title will not update until it is restarted with the current Lantern.")
         } else if hello.capabilities["session.pause"] != true {
-            notify("warning", "This omp cannot be paused through the ide-bridge; its agents keep working while omp IDE is closed.")
+            notify("warning", "This omp cannot be paused through the ide-bridge; its agents keep working while Lantern is closed.")
         }
     }
 
@@ -1177,7 +1177,7 @@ public actor SessionSupervisor {
 
     // MARK: - Pause
 
-    /// Brings omp's pause gate in line with the daemon's demand: closed while no omp IDE window is connected, and a pause
+    /// Brings omp's pause gate in line with the daemon's demand: closed while no Lantern window is connected, and a pause
     /// ompd engaged released once one is. A pause the user engaged is left alone either way. Concurrent calls coalesce
     /// into one more pass. A no-op until the bridge's hello (which applies the demand) or when the bridge cannot pause.
     public func syncPause() async {
@@ -1210,7 +1210,7 @@ public actor SessionSupervisor {
             notify(
                 "warning",
                 pause
-                    ? "omp's agents could not be paused while omp IDE is closed (\(error)); they keep working."
+                    ? "omp's agents could not be paused while Lantern is closed (\(error)); they keep working."
                     : "omp's agents could not be resumed (\(error)); dismiss omp's pause screen in the session to resume them.")
         }
     }

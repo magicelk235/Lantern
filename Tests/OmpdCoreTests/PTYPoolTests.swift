@@ -130,6 +130,21 @@ import Testing
         }
     }
 
+    @Test func foregroundProcessesAreWhatTheShellRuns() async throws {
+        try await withFixture { fixture in
+            let info = try await fixture.openShell()
+            let client = try await Client.attach(fixture.pool, info.ptyId)
+            try await fixture.pool.write(info.ptyId, Data("echo ready\n".utf8))
+            #expect(try await eventually { client.lines().contains("ready") })
+            #expect(try await fixture.pool.foregroundProcesses(info.ptyId).isEmpty)
+
+            try await fixture.pool.write(info.ptyId, Data("sleep 30 | cat\n".utf8))
+            #expect(try await eventually { try await fixture.pool.foregroundProcesses(info.ptyId) == ["sleep", "cat"] })
+            try await fixture.pool.write(info.ptyId, Data([0x03])) // ^C
+            #expect(try await eventually { try await fixture.pool.foregroundProcesses(info.ptyId).isEmpty })
+        }
+    }
+
     @Test func exitedProgramStaysAttachable() async throws {
         try await withFixture { fixture in
             let info = try await fixture.pool.open(PTYOpen.Params(cwd: fixture.directory, command: ["/bin/sh", "-c", "echo bye"], cols: 80, rows: 24))

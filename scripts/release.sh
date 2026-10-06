@@ -1,5 +1,5 @@
 #!/bin/sh
-# Release build of omp IDE: a universal, Developer ID signed app with the hardened runtime, in a DMG;
+# Release build of Lantern: a universal, Developer ID signed app with the hardened runtime, in a DMG;
 # notarized and stapled, and described by a Sparkle appcast item, when the environment provides what those need.
 #
 #   scripts/release.sh [<version> [<build>]]
@@ -18,9 +18,9 @@
 set -eu
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-PROJECT="$REPO/App/OmpIDE.xcodeproj"
-SCHEME="omp IDE"
-APP_NAME="omp IDE"
+PROJECT="$REPO/App/Lantern.xcodeproj"
+SCHEME="Lantern"
+APP_NAME="Lantern"
 TEAM=V8K8L3ZSD5
 IDENTITY="Developer ID Application: Bella Cohen ($TEAM)"
 RELEASE_DIR=${RELEASE_DIR:-$HOME/Library/Developer/omp-ide/release}
@@ -104,12 +104,12 @@ build_setting() {
 VERSION=${1:-$(build_setting MARKETING_VERSION)}
 BUILD=${2:-$(build_setting CURRENT_PROJECT_VERSION)}
 [ -n "$VERSION" ] && [ -n "$BUILD" ] || die "could not read MARKETING_VERSION/CURRENT_PROJECT_VERSION; pass them"
-echo "omp IDE $VERSION ($BUILD)"
+echo "Lantern $VERSION ($BUILD)"
 
-ARCHIVE="$RELEASE_DIR/omp-IDE-$VERSION.xcarchive"
+ARCHIVE="$RELEASE_DIR/Lantern-$VERSION.xcarchive"
 EXPORT_DIR="$RELEASE_DIR/export"
 APP="$EXPORT_DIR/$APP_NAME.app"
-DMG="$RELEASE_DIR/omp-IDE-$VERSION.dmg"
+DMG="$RELEASE_DIR/Lantern-$VERSION.dmg"
 mkdir -p "$RELEASE_DIR"
 rm -rf "$ARCHIVE" "$EXPORT_DIR" "$DMG"
 
@@ -148,21 +148,21 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 find "$APP" -type f -print | while IFS= read -r file; do
 	case $(file -b "$file") in *Mach-O*) check_signature "$file" ;; esac
 done
-plist="$APP/Contents/Library/LaunchAgents/com.omp-ide.ompd.plist"
+plist="$APP/Contents/Library/LaunchAgents/com.magicelklabs.lantern.ompd.plist"
 [ -f "$plist" ] || die "no LaunchAgent plist at ${plist#"$APP/"}"
 program=$(plutil -extract BundleProgram raw "$plist") || die "the LaunchAgent plist has no BundleProgram"
 [ "$program" = "Contents/MacOS/ompd" ] || die "the LaunchAgent runs $program, not Contents/MacOS/ompd"
-plutil -extract AssociatedBundleIdentifiers xml1 -o - "$plist" | grep -q '<string>com.omp-ide.app</string>' ||
-	die "the LaunchAgent plist is not associated with com.omp-ide.app"
+plutil -extract AssociatedBundleIdentifiers xml1 -o - "$plist" | grep -q '<string>com.magicelklabs.lantern</string>' ||
+	die "the LaunchAgent plist is not associated with com.magicelklabs.lantern"
 ompd="$APP/Contents/MacOS/ompd"
-codesign -dvv "$ompd" 2>&1 | grep -qx 'Identifier=com.omp-ide.ompd' || die "ompd is not signed as com.omp-ide.ompd"
+codesign -dvv "$ompd" 2>&1 | grep -qx 'Identifier=com.magicelklabs.lantern.ompd' || die "ompd is not signed as com.magicelklabs.lantern.ompd"
 # The menu-bar extra, where SMAppService.loginItem looks for it.
 extra="$APP/Contents/Library/LoginItems/$APP_NAME Menu Bar.app"
 [ -d "$extra" ] || die "no menu-bar extra at ${extra#"$APP/"}"
-codesign -dvv "$extra" 2>&1 | grep -qx 'Identifier=com.omp-ide.menubar' || die "the menu-bar extra is not signed as com.omp-ide.menubar"
+codesign -dvv "$extra" 2>&1 | grep -qx 'Identifier=com.magicelklabs.lantern.menubar' || die "the menu-bar extra is not signed as com.magicelklabs.lantern.menubar"
 # All three are sealed into the app's signature, so replacing any breaks it.
 resources="$APP/Contents/_CodeSignature/CodeResources"
-grep -q '<key>Library/LaunchAgents/com.omp-ide.ompd.plist</key>' "$resources" || die "the LaunchAgent plist is not sealed"
+grep -q '<key>Library/LaunchAgents/com.magicelklabs.lantern.ompd.plist</key>' "$resources" || die "the LaunchAgent plist is not sealed"
 grep -q '<key>MacOS/ompd</key>' "$resources" || die "ompd is not sealed as nested code"
 grep -q "<key>Library/LoginItems/$APP_NAME Menu Bar.app</key>" "$resources" || die "the menu-bar extra is not sealed as nested code"
 check_universal "$APP/Contents/MacOS/$APP_NAME"
@@ -180,7 +180,7 @@ hdiutil create -volname "$APP_NAME $VERSION" -srcfolder "$stage" -format UDZO -o
 rm -rf "$stage"
 codesign --sign "$IDENTITY" --timestamp "$DMG"
 codesign --verify --strict --verbose=2 "$DMG"
-mount=$(mktemp -d /tmp/omp-ide-dmg.XXXXXX)
+mount=$(mktemp -d /tmp/lantern-dmg.XXXXXX)
 hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$DMG" >/dev/null
 if ! codesign --verify --deep --strict "$mount/$APP_NAME.app" || [ ! -L "$mount/Applications" ]; then
 	hdiutil detach "$mount" >/dev/null

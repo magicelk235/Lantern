@@ -64,8 +64,8 @@ extension TabKind: Codable {
 }
 
 /// The tabs of a window's detail area: one strip per workspace folder (strips in the order they were first opened,
-/// tabs in the order they were opened) and the tab on screen. Every tab is in exactly one strip, and the selection is
-/// always an open tab.
+/// tabs in the order the user left them: a new tab goes after the one on screen, and tabs are dragged around) and the
+/// tab on screen. Every tab is in exactly one strip, and the selection is always an open tab.
 public struct TabLayout: Equatable, Sendable {
     public struct Strip: Equatable, Sendable, Identifiable {
         /// The workspace folder the strip's tabs belong to.
@@ -74,6 +74,9 @@ public struct TabLayout: Equatable, Sendable {
         /// The strip's tab that was on screen last: what the strip shows again when its workspace comes back into
         /// focus. Always one of `tabs`, or nil.
         public var lastSelected: TabKind?
+        /// The tab added last since `lastSelected` was chosen: the next new tab goes after it, so tabs opened one after
+        /// another from the same tab keep the order they came in (Safari's). Not stored.
+        var lastAdded: TabKind?
 
         public var id: String { workspace }
 
@@ -85,6 +88,14 @@ public struct TabLayout: Equatable, Sendable {
 
         /// The tab to show for the strip: the last one shown, else the first.
         public var preferredTab: TabKind? { lastSelected ?? tabs.first }
+
+        /// Puts a tab that is not in the strip right after the one it shows, after the tabs added since that one was
+        /// chosen.
+        mutating func insert(_ tab: TabKind) {
+            let anchor = lastAdded.flatMap(tabs.firstIndex(of:)) ?? preferredTab.flatMap(tabs.firstIndex(of:))
+            tabs.insert(tab, at: anchor.map { $0 + 1 } ?? tabs.endIndex)
+            lastAdded = tab
+        }
     }
 
     public private(set) var strips: [Strip] = []
@@ -112,10 +123,11 @@ public struct TabLayout: Equatable, Sendable {
         remember(self.selection)
     }
 
-    /// Notes `tab` as the last shown of its strip.
+    /// Notes `tab` as the last shown of its strip: new tabs go after it from now on.
     private mutating func remember(_ tab: TabKind?) {
         guard let tab, let index = strips.firstIndex(where: { $0.tabs.contains(tab) }) else { return }
         strips[index].lastSelected = tab
+        strips[index].lastAdded = nil
     }
 
     /// The strip of the tab on screen.
@@ -134,23 +146,33 @@ public struct TabLayout: Equatable, Sendable {
         strips.contains { $0.tabs.contains(tab) }
     }
 
-    /// Shows `tab`. A tab that is not open yet is first appended to the strip of `workspace` (a new strip goes last);
-    /// an open tab stays where it is.
+    /// Shows `tab`. A tab that is not open yet first joins the strip of `workspace` the way `add` puts it there; an open
+    /// tab stays where it is.
     public mutating func open(_ tab: TabKind, in workspace: String) {
         add(tab, in: workspace)
         selection = tab
         remember(tab)
     }
 
-    /// Appends `tab` to the strip of `workspace` (a new strip goes last) without showing it; an open tab stays where
-    /// it is.
+    /// Puts `tab` in the strip of `workspace` without showing it: right after the strip's tab on screen, after the tabs
+    /// added since that one was chosen (a new strip goes last). An open tab stays where it is.
     public mutating func add(_ tab: TabKind, in workspace: String) {
         guard !contains(tab) else { return }
         if let index = strips.firstIndex(where: { $0.workspace == workspace }) {
-            strips[index].tabs.append(tab)
+            strips[index].insert(tab)
         } else {
             strips.append(Strip(workspace: workspace, tabs: [tab]))
         }
+    }
+
+    /// Moves an open tab to `index` among its strip's tabs (clamped to the strip), the others keeping their order:
+    /// the user dragged it there.
+    public mutating func move(_ tab: TabKind, to index: Int) {
+        guard let stripIndex = strips.firstIndex(where: { $0.tabs.contains(tab) }),
+              let from = strips[stripIndex].tabs.firstIndex(of: tab)
+        else { return }
+        strips[stripIndex].tabs.remove(at: from)
+        strips[stripIndex].tabs.insert(tab, at: min(max(index, 0), strips[stripIndex].tabs.count))
     }
 
     /// Shows an open tab; a tab that is not open is ignored.
@@ -175,7 +197,10 @@ public struct TabLayout: Equatable, Sendable {
         let remaining = strips[stripIndex].tabs
         let neighbour = remaining.isEmpty ? nil : remaining[min(tabIndex, remaining.count - 1)]
         if selection == tab { selection = neighbour }
-        if strips[stripIndex].lastSelected == tab { strips[stripIndex].lastSelected = neighbour }
+        if strips[stripIndex].lastSelected == tab {
+            strips[stripIndex].lastSelected = neighbour
+            strips[stripIndex].lastAdded = nil
+        }
         if remaining.isEmpty { strips.remove(at: stripIndex) }
     }
 
@@ -187,6 +212,7 @@ public struct TabLayout: Equatable, Sendable {
         strips[stripIndex].tabs[tabIndex] = new
         if selection == old { selection = new }
         if strips[stripIndex].lastSelected == old { strips[stripIndex].lastSelected = new }
+        if strips[stripIndex].lastAdded == old { strips[stripIndex].lastAdded = new }
     }
 }
 

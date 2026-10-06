@@ -6,7 +6,7 @@ import Testing
 @Suite struct StorageAppSupportPathsTests {
     @Test func prepareMakesAPrivateLayoutAndResetsOnlyRun() throws {
         let dir = try StorageTempDir()
-        let paths = AppSupportPaths(root: dir.url.appending(path: "omp-ide", directoryHint: .isDirectory))
+        let paths = AppSupportPaths(root: dir.url.appending(path: "com.magicelklabs.lantern", directoryHint: .isDirectory))
         try paths.prepare()
         for directory in [paths.root, paths.run, paths.ptySnapshots, paths.hotExit] {
             #expect(try dir.posixPermissions(of: directory) == 0o700, "\(directory.lastPathComponent)")

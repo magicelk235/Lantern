@@ -49,6 +49,12 @@ final class TerminalTab {
     let endpoint: any TerminalEndpoint
     let view: OmpTerminalView
     private let onSize: (TerminalSize) -> Void
+    /// The hosts in windows, in the order they took the view: the newest shows it.
+    private var hosts: [WeakHost] = []
+
+    private struct WeakHost {
+        weak var host: TerminalHostingView?
+    }
 
     /// `onSize`: the emulator's size whenever it changes.
     init(endpoint: any TerminalEndpoint, font: NSFont, optionAsMeta: Bool, onSize: @escaping (TerminalSize) -> Void) {
@@ -74,6 +80,35 @@ final class TerminalTab {
 
     func setOptionAsMeta(_ optionAsMeta: Bool) {
         view.optionAsMetaKey = optionAsMeta
+    }
+
+    /// `host` went into a window: the view shows there.
+    func host(in host: TerminalHostingView) {
+        hosts.removeAll { $0.host == nil || $0.host === host }
+        hosts.append(WeakHost(host: host))
+        host.embed(view)
+    }
+
+    /// `host` left its window, or its window is closing: the view goes back to the host that had it before, while that
+    /// one is in a window. A duplicate window of a project (one SwiftUI opens and `AppState.attach` closes) took the
+    /// view from the project's window and must not leave it there without its terminal.
+    func unhost(_ host: TerminalHostingView) {
+        hosts.removeAll { $0.host == nil || $0.host === host }
+        guard view.superview === host, let previous = hosts.last?.host, previous.window != nil else { return }
+        previous.embed(view)
+    }
+
+    /// Edit › Clear to Start (⌘K), as Terminal does: the scrollback goes and the cursor's line moves to the top of the
+    /// screen, the lines above it gone and those below coming along; a full-screen program's screen (the alternate
+    /// screen) stays. All in the emulator: nothing reaches the program.
+    func clearToStart() {
+        let terminal = view.getTerminal()
+        let row = terminal.getCursorLocation().y
+        if !terminal.isCurrentBufferAlternate, row > 0 {
+            // Scroll up (SU) drops the top lines without keeping them as scrollback; the cursor rises with its line.
+            view.feed(text: "\u{1b}[\(row)S\u{1b}[\(row)A")
+        }
+        view.clearScrollback()
     }
 
     /// The tab closed: ompd stops streaming to it. The PTY keeps running.

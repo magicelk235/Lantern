@@ -54,7 +54,7 @@ final class OutdatedDaemon {
     func restartWhenIdle() {
         guard developerHome == nil, case .outOfDate = phase else { return }
         guard watch != nil else {
-            failure = "omp IDE cannot watch \(connection.paths.manifest.path(percentEncoded: false))."
+            failure = "Lantern cannot watch \(connection.paths.manifest.path(percentEncoded: false))."
             return
         }
         let settle = ManifestSettle(contentsOf: connection.paths.manifest)
@@ -156,7 +156,7 @@ struct OutdatedDaemonBar: View {
         case .restarting:
             NoticeBar(
                 systemImage: "arrow.clockwise", tint: .orange, title: "Restarting ompd",
-                message: "launchd stops the old ompd and starts the one this omp IDE comes with, which resumes the sessions.",
+                message: "launchd stops the old ompd and starts the one this version of Lantern comes with, which resumes the sessions.",
                 inProgress: true)
         case .outOfDate(let settle):
             if case .versionMismatch(let refusal) = app.connection.status {
@@ -176,7 +176,7 @@ struct OutdatedDaemonBar: View {
             if case .versionMismatch(let refusal) = app.connection.status {
                 NoticeBar(
                     systemImage: "arrow.up.circle", tint: .orange, title: "ompd restarts when idle",
-                    message: "This omp IDE needs a newer ompd. \(Self.busy(settle))", inProgress: true
+                    message: "This version of Lantern needs a newer ompd. \(Self.busy(settle))", inProgress: true
                 ) {
                     restartNow(settle)
                 }
@@ -193,10 +193,10 @@ struct OutdatedDaemonBar: View {
     /// Why the notice is up, and for the developer's ompd what to do.
     private var reason: String {
         if let home = outdated.developerHome {
-            return "This omp IDE needs a newer ompd: restart the one for OMPD_HOME=\(home) with this build's."
+            return "This version of Lantern needs a newer ompd: restart the one for OMPD_HOME=\(home) with this build's."
         }
         if let failure = outdated.failure { return failure }
-        return outdated.restartedSinceConnected ? "The restarted ompd refuses this omp IDE too." : "This omp IDE needs a newer ompd."
+        return outdated.restartedSinceConnected ? "The restarted ompd refuses this version of Lantern too." : "This version of Lantern needs a newer ompd."
     }
 
     private func restartNow(_ settle: ManifestSettle) -> some View {
@@ -232,7 +232,7 @@ struct OutdatedDaemonBar: View {
         switch settle {
         case .settled: "No session is busy."
         case .unsettled(let sessions): sessions.count == 1 ? "1 session is busy." : "\(sessions.count) sessions are busy."
-        case .unreadable: "omp IDE cannot tell which sessions are busy."
+        case .unreadable: "Lantern cannot tell which sessions are busy."
         }
     }
 

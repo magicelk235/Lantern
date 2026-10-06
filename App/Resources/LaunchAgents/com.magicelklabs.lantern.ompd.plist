@@ -6,7 +6,7 @@
 	<true/>
 	<key>AssociatedBundleIdentifiers</key>
 	<array>
-		<string>com.omp-ide.app</string>
+		<string>com.magicelklabs.lantern</string>
 	</array>
 	<key>BundleProgram</key>
 	<string>Contents/MacOS/ompd</string>
@@ -15,7 +15,7 @@
 	<key>KeepAlive</key>
 	<true/>
 	<key>Label</key>
-	<string>com.omp-ide.ompd</string>
+	<string>com.magicelklabs.lantern.ompd</string>
 	<key>ProcessType</key>
 	<string>Interactive</string>
 	<key>ProgramArguments</key>

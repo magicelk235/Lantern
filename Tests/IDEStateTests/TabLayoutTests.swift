@@ -3,7 +3,7 @@ import IDEState
 import Testing
 
 @Suite struct TabLayoutTests {
-    @Test func openingAppendsToTheWorkspaceStripAndReopeningOnlyFocuses() {
+    @Test func openingPutsTheTabInItsWorkspaceStripAndReopeningOnlyFocuses() {
         var layout = TabLayout()
         layout.open(.session("a1"), in: "/w/a")
         layout.open(.session("b1"), in: "/w/b")
@@ -17,6 +17,47 @@ import Testing
         #expect(layout.selection == .session("a1"))
         #expect(layout.selectedStrip?.workspace == "/w/a")
         #expect(layout.tabs == [.session("a1"), .session("a2"), .session("b1")])
+    }
+
+    @Test func newTabsGoRightAfterTheTabOnScreenInTheOrderTheyCome() {
+        var layout = TabLayout()
+        for key in ["a1", "a2", "a3"] { layout.open(.session(key), in: "/w/a") }
+        layout.select(.session("a1"))
+        layout.open(.session("a4"), in: "/w/a")
+        #expect(layout.tabs == ["a1", "a4", "a2", "a3"].map(TabKind.session))
+
+        // Added without being shown (ompd listed them): after the tab on screen, one after another.
+        layout.add(.terminal("p1"), in: "/w/a")
+        layout.add(.terminal("p2"), in: "/w/a")
+        #expect(layout.tabs == [.session("a1"), .session("a4"), .terminal("p1"), .terminal("p2"), .session("a2"), .session("a3")])
+        #expect(layout.selection == .session("a4"))
+
+        // Another tab on screen: the next one goes after it.
+        layout.select(.session("a3"))
+        layout.add(.terminal("p3"), in: "/w/a")
+        #expect(layout.tabs.last == .terminal("p3"))
+        // A strip that is not on screen takes them after the tab it shows.
+        layout.open(.session("b1"), in: "/w/b")
+        layout.add(.session("a5"), in: "/w/a")
+        #expect(layout.strips[0].tabs.suffix(2) == [.terminal("p3"), .session("a5")])
+        #expect(layout.strips[1].tabs == [.session("b1")])
+    }
+
+    @Test func aDraggedTabMovesWithinItsStripAndTheOrderIsStored() throws {
+        var layout = TabLayout()
+        for key in ["a1", "a2", "a3"] { layout.open(.session(key), in: "/w/a") }
+        layout.open(.session("b1"), in: "/w/b")
+        layout.move(.session("a3"), to: 0)
+        #expect(layout.strips[0].tabs == ["a3", "a1", "a2"].map(TabKind.session))
+        layout.move(.session("a3"), to: 9)
+        #expect(layout.strips[0].tabs == ["a1", "a2", "a3"].map(TabKind.session), "an index past the end is the end")
+        layout.move(.session("a1"), to: 1)
+        layout.move(.session("zz"), to: 0)
+        #expect(layout.strips[0].tabs == ["a2", "a1", "a3"].map(TabKind.session))
+        #expect(layout.selection == .session("b1") && layout.strips[1].tabs == [.session("b1")])
+
+        let stored = try JSONDecoder().decode(TabLayout.self, from: JSONEncoder().encode(layout))
+        #expect(stored.strips[0].tabs == ["a2", "a1", "a3"].map(TabKind.session))
     }
 
     @Test func selectingATabThatIsNotOpenChangesNothing() {

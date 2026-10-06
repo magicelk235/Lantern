@@ -5,7 +5,7 @@ import PackageDescription
 let daemonSwiftSettings: [SwiftSetting] = [.unsafeFlags(["-Osize"], .when(configuration: .release))]
 
 let package = Package(
-    name: "OmpIDE",
+    name: "Lantern",
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "IDEProtocol", targets: ["IDEProtocol"]),
@@ -45,7 +45,7 @@ let package = Package(
         .target(name: "IDEState", dependencies: ["IDEProtocol", .product(name: "GRDB", package: "GRDB.swift")]),
         // Editor logic without AppKit/SwiftUI: text file I/O with content hashes, the
         // buffer state machine (dirty, save, revert, external change, hot-exit restore), line diffs, the file navigator's
-        // directory listing and FSEvents watching.
+        // directory listing and FSEvents watching, and git runs for the navigator, the gutter and Source Control.
         .target(name: "IDEEditorModel", dependencies: ["IDEState"]),
         // Language servers for the editor without AppKit/SwiftUI: which server takes a file and where it
         // is found on the login shell's PATH, one server process per project and language (LanguageClient over a pipe),

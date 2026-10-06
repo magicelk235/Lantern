@@ -16,13 +16,14 @@ final class GitRepository {
         let originalPath: String?
         /// The index against HEAD, `nil` when they agree; `M`, `A`, `D`, `R`, `C` or `T`.
         let staged: Character?
-        /// The work tree against the index, `nil` when they agree; `M`, `D`, `T`, `?` untracked, `U` unmerged.
+        /// The work tree against the index, `nil` when they agree; `M`, `D`, `T`, `U` untracked, `!` unmerged (VS Code's
+        /// letters, which the Files pane shares).
         let unstaged: Character?
 
         var id: String { relativePath }
         var name: String { (path as NSString).lastPathComponent }
-        var isUntracked: Bool { unstaged == "?" }
-        var isConflicted: Bool { unstaged == "U" }
+        var isUntracked: Bool { unstaged == "U" }
+        var isConflicted: Bool { unstaged == "!" }
         /// HEAD has no version of the file: nothing to diff against but the empty text.
         var isNewToHead: Bool { isUntracked || staged == "A" }
     }
@@ -94,7 +95,7 @@ final class GitRepository {
             return
         }
         refreshing = Task { [workspace] in
-            let outcome = await Task.detached(priority: .userInitiated) { Self.load(workspace) }.value
+            let outcome = await Task.detached(priority: .userInitiated) { await Self.load(workspace) }.value
             apply(outcome)
             refreshing = nil
             if refreshStale {
@@ -119,12 +120,12 @@ final class GitRepository {
         case failed(String)
     }
 
-    nonisolated private static func load(_ workspace: String) -> Outcome {
+    nonisolated private static func load(_ workspace: String) async -> Outcome {
         guard Git.executable != nil else { return .noGit }
         let toplevel: String
         let prefix: String
         do {
-            let lines = try Git.text(["rev-parse", "--show-toplevel", "--show-prefix"], in: workspace)
+            let lines = try await Git.text(["rev-parse", "--show-toplevel", "--show-prefix"], in: workspace)
                 .split(separator: "\n", omittingEmptySubsequences: false)
             toplevel = lines.first.map(String.init) ?? workspace
             prefix = lines.count > 1 ? String(lines[1]) : ""
@@ -135,15 +136,15 @@ final class GitRepository {
         }
         do {
             let status = GitStatus.parse(
-                try Git.output(["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"], in: workspace))
-            let branches = try Git.text(["for-each-ref", "--format=%(refname:short)", "refs/heads/"], in: workspace)
+                try await Git.output(["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"], in: workspace))
+            let branches = try await Git.text(["for-each-ref", "--format=%(refname:short)", "refs/heads/"], in: workspace)
                 .split(separator: "\n").map(String.init)
             let changes = status.entries.map { entry in
                 Change(
                     path: absolutePath(entry.path, workspace: workspace, toplevel: toplevel, prefix: prefix),
                     relativePath: entry.path, originalPath: entry.originalPath,
                     staged: entry.isStaged ? entry.index : nil,
-                    unstaged: entry.isUntracked ? "?" : entry.isConflicted ? "U" : entry.workTree == "." ? nil : entry.workTree)
+                    unstaged: entry.isUntracked ? "U" : entry.isConflicted ? "!" : entry.workTree == "." ? nil : entry.workTree)
             }
             return .repository(Snapshot(status: status, branches: branches, changes: changes))
         } catch {
@@ -231,8 +232,8 @@ final class GitRepository {
         let message = trimmedMessage
         guard stagingAll ? canStageAllAndCommit : canCommit else { return }
         run("Could not commit", { [workspace] in
-            if stagingAll { _ = try Git.output(["add", "-A"], in: workspace) }
-            _ = try Git.output(["commit", "-m", message], in: workspace)
+            if stagingAll { _ = try await Git.output(["add", "-A"], in: workspace) }
+            _ = try await Git.output(["commit", "-m", message], in: workspace)
         }) { [self] in
             commitMessage = ""
         }
@@ -284,7 +285,7 @@ final class GitRepository {
             let outcome = await Task.detached(priority: .userInitiated) { () -> Result<[LineDiff.Hunk], Error> in
                 do {
                     let base = change.isNewToHead
-                        ? "" : String(decoding: try Git.output(["show", "HEAD:\(change.originalPath ?? change.relativePath)"], in: workspace), as: UTF8.self)
+                        ? "" : String(decoding: try await Git.output(["show", "HEAD:\(change.originalPath ?? change.relativePath)"], in: workspace), as: UTF8.self)
                     let current: String
                     switch TextFile.read(change.path) {
                     case .text(let snapshot): current = snapshot.text
@@ -317,19 +318,19 @@ final class GitRepository {
 
     /// Runs one git command as an action.
     private func perform(_ failureTitle: String, _ arguments: [String], then completion: (@MainActor @Sendable () -> Void)? = nil) {
-        run(failureTitle, { [workspace] in _ = try Git.output(arguments, in: workspace) }, then: completion)
+        run(failureTitle, { [workspace] in _ = try await Git.output(arguments, in: workspace) }, then: completion)
     }
 
     /// Runs `work` off the main thread as the one action under way; its failure becomes `lastError`, and a refresh
     /// follows either way.
-    private func run(_ failureTitle: String, _ work: @escaping @Sendable () throws -> Void, then completion: (@MainActor @Sendable () -> Void)? = nil) {
+    private func run(_ failureTitle: String, _ work: @escaping @Sendable () async throws -> Void, then completion: (@MainActor @Sendable () -> Void)? = nil) {
         guard !isBusy else { return }
         isBusy = true
         lastError = nil
         Task {
             let failure = await Task.detached(priority: .userInitiated) { () -> String? in
                 do {
-                    try work()
+                    try await work()
                     return nil
                 } catch {
                     return String(describing: error)

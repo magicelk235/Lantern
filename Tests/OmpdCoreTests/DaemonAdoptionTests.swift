@@ -48,11 +48,11 @@ struct DaemonAdoptionTests {
 
         // The terminal's shell got what an omp needs to reach ompd: no session key, the terminal's own credentials.
         let environment = fixture.omp.environment(of: terminal.pid)
-        #expect(environment["OMP_IDE_BRIDGE_SOCK"] == "/fake/bridge.sock")
-        #expect(environment["OMP_IDE_TERMINAL_PTY"] == terminal.pty.ptyId)
-        #expect(environment["OMP_IDE_TERMINAL_TOKEN"]?.count == 64)
-        #expect(environment["OMP_IDE_DAEMON_PID"] == String(getpid()))
-        #expect(environment["OMP_IDE_SESSION_KEY"] == ProcessInfo.processInfo.environment["OMP_IDE_SESSION_KEY"])
+        #expect(environment["LANTERN_BRIDGE_SOCK"] == "/fake/bridge.sock")
+        #expect(environment["LANTERN_TERMINAL_PTY"] == terminal.pty.ptyId)
+        #expect(environment["LANTERN_TERMINAL_TOKEN"]?.count == 64)
+        #expect(environment["LANTERN_DAEMON_PID"] == String(getpid()))
+        #expect(environment["LANTERN_SESSION_KEY"] == ProcessInfo.processInfo.environment["LANTERN_SESSION_KEY"])
         #expect(await fixture.bridge.terminals == [terminal.pty.ptyId])
 
         await fixture.bridge.terminalOmpSaysHello(

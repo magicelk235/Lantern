@@ -228,6 +228,13 @@ public actor PTYPool {
         }
     }
 
+    /// What runs in the foreground of the PTY's terminal besides its program (`PTYProcesses`).
+    public func foregroundProcesses(_ ptyId: PTYID) throws -> [String] {
+        let pty = try existing(ptyId)
+        guard let master = pty.channel?.fd else { return [] }
+        return PTYSpawner.foregroundProcesses(master: master, program: pty.info.running ? pty.info.pid : nil)
+    }
+
     /// Writes `<dir>/<ptyId>.json` for every PTY that changed since its last snapshot. Also runs on its own
     /// `snapshotInterval` after a change (never while idle).
     public func snapshotAll() throws {

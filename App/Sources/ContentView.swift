@@ -5,12 +5,26 @@ import SwiftUI
 /// A project's window, one native tab of the window group per project: an activity bar on the
 /// left (Files, Changes, Projects), the pane it picked next to it (hidden again by clicking the same icon), and the
 /// project's open tabs on the right. Every session and terminal of the project is one of its tabs. The window of no
-/// project (`project` empty) only offers Add Project.
+/// project (`project` empty) only offers Add Project, and shows the first project once there is one.
 struct ProjectWindow: View {
     @Bindable var app: AppState
-    let project: String
+    @Binding var project: String
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    /// The window's content width, as last laid out.
+    @State private var width = 0.0
+
+    /// The window's smallest content: the layout never collapses below it.
+    static let minimumSize = CGSize(width: 720, height: 440)
+    /// The narrowest the tabs' content gets while the pane shows: the pane gives way first, down to its minimum.
+    static let minimumContentWidth = 400.0
+
+    /// The pane's width: the one the user dragged, less what the content needs to stay usable.
+    private var paneWidth: Double {
+        guard width > 0 else { return app.sidebarWidth }
+        let room = width - Double(ActivityBar.width) - 2 - Self.minimumContentWidth
+        return min(app.sidebarWidth, max(AppState.minimumSidebarWidth, room))
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -18,8 +32,8 @@ struct ProjectWindow: View {
             Chrome.hairline.frame(width: 1)
             if app.sidebarVisible {
                 SidebarPaneView(app: app, project: project)
-                    .frame(width: app.sidebarWidth)
-                SidebarResizeHandle(app: app)
+                    .frame(width: paneWidth)
+                SidebarResizeHandle(app: app, width: paneWidth)
             }
             VStack(spacing: 0) {
                 StatusBanners(app: app, project: project)
@@ -48,16 +62,24 @@ struct ProjectWindow: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(minWidth: Self.minimumSize.width, minHeight: Self.minimumSize.height)
+        .onGeometryChange(for: Double.self) { Double($0.size.width) } action: { width = $0 }
         .background(Chrome.surface)
         .background(WindowAccessor { app.attach($0, project: project) })
-        .navigationTitle(project.isEmpty ? "omp IDE" : AppState.projectName(project))
+        .navigationTitle(project.isEmpty ? "Lantern" : AppState.projectName(project))
         .toolbarBackground(Chrome.surface, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         .task { app.start() }
         // The scene owns opening and closing windows; the model asks through these.
         .onAppear {
-            app.openProjectWindow = { openWindow(id: OmpIDEApp.projectWindowID, value: $0) }
-            app.closeProjectWindow = { dismissWindow(id: OmpIDEApp.projectWindowID, value: $0) }
+            app.openProjectWindow = { openWindow(id: LanternApp.projectWindowID, value: $0) }
+            app.closeProjectWindow = { dismissWindow(id: LanternApp.projectWindowID, value: $0) }
+            // The project is back: no window needs to say it keeps running (the notice shows the next time instead).
+            if app.closedProjectNotice?.project == project { app.dismissClosedProjectNotice(seen: false) }
+            if project.isEmpty {
+                let shown = $project
+                app.showInNoProjectWindow = { shown.wrappedValue = $0 }
+            }
         }
         // macOS restores the windows that were open; one can name a folder the app no longer lists (its state was lost
         // or belongs to another data folder): a folder that is still there becomes a project again, a gone one gives
@@ -70,49 +92,74 @@ struct ProjectWindow: View {
                 return
             }
             try? await Task.sleep(for: .milliseconds(100))
-            openWindow(id: OmpIDEApp.projectWindowID, value: app.projects.first ?? "")
-            dismissWindow(id: OmpIDEApp.projectWindowID, value: project)
+            openWindow(id: LanternApp.projectWindowID, value: app.projects.first ?? "")
+            dismissWindow(id: LanternApp.projectWindowID, value: project)
         }
         // The tabs are the list of sessions and terminals: whatever ompd lists gets one.
         .onChange(of: app.connection.sessions, initial: true) { app.syncTabs() }
         .onChange(of: app.connection.terminals.terminals) { app.syncTabs() }
-        // The no-project window gives way once a project exists, to that project's window (a project can also arrive
-        // from ompd, e.g. a session started elsewhere; with no window left, ompd would pause every session).
+        // The no-project window shows the first project once one exists (a project can also arrive from ompd, e.g. a
+        // session started elsewhere; with no window left, ompd would pause every session). It gives way instead when
+        // that project has a window already.
         .onChange(of: app.projects.isEmpty) { _, empty in
-            guard project.isEmpty, !empty else { return }
-            if let first = app.projects.first { openWindow(id: OmpIDEApp.projectWindowID, value: first) }
-            dismissWindow(id: OmpIDEApp.projectWindowID, value: "")
+            guard project.isEmpty, !empty, let first = app.projects.first else { return }
+            app.showProject(first)
+            if app.window(of: "") != nil { dismissWindow(id: LanternApp.projectWindowID, value: "") }
         }
         .sessionPicker(app, project: project)
         .quickLookPanel(app, project: project)
         .alert(item: $app.alert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message))
         }
-        .confirmationDialog(
-            closeTitle, isPresented: Binding(get: { app.pendingClose != nil }, set: { if !$0 { app.pendingClose = nil } }),
-            presenting: app.pendingClose
-        ) { request in
-            switch request {
-            case .session(let key):
-                Button("Close Session", role: .destructive) { app.closeSession(key) }
-            case .forget(let key):
-                Button("Remove Session", role: .destructive) { app.forgetSession(key) }
-            }
-        } message: { request in
-            switch request {
-            case .session:
-                Text("The agent is working. omp exits and the session leaves the list; its conversation file on disk is kept.")
-            case .forget:
-                Text("ompd forgets the session and its tab closes. The conversation file on disk is kept.")
-            }
+    }
+}
+
+/// The words of a close's confirmation: Terminal's for the processes of a terminal, the session's title for one
+/// session, the count for several tabs, each saying what ends.
+extension AppState.CloseRequest {
+    var title: String {
+        switch action {
+        case .forget: "Remove this session from the list?"
+        case .close(let closing) where closing.count > 1: "Close \(closing.count) tabs?"
+        case .close: sessions.first.map { "Close “\($0.title)”?" } ?? "Do you want to terminate running processes in this tab?"
         }
     }
 
-    private var closeTitle: String {
-        switch app.pendingClose {
-        case .session: "Close this session while the agent works?"
-        case .forget: "Remove this session from the list?"
-        case nil: ""
+    var confirmation: String {
+        switch action {
+        case .forget: "Remove Session"
+        case .close(let closing) where closing.count > 1: "Close Tabs"
+        case .close: sessions.isEmpty ? "Terminate" : "Close Session"
+        }
+    }
+
+    var message: String {
+        switch action {
+        case .forget:
+            return "ompd forgets the session and its tab closes. The conversation file on disk is kept."
+        case .close(let closing) where closing.count == 1 && sessions.isEmpty:
+            return "Closing this tab will terminate the running processes: \(processes.joined(separator: ", "))."
+        case .close(let closing) where closing.count == 1:
+            let working = sessions.contains(where: \.working) ? "The agent is working. " : ""
+            let resume = sessions.allSatisfy(\.resumable) ? "; you can resume it later from Open Session…" : "."
+            return working + "The omp session ends" + resume
+        case .close:
+            var ending: [String] = []
+            if !sessions.isEmpty {
+                let titles = ListFormatter.localizedString(byJoining: sessions.map { "“\($0.title)”" })
+                ending.append(sessions.count == 1 ? "the omp session \(titles) ends" : "the omp sessions \(titles) end")
+            }
+            if !processes.isEmpty {
+                let names = processes.joined(separator: ", ")
+                ending.append(processes.count == 1 ? "the running process \(names) is terminated" : "the running processes \(names) are terminated")
+            }
+            let sentence = ending.joined(separator: ", and ")
+            let working = sessions.contains(where: \.working) ? "An agent is working. " : ""
+            var message = working + sentence.prefix(1).uppercased() + sentence.dropFirst() + "."
+            if !sessions.isEmpty, sessions.allSatisfy(\.resumable) {
+                message += sessions.count == 1 ? " You can resume it later from Open Session…" : " You can resume them later from Open Session…"
+            }
+            return message
         }
     }
 }
@@ -203,9 +250,10 @@ private struct ActivityButton: View {
     }
 }
 
-/// The hairline between the sidebar and the tabs; dragging it resizes the sidebar.
+/// The hairline between the sidebar and the tabs; dragging it resizes the sidebar from the `width` it shows at.
 private struct SidebarResizeHandle: View {
     let app: AppState
+    let width: Double
     @State private var startWidth: Double?
 
     var body: some View {
@@ -222,8 +270,8 @@ private struct SidebarResizeHandle: View {
                     .gesture(
                         DragGesture(minimumDistance: 1, coordinateSpace: .global)
                             .onChanged { value in
-                                if startWidth == nil { startWidth = app.sidebarWidth }
-                                app.sidebarWidth = (startWidth ?? app.sidebarWidth) + value.translation.width
+                                if startWidth == nil { startWidth = width }
+                                app.sidebarWidth = (startWidth ?? width) + value.translation.width
                             }
                             .onEnded { _ in startWidth = nil }
                     )
@@ -349,7 +397,7 @@ struct StatusBanners: View {
             if let failure = app.persistence.writeFailure {
                 NoticeBar(
                     systemImage: "exclamationmark.triangle", tint: .orange, title: "Unsaved edits may not survive a crash",
-                    message: "omp IDE could not save its state: \(failure.reason)"
+                    message: "Lantern could not save its state: \(failure.reason)"
                 ) {
                     if failure.outOfSpace {
                         Button("Free Up Space…", action: freeUpSpace)
@@ -366,10 +414,25 @@ struct StatusBanners: View {
                     Button("Dismiss", action: app.crashNotices.dismiss)
                 }
             }
+            if let closed = app.closedProjectNotice, closed.project != project {
+                NoticeBar(
+                    systemImage: "info.circle", tint: .secondary, title: "“\(AppState.projectName(closed.project))” keeps running",
+                    message: Self.keepsRunning(closed)
+                ) {
+                    Button("Show Project") {
+                        app.dismissClosedProjectNotice(seen: true)
+                        app.showProject(closed.project)
+                    }
+                    Button("OK") { app.dismissClosedProjectNotice(seen: true) }
+                }
+                .help(
+                    "Closing a project’s window ends nothing in it. Its agents keep working while a Lantern window is open; "
+                        + "with none open, ompd pauses them until one opens again. Terminals keep running either way.")
+            }
             switch agent.state {
             case .requiresApproval:
                 NoticeBar(
-                    systemImage: "lock.shield", tint: .yellow, title: "Allow omp IDE to run in the background",
+                    systemImage: "lock.shield", tint: .yellow, title: "Allow Lantern to run in the background",
                     message: "ompd keeps your agents running while the app is closed. Turn it on in System Settings › General › Login Items."
                 ) {
                     Button("Open Login Items", action: agent.openLoginItemsSettings)
@@ -388,7 +451,7 @@ struct StatusBanners: View {
             case .notFound:
                 NoticeBar(
                     systemImage: "exclamationmark.triangle", tint: .red, title: "ompd is missing from the app",
-                    message: "Contents/Library/LaunchAgents/com.omp-ide.ompd.plist was not found in the app bundle. Reinstall omp IDE.")
+                    message: "Contents/Library/LaunchAgents/com.magicelklabs.lantern.ompd.plist was not found in the app bundle. Reinstall Lantern.")
             case .unknown, .external, .enabled:
                 EmptyView()
             }
@@ -404,6 +467,17 @@ struct StatusBanners: View {
     private func freeUpSpace() {
         SettingsTab.storage.select()
         openSettings()
+    }
+
+    /// Closing a project's window ends nothing: its sessions and terminals go on in ompd while another window is open;
+    /// with none left, ompd holds the agents and the terminals go on.
+    private static func keepsRunning(_ closed: AppState.ClosedProject) -> String {
+        let what = [
+            closed.sessions == 0 ? nil : closed.sessions == 1 ? "session" : "\(closed.sessions) sessions",
+            closed.terminals == 0 ? nil : closed.terminals == 1 ? "terminal" : "\(closed.terminals) terminals",
+        ].compactMap(\.self).joined(separator: " and ")
+        let verb = closed.sessions + closed.terminals == 1 ? "goes" : "go"
+        return "Its \(what) \(verb) on without its window. Projects (⇧⌘P) shows it again."
     }
 
     /// "at 14:02" today, else "on Sep 30 at 14:02".

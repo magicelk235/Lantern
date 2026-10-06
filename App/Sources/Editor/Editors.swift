@@ -27,6 +27,8 @@ final class Editors {
     @ObservationIgnored private var trees: [String: FileTree] = [:]
     @ObservationIgnored private var watchers: [String: FileSystemWatcher] = [:]
     @ObservationIgnored private var appearanceObservation: NSKeyValueObservation?
+    @ObservationIgnored private var fontSize = EditorSettings.fontSize
+    @ObservationIgnored private var defaultsObserver: (any NSObjectProtocol)?
 
     init(persistence: StatePersistence) {
         self.persistence = persistence
@@ -36,6 +38,16 @@ final class Editors {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 for document in self.documents.values { document.appearanceDidChange(application.effectiveAppearance) }
+            }
+        }
+        // View › Bigger, Smaller and Actual Size: every editor gets a configuration in the new size.
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, EditorSettings.fontSize != self.fontSize else { return }
+                self.fontSize = EditorSettings.fontSize
+                for document in self.documents.values { document.appearanceDidChange(NSApplication.shared.effectiveAppearance) }
             }
         }
     }
@@ -61,6 +73,27 @@ final class Editors {
         documents[path] = document
         watch(Self.watchRoot(for: path, in: workspace))
         return document
+    }
+
+    /// The file of `path` was renamed to `newPath` (or a folder holding it was): its document reopens there with its
+    /// unsaved text, selection and scroll position. Nothing is written to the old path.
+    func move(_ path: String, to newPath: String) {
+        guard let document = documents.removeValue(forKey: path) else { return }
+        let unsaved = document.unsavedCopy()
+        // Closing remembers the selection and scroll position under the old path.
+        document.close()
+        document.clearHotExit()
+        if var unsaved {
+            unsaved.path = newPath
+            persistence.saveDirtyBuffer(unsaved)
+            restoredBuffers[newPath] = unsaved
+        }
+        if var ui = persistence.editorUI[path] {
+            ui.path = newPath
+            persistence.updateEditorUI(ui)
+        }
+        open(newPath, in: document.workspace)
+        if highlight?.path == path { highlight?.path = newPath }
     }
 
     /// Unsaved buffers of the previous run whose tab did not come back (a lost window layout, say), with the folder

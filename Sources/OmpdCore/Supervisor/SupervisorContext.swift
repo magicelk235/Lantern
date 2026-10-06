@@ -79,7 +79,7 @@ public struct SupervisorContext: Sendable {
     /// session whose pinned omp is gone runs instead (`OmpBinary.locate` against `baseEnvironment`).
     public var ompExecutable: String?
     public var timings: SupervisorTimings
-    /// Whether ompd wants the sessions paused (no omp IDE window connected).
+    /// Whether ompd wants the sessions paused (no Lantern window connected).
     public var pauseDemand: PauseDemand
     /// omp's launch broker: named services relaunched after a Regime-B resume.
     public var services: any ServiceControl
@@ -119,4 +119,4 @@ public struct SupervisorContext: Sendable {
     }
 }
 
-let supervisorLog = Logger(subsystem: "com.omp-ide.ompd", category: "supervisor")
+let supervisorLog = Logger(subsystem: "com.magicelklabs.lantern.ompd", category: "supervisor")

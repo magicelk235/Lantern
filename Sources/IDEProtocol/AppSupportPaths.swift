@@ -1,6 +1,6 @@
 import Foundation
 
-/// Layout of `$APP_SUPPORT` = `~/Library/Application Support/omp-ide/`: everything the IDE owns
+/// Layout of `$APP_SUPPORT` = `~/Library/Application Support/com.magicelklabs.lantern/`: everything the IDE owns
 /// on disk. Nothing under `run/` outlives a daemon run; everything else is user data.
 public struct AppSupportPaths: Sendable, Equatable {
     public let root: URL
@@ -40,11 +40,11 @@ public struct AppSupportPaths: Sendable, Equatable {
     /// Environment variable that relocates `standard` (tests, side-by-side daemons).
     public static let homeEnvironmentKey = "OMPD_HOME"
 
-    /// `~/Library/Application Support/omp-ide`, or `$OMPD_HOME` when set and non-empty.
+    /// `~/Library/Application Support/com.magicelklabs.lantern`, or `$OMPD_HOME` when set and non-empty.
     public static var standard: AppSupportPaths {
         if let home = ProcessInfo.processInfo.environment[homeEnvironmentKey], !home.isEmpty {
             return AppSupportPaths(root: URL(filePath: NSString(string: home).expandingTildeInPath, directoryHint: .isDirectory))
         }
-        return AppSupportPaths(root: URL.applicationSupportDirectory.appending(path: "omp-ide", directoryHint: .isDirectory))
+        return AppSupportPaths(root: URL.applicationSupportDirectory.appending(path: "com.magicelklabs.lantern", directoryHint: .isDirectory))
     }
 }

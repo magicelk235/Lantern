@@ -11,7 +11,7 @@ public final class SignalTrap: Sendable {
     public let signals: AsyncStream<Int32>
     private let sources: [any DispatchSourceSignal]
 
-    public init(_ trapped: [Int32], queue: DispatchQueue = DispatchQueue(label: "com.omp-ide.ompd.signals")) {
+    public init(_ trapped: [Int32], queue: DispatchQueue = DispatchQueue(label: "com.magicelklabs.lantern.ompd.signals")) {
         let (signals, sink) = AsyncStream.makeStream(of: Int32.self)
         self.signals = signals
         sources = trapped.map { signal in

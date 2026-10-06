@@ -7,7 +7,7 @@ import MachO
 /// `swift build` ompd has none and reports the package's. The section is read from ompd's own image: inside the app
 /// bundle, `Bundle.main` is the app's.
 public let ompdVersion: String = {
-    guard let info = embeddedInfoPlist(), info["CFBundleIdentifier"] as? String == "com.omp-ide.ompd",
+    guard let info = embeddedInfoPlist(), info["CFBundleIdentifier"] as? String == "com.magicelklabs.lantern.ompd",
           let short = info["CFBundleShortVersionString"] as? String, !short.isEmpty
     else { return "0.1.0" }
     guard let build = info["CFBundleVersion"] as? String, !build.isEmpty else { return short }

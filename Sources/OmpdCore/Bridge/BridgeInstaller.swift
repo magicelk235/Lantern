@@ -9,7 +9,7 @@ public enum BridgeInstaller {
     public static let sourceEnvironmentKey = "OMPD_BRIDGE_PATH"
     public static let sourceFileName = "ide-bridge.ts"
     /// Name of the lock-mode copy inside `<agentDir>/extensions/`.
-    public static let globalFileName = "omp-ide-bridge.ts"
+    public static let globalFileName = "lantern-bridge.ts"
 
     /// Locate the shipped ide-bridge.ts: `$OMPD_BRIDGE_PATH`, then `<executable>/../Resources/ide-bridge.ts` (app bundle),
     /// then the repository's `bridge/ide-bridge.ts` (development builds, via `#filePath`).
@@ -46,7 +46,7 @@ public enum BridgeInstaller {
         return target
     }
 
-    /// Install the lock-mode copy as `<agentDir>/extensions/omp-ide-bridge.ts` (atomic, only if changed); idempotent.
+    /// Install the lock-mode copy as `<agentDir>/extensions/lantern-bridge.ts` (atomic, only if changed); idempotent.
     /// ompd calls this at startup, so the copy always matches the running daemon.
     public static func installGlobal(agentDir: URL) throws -> URL {
         let directory = agentDir.appending(path: "extensions", directoryHint: .isDirectory)

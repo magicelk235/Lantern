@@ -56,18 +56,47 @@ struct TerminalHostView: NSViewRepresentable {
     let emulator: @MainActor () -> TerminalTab
 
     func makeNSView(context: Context) -> TerminalHostingView {
-        TerminalHostingView(terminal: emulator().view)
+        TerminalHostingView(emulator: emulator())
     }
 
     func updateNSView(_ nsView: TerminalHostingView, context: Context) {}
 }
 
+/// Where a tab's emulator shows while the host is in a window (`TerminalTab.host(in:)`): the emulator has one view, and
+/// a second window SwiftUI opens for the same project gets a host of its own until it closes again.
 final class TerminalHostingView: NSView {
-    private let terminal: NSView
+    private let emulator: TerminalTab
+    private var closeObserver: (any NSObjectProtocol)?
 
-    init(terminal: NSView) {
-        self.terminal = terminal
+    init(emulator: TerminalTab) {
+        self.emulator = emulator
         super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        stopWatchingWindow()
+        guard let window else {
+            emulator.unhost(self)
+            return
+        }
+        // A window that closes may keep its views: the emulator's view leaves with the window, not with the view.
+        closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) {
+            [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.stopWatchingWindow()
+                self.emulator.unhost(self)
+            }
+        }
+        emulator.host(in: self)
+    }
+
+    /// Shows the emulator's view, filling the host; typing goes to it.
+    func embed(_ terminal: NSView) {
         terminal.removeFromSuperview()
         terminal.translatesAutoresizingMaskIntoConstraints = false
         addSubview(terminal)
@@ -77,14 +106,11 @@ final class TerminalHostingView: NSView {
             terminal.topAnchor.constraint(equalTo: topAnchor),
             terminal.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+        window?.makeFirstResponder(terminal)
     }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { nil }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        // Typing goes to the terminal on screen.
-        if let window, terminal.superview === self { window.makeFirstResponder(terminal) }
+    private func stopWatchingWindow() {
+        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
+        closeObserver = nil
     }
 }

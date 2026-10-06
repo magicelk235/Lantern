@@ -18,24 +18,31 @@ struct SettingsView: View {
     let app: AppState
     @AppStorage(SettingsTab.defaultsKey) private var tab = SettingsTab.general
 
-    /// Each pane has its own height (the window resizes to the one showing, as macOS settings windows do): Storage's
-    /// clean-up outcome and explanation, and the menu-bar extra's footer in General, would sit below the fold at
-    /// Terminal's height.
+    /// The window takes the height of the pane showing, as macOS settings windows do (`settingsPane()`).
     var body: some View {
         TabView(selection: $tab) {
             GeneralSettings(connection: app.connection, menuBar: app.menuBar)
-                .frame(width: 460, height: 420)
+                .settingsPane()
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(SettingsTab.general)
             TerminalSettingsPane()
-                .frame(width: 460, height: 360)
+                .settingsPane()
                 .tabItem { Label("Terminal", systemImage: "terminal") }
                 .tag(SettingsTab.terminal)
             StorageSettingsPane(app: app)
-                .frame(width: 460, height: 520)
+                .settingsPane()
                 .tabItem { Label("Storage", systemImage: "internaldrive") }
                 .tag(SettingsTab.storage)
         }
+    }
+}
+
+extension View {
+    /// A Settings pane (a grouped form) 460 wide and as tall as its content, up to 640 before it scrolls.
+    func settingsPane() -> some View {
+        frame(width: 460)
+            .frame(maxHeight: 640)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -72,7 +79,7 @@ private struct GeneralSettings: View {
     }
 }
 
-/// The menu-bar extra. The setting is omp IDE's (`MenuBarHelper.shownKey`); the extra's Hide from Menu Bar
+/// The menu-bar extra. The setting is Lantern's (`MenuBarHelper.shownKey`); the extra's Hide from Menu Bar
 /// turns it off too.
 private struct MenuBarSection: View {
     let menuBar: MenuBarAgent
@@ -93,13 +100,13 @@ private struct MenuBarSection: View {
     private var footer: String {
         switch menuBar.state {
         case .external(let home):
-            "OMPD_HOME is \(home): omp IDE leaves the menu bar alone. Open omp IDE Menu Bar.app, in omp IDE's Contents/Library/LoginItems, with the same OMPD_HOME."
+            "OMPD_HOME is \(home): Lantern leaves the menu bar alone. Open Lantern Menu Bar.app, in Lantern's Contents/Library/LoginItems, with the same OMPD_HOME."
         case .requiresApproval:
-            "macOS waits for you to allow omp IDE in System Settings › General › Login Items."
+            "macOS waits for you to allow Lantern in System Settings › General › Login Items."
         case .failed(let message):
             "Could not add it to the login items: \(message)"
         case .unknown, .shown, .hidden:
-            "How many agents work, and a dot while something waits for you, from login on and also while omp IDE is closed."
+            "How many agents work, and a dot while something waits for you, from login on and also while Lantern is closed."
         }
     }
 }

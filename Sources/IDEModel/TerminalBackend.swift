@@ -43,6 +43,11 @@ extension DaemonConnection {
     public func listPTYs() async throws -> [PTYInfo] {
         try await connectedClient().call(PTYList.self, Empty()).ptys
     }
+
+    /// What runs in the foreground of the PTY's terminal besides its program (`PTYProcesses`): what closing it ends.
+    public func ptyProcesses(_ ptyId: PTYID) async throws -> [String] {
+        try await connectedClient().call(PTYProcesses.self, .init(ptyId: ptyId)).processes
+    }
 }
 
 /// A terminal's size in character cells.
@@ -67,7 +72,7 @@ public struct TerminalSize: Hashable, Sendable {
 extension PTYInfo {
     public var size: TerminalSize { TerminalSize(cols: cols, rows: rows) }
 
-    /// The folder the terminal is in and its program, e.g. `omp IDE — zsh`.
+    /// The folder the terminal is in and its program, e.g. `Lantern — zsh`.
     public var displayTitle: String {
         let folder = URL(filePath: cwd, directoryHint: .isDirectory).lastPathComponent
         let program = command.first.map { URL(filePath: $0).lastPathComponent } ?? ""

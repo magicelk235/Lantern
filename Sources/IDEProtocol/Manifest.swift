@@ -26,7 +26,7 @@ public struct SessionManifest: Sendable, Equatable, Codable {
 public enum ContinuePolicy: String, Sendable, Codable, CaseIterable {
     /// Continued without asking.
     case auto
-    /// Held until the user decides in omp IDE (`SessionManifestEntry.pendingContinuation`, `session.continue`).
+    /// Held until the user decides in Lantern (`SessionManifestEntry.pendingContinuation`, `session.continue`).
     case ask
     /// Left as it is; the user carries on in the session TUI.
     case never
@@ -225,7 +225,7 @@ public enum SessionStatus: String, Sendable, Codable {
     case closed
     /// Cannot be resumed without user action (e.g. workspace folder missing).
     case needsAttention = "needs_attention"
-    /// omp runs, its agents held by omp's pause gate (`/pause`): by ompd while no omp IDE window is connected, or by
+    /// omp runs, its agents held by omp's pause gate (`/pause`): by ompd while no Lantern window is connected, or by
     /// the user, whose pause outlasts reconnects until they dismiss omp's pause screen.
     case paused
 }

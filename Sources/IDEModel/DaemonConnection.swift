@@ -40,7 +40,7 @@ public final class DaemonConnection: TerminalBackend {
 
     public nonisolated let paths: AppSupportPaths
     public nonisolated let clientVersion: String
-    /// What says hello: omp IDE (`app`), whose windows keep the sessions running, or a client that is no window
+    /// What says hello: Lantern (`app`), whose windows keep the sessions running, or a client that is no window
     /// (`cli`, the menu-bar extra), which neither keeps them running nor resumes them.
     public nonisolated let clientKind: ClientKind
     public nonisolated let backoff: Backoff
@@ -56,7 +56,7 @@ public final class DaemonConnection: TerminalBackend {
     public nonisolated static let noticeLimit = 50
     /// ompd's PTYs: the terminals, and the PTYs the session TUIs run on.
     public let terminals = TerminalRegistry()
-    /// This app has an omp IDE window open. ompd pauses every session while no connected app has one:
+    /// This app has a Lantern window open. ompd pauses every session while no connected app has one:
     /// every (re)connect's hello carries it, and changes go to ompd as `client.presence`.
     public private(set) var hasWindow = false
     /// What each running session's omp runs: agents, jobs, what waits for the user (`session.runtime` after each

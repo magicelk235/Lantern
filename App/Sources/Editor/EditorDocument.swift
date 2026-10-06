@@ -10,8 +10,8 @@ import IDEState
 /// the tab is open, so undo, selection and scroll survive switching tabs; an `EditorBuffer` measures it against the file
 /// on disk. Unsaved text is copied to `state.sqlite` ~300 ms after typing pauses (hot-exit), and the file is
 /// re-read when FSEvents reports a change: a buffer without edits follows it silently, one with edits gets a conflict.
-/// A `GitGutterView` over the gutter marks what differs from HEAD, and a `LanguageDocument` connects the text to the
-/// project's language server for its language.
+/// A `GitGutterView` over the gutter marks what differs from HEAD, a `LanguageDocument` connects the text to the
+/// project's language server for its language, and an `EditorFind` is its find bar.
 @MainActor @Observable
 final class EditorDocument {
     enum Content: Equatable {
@@ -42,6 +42,10 @@ final class EditorDocument {
     /// The text's side of its language server; nil for a file no server takes, and without text.
     private(set) var languageDocument: LanguageDocument? = nil
     var comparison: Comparison? = nil
+    /// Jump to Line (⌘L) asks for a line.
+    var isJumpingToLine = false
+    /// The find bar (Edit › Find).
+    let find = EditorFind()
 
     var name: String { (path as NSString).lastPathComponent }
     /// Save writes the text: it has edits, or the file is gone and saving puts it back.
@@ -61,6 +65,10 @@ final class EditorDocument {
     @ObservationIgnored private var storageObserver: StorageObserver?
     @ObservationIgnored private var textChangePending = false
     @ObservationIgnored private var scrollObserver: (any NSObjectProtocol)?
+    /// Hears the visible area change size (the find bar opening above the text, a window resize).
+    @ObservationIgnored private var resizeObserver: (any NSObjectProtocol)?
+    /// Until then, the caret is kept in sight when the visible area changes size: the find bar just opened or grew.
+    @ObservationIgnored private var caretInSightUntil: ContinuousClock.Instant?
     /// Marks the gutter with what differs from HEAD; made with the controller and dropped with it.
     @ObservationIgnored private var gitGutter: GitGutterView?
     /// Where the view scrolls when it first appears (restored from the previous run).
@@ -94,6 +102,7 @@ final class EditorDocument {
         hotExitStored = restored != nil
         content = .missing
         stamp = FileStamp(path: path)
+        find.document = self
         load(EditorBuffer.open(path: path, disk: TextFile.read(path), restored: restored), savedUI: savedUI)
         // The copy matched the file: nothing is unsaved anymore.
         if !isDirty { clearHotExit() }
@@ -120,7 +129,7 @@ final class EditorDocument {
         switch TextFile.read(path) {
         case .text(let snapshot):
             buffer?.reload(from: snapshot)
-            show(snapshot.text)
+            replaceText(with: snapshot.text)
             publish()
             clearHotExit()
         case .missing:
@@ -177,7 +186,7 @@ final class EditorDocument {
         case .none, .conflict, .gone:
             break
         case .reload(let snapshot):
-            show(snapshot.text)
+            replaceText(with: snapshot.text)
         case .becameClean:
             clearHotExit()
         case .unsupported(let reason):
@@ -251,6 +260,7 @@ final class EditorDocument {
             MainActor.assumeIsolated {
                 self?.saveUI()
                 self?.gitGutter?.syncFrame()
+                self?.find.viewDidScroll()
             }
         }
     }
@@ -258,12 +268,16 @@ final class EditorDocument {
     private func tearDownController() {
         if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
         scrollObserver = nil
+        if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) }
+        resizeObserver = nil
         if let storageObserver { controller?.textView.removeStorageDelegate(storageObserver) }
         storageObserver = nil
         gitGutter?.detach()
         gitGutter = nil
         languageDocument?.close()
         languageDocument = nil
+        find.reset()
+        isJumpingToLine = false
         pendingReveal = nil
         controller = nil
         coordinator = nil
@@ -289,18 +303,108 @@ final class EditorDocument {
             pendingScroll = nil
             return
         }
-        select(range, in: textView)
+        select(range, focus: true)
     }
 
-    private func select(_ range: NSRange, in textView: TextView) {
+    /// Selects `range` and scrolls it into the middle of the view if it is out of sight; `focus` gives the text the
+    /// keyboard.
+    func select(_ range: NSRange, focus: Bool) {
+        guard let textView = controller?.textView else { return }
         textView.selectionManager.setSelectedRange(range)
-        textView.scrollToRange(range, center: true)
-        textView.window?.makeFirstResponder(textView)
+        scrollIntoView(range, centered: true)
+        if focus { textView.window?.makeFirstResponder(textView) }
+    }
+
+    /// Jump to Line (⌘L): the caret goes to `target`, "line" or "line:column" (1-based; a line past the end is the last
+    /// one, a column past the line's end its end), and the line comes into view. False when `target` is neither.
+    func jump(to target: String) -> Bool {
+        let parts = target.trimmingCharacters(in: .whitespaces).split(separator: ":", omittingEmptySubsequences: false)
+        guard (1...2).contains(parts.count), let line = Int(parts[0]), line >= 1 else { return false }
+        var column = 1
+        if parts.count == 2 {
+            guard let value = Int(parts[1]), value >= 1 else { return false }
+            column = value
+        }
+        guard let textView = controller?.textView,
+              let position = textView.layoutManager.textLineForIndex(min(line, lineCount) - 1) else { return false }
+        let text = textView.textStorage.mutableString
+        var end = NSMaxRange(position.range)
+        while end > position.range.location, [0x0A, 0x0D].contains(text.character(at: end - 1)) { end -= 1 }
+        isJumpingToLine = false
+        select(NSRange(location: position.range.location + min(column - 1, end - position.range.location), length: 0), focus: true)
+        return true
+    }
+
+    /// How many lines the text has (at least one).
+    var lineCount: Int {
+        max(1, controller?.textView.layoutManager.lineCount ?? 1)
+    }
+
+    /// Where the start of `range` is, and the part of the view the text shows in (inside the scroll view's insets, right
+    /// of the gutter), both in the clip view's coordinates.
+    private func sight(of range: NSRange) -> (target: NSRect, visible: NSRect)? {
+        guard let controller, controller.isViewLoaded, let textView = controller.textView, let scrollView = controller.scrollView,
+              let caret = textView.layoutManager.rectForOffset(range.location) else { return nil }
+        let clipView = scrollView.contentView
+        let bounds = clipView.bounds
+        let insets = scrollView.contentInsets
+        let gutter = textView.textInsets
+        let visible = NSRect(
+            x: bounds.minX + gutter.left, y: bounds.minY + insets.top,
+            width: bounds.width - gutter.left - gutter.right, height: bounds.height - insets.top - insets.bottom)
+        return (clipView.convert(caret, from: textView), visible)
+    }
+
+    /// Scrolls the start of `range` into the part of the view the text shows in: into the middle when `centered`, else
+    /// just far enough. Nothing moves when it is in sight.
+    private func scrollIntoView(_ range: NSRange, centered: Bool) {
+        guard let scrollView = controller?.scrollView, case let (target, visible)? = sight(of: range) else { return }
+        let clipView = scrollView.contentView
+        let bounds = clipView.bounds
+        let insets = scrollView.contentInsets
+        let inSightVertically = target.minY >= visible.minY && target.maxY <= visible.maxY
+        let inSightHorizontally = target.minX >= visible.minX && target.maxX <= visible.maxX
+        guard !inSightVertically || !inSightHorizontally else { return }
+        var origin = bounds.origin
+        if !inSightVertically {
+            origin.y = if centered {
+                target.midY - visible.height / 2 - insets.top
+            } else if target.minY < visible.minY {
+                target.minY - insets.top
+            } else {
+                target.maxY - visible.height - insets.top
+            }
+        }
+        if !inSightHorizontally {
+            // From the line's start when the target fits there, else the target in the middle.
+            let leading = visible.minX - bounds.minX
+            origin.x = target.maxX <= leading + visible.width ? 0 : target.midX - leading - visible.width / 2
+        }
+        let constrained = clipView.constrainBoundsRect(NSRect(origin: origin, size: bounds.size)).origin
+        clipView.scroll(to: constrained)
+        scrollView.reflectScrolledClipView(clipView)
+    }
+
+    /// The find bar opens or grows above the text: for a moment, a caret in sight stays in sight as the view shrinks.
+    func keepCaretInSightWhileResizing() {
+        guard let caret = controller?.textView.selectionManager.textSelections.first?.range,
+              case let (target, visible)? = sight(of: caret), target.minY >= visible.minY, target.maxY <= visible.maxY
+        else {
+            caretInSightUntil = nil
+            return
+        }
+        caretInSightUntil = ContinuousClock.now + .milliseconds(500)
+    }
+
+    private func viewDidResize() {
+        guard let until = caretInSightUntil, ContinuousClock.now < until,
+              let caret = controller?.textView.selectionManager.textSelections.first?.range else { return }
+        scrollIntoView(caret, centered: false)
     }
 
     /// Replaces the text with `newText` as one undoable edit of only the part that differs, so carets and the scroll
-    /// position outside it stay where they were.
-    private func show(_ newText: String) {
+    /// position outside it stay where they were (a reload, Revert to Saved, Replace All).
+    func replaceText(with newText: String) {
         guard let controller, let textView = controller.textView else { return }
         let old = textView.textStorage.string as NSString
         let new = newText as NSString
@@ -316,7 +420,14 @@ final class EditorDocument {
         }
         let origin = controller.isViewLoaded ? controller.scrollView.contentView.bounds.origin : nil
         textView.replaceCharacters(in: change.old, with: new.substring(with: change.new), skipUpdateSelection: true)
+        let unmoved = textView.selectionManager.textSelections.map(\.range)
         textView.selectionManager.setSelectedRanges(selections)
+        if textView.selectionManager.textSelections.map(\.range) == unmoved {
+            // The selection kept its offsets, so the text view reports no change, but the lines before it may not
+            // have: the caret's line and column (the status bar) follow anyway.
+            NotificationCenter.default.post(
+                name: TextSelectionManager.selectionChangedNotification, object: textView.selectionManager)
+        }
         if let origin {
             controller.scrollView.contentView.scroll(to: origin)
             controller.scrollView.reflectScrolledClipView(controller.scrollView.contentView)
@@ -363,6 +474,7 @@ final class EditorDocument {
         self.buffer = buffer
         publish()
         gitGutter?.textDidChange()
+        find.textDidChange()
         if isDirty { scheduleHotExit(); scheduleAutosave() } else { clearHotExit(); autosave?.cancel() }
     }
 
@@ -400,7 +512,16 @@ final class EditorDocument {
 
     fileprivate func controllerDidAppear() {
         guard let controller else { return }
+        // Its view loaded, and with it the controller's key monitor: the app's go ahead of it again.
+        LocalEventMonitors.moveToFront()
         gitGutter?.attach(to: controller)
+        if resizeObserver == nil {
+            resizeObserver = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification, object: controller.scrollView.contentView, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.viewDidResize() }
+            }
+        }
         if let pendingScroll {
             self.pendingScroll = nil
             // After the first layout pass, which sizes the text view to its content.
@@ -413,7 +534,7 @@ final class EditorDocument {
             self.pendingReveal = nil
             // After the first layout pass, like the restored scroll position.
             DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated { self?.select(pendingReveal, in: controller.textView) }
+                MainActor.assumeIsolated { self?.select(pendingReveal, focus: true) }
             }
         } else if focusOnAppear {
             controller.view.window?.makeFirstResponder(controller.textView)
@@ -454,9 +575,15 @@ final class EditorDocument {
         hotExitWrite?.cancel()
         hotExitWrite = nil
         hotExitDueSince = nil
-        guard let buffer, buffer.isDirty, let textView = controller?.textView else { return }
-        persistence.saveDirtyBuffer(buffer.hotExitCopy(contents: textView.string))
+        guard let copy = unsavedCopy() else { return }
+        persistence.saveDirtyBuffer(copy)
         hotExitStored = true
+    }
+
+    /// The unsaved text as a hot-exit copy; nil without edits. A rename carries it to the file's new path.
+    func unsavedCopy() -> DirtyBuffer? {
+        guard let buffer, buffer.isDirty, let textView = controller?.textView else { return nil }
+        return buffer.hotExitCopy(contents: textView.string)
     }
 
     /// A copy is still to be written: typing has not paused long enough yet.

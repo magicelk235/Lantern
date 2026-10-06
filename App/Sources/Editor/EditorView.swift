@@ -4,8 +4,8 @@ import CodeEditSourceEditor
 import IDEEditorModel
 import SwiftUI
 
-/// An editor tab: the file's text with syntax highlighting, and the notices about the file on disk. Files the editor
-/// does not open as text show a notice instead. Caret and language show in the window's status bar.
+/// An editor tab: the file's text with syntax highlighting, its find bar, and the notices about the file on disk. Files
+/// the editor does not open as text show a notice instead. Caret and language show in the window's status bar.
 struct EditorView: View {
     let app: AppState
     @Bindable var document: EditorDocument
@@ -16,8 +16,13 @@ struct EditorView: View {
             switch document.content {
             case .text:
                 if let controller = document.controller {
-                    SourceEditorHost(controller: controller)
-                        .id(ObjectIdentifier(controller))
+                    VStack(spacing: 0) {
+                        if document.find.isShown {
+                            FindBar(find: document.find)
+                        }
+                        SourceEditorHost(controller: controller)
+                            .id(ObjectIdentifier(controller))
+                    }
                 }
             case .missing:
                 ContentUnavailableView {
@@ -39,13 +44,41 @@ struct EditorView: View {
     }
 }
 
-/// The document's `TextViewController`, the same one each time the tab shows.
+/// The document's `TextViewController`, the same one each time the tab shows. Clipped to its frame: the gutter floats
+/// in the scroll view as tall as the text and would draw its line numbers over the find bar above.
 private struct SourceEditorHost: NSViewControllerRepresentable {
     let controller: TextViewController
 
-    func makeNSViewController(context: Context) -> TextViewController { controller }
+    func makeNSViewController(context: Context) -> TextViewController {
+        controller.view.clipsToBounds = true
+        return controller
+    }
 
     func updateNSViewController(_ controller: TextViewController, context: Context) {}
+}
+
+/// Jump to Line (⌘L), from the status bar's caret position: a line, or line:column, for the caret; Return goes there,
+/// Esc leaves.
+struct JumpToLine: View {
+    let document: EditorDocument
+    @State private var target = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("Line", text: $target, prompt: Text("Line or Line:Column"))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 200)
+                .focused($focused)
+                .onSubmit { if !document.jump(to: target) { NSSound.beep() } }
+            Text("Lines 1–\(document.lineCount)")
+                .font(.system(size: 11))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .onAppear { focused = true }
+    }
 }
 
 /// What happened to the file on disk under this tab.
@@ -82,6 +115,7 @@ private struct UnsupportedNotice: View {
     let document: EditorDocument
     let reason: UnsupportedReason
     let close: () -> Void
+    @State private var width: CGFloat = 0
 
     var body: some View {
         ContentUnavailableView {
@@ -89,16 +123,24 @@ private struct UnsupportedNotice: View {
         } description: {
             Text(explanation)
         } actions: {
-            HStack {
-                Button("Open with Default App") { NSWorkspace.shared.open(URL(filePath: document.path)) }
-                Button("Reveal in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: document.path)])
-                }
-                Button("Close Tab", action: close)
+            // The view offers its actions less than its own width, too little for the three in a row: they are
+            // measured against the notice's width (less its margins) and stack when even that is too narrow.
+            ViewThatFits(in: .horizontal) {
+                HStack { actions }.fixedSize()
+                VStack { actions }.fixedSize()
             }
+            .frame(width: width > 0 ? max(0, width - 40) : nil)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .background(Chrome.canvas)
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        Button("Open with Default App") { NSWorkspace.shared.open(URL(filePath: document.path)) }
+        Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: document.path)]) }
+        Button("Close Tab", action: close)
     }
 
     private var explanation: String {

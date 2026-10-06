@@ -2,7 +2,7 @@ import Foundation
 import IDEProtocol
 
 /// What restarting ompd now would interrupt, read from the session manifest it keeps (`$APP_SUPPORT/sessions.json`):
-/// how omp IDE judges an ompd it cannot ask, an older one that refuses its protocol (`version_mismatch`)
+/// how Lantern judges an ompd it cannot ask, an older one that refuses its protocol (`version_mismatch`)
 /// and runs until launchd restarts it.
 public enum ManifestSettle: Equatable, Sendable {
     /// No session's omp is being started or resumed or works a turn: each is idle, paused, closed, needs attention or

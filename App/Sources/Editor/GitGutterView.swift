@@ -101,13 +101,12 @@ struct GitGutterMarks: Equatable, Sendable {
 extension GitGutterMarks {
     /// HEAD's version of the file at `path`, read in its folder (`git show HEAD:./name`, so the repository above it
     /// counts, whatever the project folder): the empty text when HEAD lacks the file (untracked, added, renamed, or
-    /// no commit yet); nil outside a repository or when git cannot say, for no marks at all. Synchronous: call it off
-    /// the main thread.
-    static func baseText(of path: String) -> String? {
+    /// no commit yet); nil outside a repository or when git cannot say, for no marks at all.
+    static func baseText(of path: String) async -> String? {
         let name = (path as NSString).lastPathComponent
         let directory = (path as NSString).deletingLastPathComponent
         do {
-            return String(decoding: try Git.output(["show", "HEAD:./\(name)"], in: directory), as: UTF8.self)
+            return String(decoding: try await Git.output(["show", "HEAD:./\(name)"], in: directory), as: UTF8.self)
         } catch let failure as Git.Failure where failure.status == 128 {
             let lacksFile = ["not in 'HEAD'", "does not exist in 'HEAD'", "invalid object name 'HEAD'"]
             return lacksFile.contains { failure.stderr.contains($0) } ? "" : nil
@@ -288,7 +287,7 @@ final class GitGutterView: NSView {
         let version = textVersion
         Task { [weak self, path] in
             let (base, marks) = await Task.detached(priority: .userInitiated) { () -> (String?, GitGutterMarks) in
-                let base = GitGutterMarks.baseText(of: path)
+                let base = await GitGutterMarks.baseText(of: path)
                 return (base, base.map { GitGutterMarks.compute(base: $0, current: text) } ?? GitGutterMarks())
             }.value
             guard let self else { return }

@@ -146,7 +146,7 @@ public enum TextFile {
         let exists = stat(target, &original) == 0
         // A read-only file stays read-only: replacing it through the directory would bypass that.
         if exists, access(target, W_OK) != 0 { throw WriteError(path: target, operation: "writing", errno: errno) }
-        let temp = (directory as NSString).appendingPathComponent(".\(name).omp-ide-\(UUID().uuidString.prefix(8)).tmp")
+        let temp = (directory as NSString).appendingPathComponent(".\(name).lantern-\(UUID().uuidString.prefix(8)).tmp")
 
         // 0666 before the umask for a new file, like any editor creating one; an existing file's mode is copied below.
         let fd = open(temp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, exists ? 0o600 : 0o666)

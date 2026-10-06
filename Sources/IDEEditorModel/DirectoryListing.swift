@@ -42,9 +42,9 @@ public enum DirectoryListing {
         }
     }
 
-    /// `.<name>.omp-ide-<id>.tmp`, see `TextFile.write`.
+    /// `.<name>.lantern-<id>.tmp`, see `TextFile.write`.
     static func isSaveTempFile(_ name: String) -> Bool {
-        name.hasPrefix(".") && name.hasSuffix(".tmp") && name.contains(".omp-ide-")
+        name.hasPrefix(".") && name.hasSuffix(".tmp") && name.contains(".lantern-")
     }
 }
 
@@ -72,59 +72,16 @@ public struct GitIgnoredPaths: Equatable, Sendable {
     }
 
     /// Asks git (`ls-files --others --ignored --exclude-standard --directory`) for the ignored entries under `root`.
-    /// Empty when `root` is not in a git work tree or no git is installed; the command line tools' `/usr/bin/git`
-    /// shim is never run, so a Mac without them gets no install prompt.
+    /// Empty when `root` is not in a git work tree or no git is installed (`Git.executable`).
     public static func load(in root: String) async -> GitIgnoredPaths {
-        await Task.detached(priority: .utility) {
-            guard let git = gitExecutable else { return .none }
-            let process = Process()
-            process.executableURL = URL(filePath: git)
-            process.arguments = ["-C", root, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]
-            let output = Pipe()
-            process.standardOutput = output
-            process.standardError = FileHandle.nullDevice
-            process.standardInput = FileHandle.nullDevice
-            do {
-                try process.run()
-            } catch {
-                return .none
-            }
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return .none }
-            let paths = data.split(separator: 0).map { entry in
-                var relative = String(decoding: entry, as: UTF8.self)
-                if relative.hasSuffix("/") { relative.removeLast() }
-                return (root as NSString).appendingPathComponent(relative)
-            }
-            return GitIgnoredPaths(paths: Set(paths))
-        }.value
-    }
-
-    /// The git of the active developer directory (`xcode-select -p`), else Homebrew's.
-    private static let gitExecutable: String? = {
-        var candidates: [String] = []
-        if let developer = developerDirectory() { candidates.append(developer + "/usr/bin/git") }
-        candidates += ["/opt/homebrew/bin/git", "/usr/local/bin/git"]
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
-    }()
-
-    private static func developerDirectory() -> String? {
-        let process = Process()
-        process.executableURL = URL(filePath: "/usr/bin/xcode-select")
-        process.arguments = ["-p"]
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return nil
+        guard let data = try? await Git.output(
+            ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], in: root)
+        else { return .none }
+        let paths = data.split(separator: 0).map { entry in
+            var relative = String(decoding: entry, as: UTF8.self)
+            if relative.hasSuffix("/") { relative.removeLast() }
+            return (root as NSString).appendingPathComponent(relative)
         }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-        let path = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return path.isEmpty ? nil : path
+        return GitIgnoredPaths(paths: Set(paths))
     }
 }

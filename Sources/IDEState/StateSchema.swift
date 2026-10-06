@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 import os
 
-let stateLog = Logger(subsystem: "com.omp-ide", category: "state")
+let stateLog = Logger(subsystem: "com.magicelklabs.lantern", category: "state")
 
 /// Tables of `state.sqlite`. Migrations only ever get appended.
 enum StateSchema {
@@ -54,6 +54,13 @@ enum StateSchema {
                 table.add(column: "projects", .text).notNull().defaults(to: "[]")
             }
         }
+        migrator.registerMigration("windows") { db in
+            try db.alter(table: WindowRecord.databaseTableName) { table in
+                // JSON array of project paths, in window tab order.
+                table.add(column: "windows", .text).notNull().defaults(to: "[]")
+                table.add(column: "frontWindow", .text)
+            }
+        }
         return migrator
     }()
 }
@@ -80,9 +87,10 @@ struct WindowRecord: FetchableRecord, PersistableRecord {
             tabs = TabLayout()
         }
         let projects = (try? JSONDecoder().decode([String].self, from: Data((row["projects"] as String).utf8))) ?? []
+        let windows = (try? JSONDecoder().decode([String].self, from: Data((row["windows"] as String).utf8))) ?? []
         state = WindowState(
             id: id, frame: frame, sidebarWidth: row["sidebarWidth"], sidebarVisible: row["sidebarVisible"],
-            projects: projects, tabs: tabs)
+            projects: projects, tabs: tabs, windows: windows, frontWindow: row["frontWindow"])
     }
 
     func encode(to container: inout PersistenceContainer) throws {
@@ -94,6 +102,8 @@ struct WindowRecord: FetchableRecord, PersistableRecord {
         container["sidebarWidth"] = state.sidebarWidth
         container["sidebarVisible"] = state.sidebarVisible
         container["projects"] = String(decoding: try JSONEncoder().encode(state.projects), as: UTF8.self)
+        container["windows"] = String(decoding: try JSONEncoder().encode(state.windows), as: UTF8.self)
+        container["frontWindow"] = state.frontWindow
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         container["tabs"] = String(decoding: try encoder.encode(state.tabs), as: UTF8.self)

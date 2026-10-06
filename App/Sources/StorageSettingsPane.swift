@@ -1,7 +1,7 @@
 import IDEModel
 import SwiftUI
 
-/// Settings › Storage: what omp and omp IDE keep on disk and could let go of, and the free
+/// Settings › Storage: what omp and Lantern keep on disk and could let go of, and the free
 /// space. ompd reports omp's side with `omp gc --json` (a dry run) and cleans it with `omp gc --apply --blobs --wal`;
 /// it never archives sessions (`--archive` moves session files that ompd or Open Session… may still resume). Loads
 /// when the pane shows and while ompd is reachable.
@@ -34,11 +34,11 @@ struct StorageSettingsPane: View {
                         Text(report.omp.count > 1 ? "omp in \(omp.agentDir)" : "omp")
                     } footer: {
                         if let archivable = omp.archiveCandidates, archivable > 0 {
-                            Text("\(archivable) older sessions could be archived with omp gc --archive. omp IDE never archives them: ompd and Open Session… may still resume them.")
+                            Text("\(archivable) older sessions could be archived with omp gc --archive. Lantern never archives them: ompd and Open Session… may still resume them.")
                         }
                     }
                 }
-                Section("omp IDE") {
+                Section("Lantern") {
                     LabeledContent("Data", value: Self.size(report.ide.totalBytes))
                     LabeledContent(
                         "Leftovers",
@@ -80,7 +80,7 @@ struct StorageSettingsPane: View {
 
     private func footer(_ report: StorageReport) -> String {
         let problems = report.failures.isEmpty ? "" : " " + report.failures.joined(separator: " ")
-        return "Clean Up deletes the files no omp session refers to, folds omp's database logs back into its databases and removes leftovers of omp IDE: old terminal screens and unfinished backup writes. Sessions are never archived or deleted.\(problems)"
+        return "Clean Up deletes the files no omp session refers to, folds omp's database logs back into its databases and removes leftovers of Lantern: old terminal screens and unfinished backup writes. Sessions are never archived or deleted.\(problems)"
     }
 
     private func load() async {

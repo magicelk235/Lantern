@@ -1,16 +1,16 @@
 import Foundation
 import IDEProtocol
 
-/// The menu-bar extra: `omp IDE Menu Bar.app`, a helper inside omp IDE (`Contents/Library/LoginItems`)
-/// that omp IDE registers as a login item, so what the agents do shows in the menu bar also while omp IDE is closed. It
+/// The menu-bar extra: `Lantern Menu Bar.app`, a helper inside Lantern (`Contents/Library/LoginItems`)
+/// that Lantern registers as a login item, so what the agents do shows in the menu bar also while Lantern is closed. It
 /// is a `cli` client of ompd: no window, so it neither keeps the sessions running nor resumes them.
 public enum MenuBarHelper {
     /// The helper's bundle identifier, which `SMAppService.loginItem(identifier:)` registers.
-    public static let bundleIdentifier = "com.omp-ide.menubar"
-    /// omp IDE's: the defaults domain `shownKey` lives in, and the app Open omp IDE opens when the helper is not inside
+    public static let bundleIdentifier = "com.magicelklabs.lantern.menubar"
+    /// Lantern's: the defaults domain `shownKey` lives in, and the app Open Lantern opens when the helper is not inside
     /// one.
-    public static let appBundleIdentifier = "com.omp-ide.app"
-    /// omp IDE's setting (Settings › General), also turned off by Hide from Menu Bar in the extra's menu: a Bool, on
+    public static let appBundleIdentifier = "com.magicelklabs.lantern"
+    /// Lantern's setting (Settings › General), also turned off by Hide from Menu Bar in the extra's menu: a Bool, on
     /// when absent.
     public static let shownKey = "showsMenuBarExtra"
 }
@@ -92,7 +92,7 @@ public struct MenuBarStatus: Equatable, Sendable {
 
     /// The agents of a session that work right now: its main agent while the session is `busy`, and every other agent
     /// omp reports `running`. None while the session is paused, since omp's pause gate holds each agent at its next step
-    /// (it is how every session waits while no omp IDE window is open), nor while its omp does not run.
+    /// (it is how every session waits while no Lantern window is open), nor while its omp does not run.
     public static func runningAgents(of entry: SessionManifestEntry, runtime: SessionRuntime?) -> Int {
         switch entry.status {
         case .busy, .idle:

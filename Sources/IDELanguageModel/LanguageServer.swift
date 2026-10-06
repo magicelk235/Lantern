@@ -290,7 +290,7 @@ public actor LanguageServer {
             general: nil, experimental: nil)
         return InitializeParams(
             processId: Int(ProcessInfo.processInfo.processIdentifier),
-            clientInfo: InitializeParams.ClientInfo(name: "omp IDE"),
+            clientInfo: InitializeParams.ClientInfo(name: "Lantern"),
             locale: nil, rootPath: root, rootUri: rootURI, initializationOptions: nil, capabilities: capabilities,
             trace: nil, workspaceFolders: [WorkspaceFolder(uri: rootURI, name: (root as NSString).lastPathComponent)])
     }
@@ -325,7 +325,7 @@ public actor LanguageServer {
 }
 
 /// The connection `InitializingServer` talks through: client messages go to the server as they are; the server's
-/// requests are answered here and never passed on, only its notifications are. omp IDE takes no part in what the
+/// requests are answered here and never passed on, only its notifications are. Lantern takes no part in what the
 /// requests ask: no configuration (it says it has none), no workspace edits, no documents shown, no progress.
 private actor RequestAnswering: ServerConnection {
     nonisolated let eventSequence: EventSequence
@@ -371,7 +371,7 @@ private actor RequestAnswering: ServerConnection {
         case .workspaceFolders(let reply):
             await reply(.success([folder]))
         case .workspaceApplyEdit(_, let reply):
-            await reply(.success(ApplyWorkspaceEditResult(applied: false, failureReason: "omp IDE does not apply workspace edits")))
+            await reply(.success(ApplyWorkspaceEditResult(applied: false, failureReason: "Lantern does not apply workspace edits")))
         case .clientRegisterCapability(_, let reply), .clientUnregisterCapability(_, let reply),
              .workspaceCodeLensRefresh(let reply), .workspaceSemanticTokenRefresh(let reply),
              .windowWorkDoneProgressCreate(_, let reply):
@@ -385,7 +385,7 @@ private actor RequestAnswering: ServerConnection {
             if method.hasSuffix("/refresh") {
                 await reply(.success(.null))
             } else {
-                await reply(.failure(AnyJSONRPCResponseError(code: -32601, message: "omp IDE does not handle \(method)")))
+                await reply(.failure(AnyJSONRPCResponseError(code: -32601, message: "Lantern does not handle \(method)")))
             }
         }
     }

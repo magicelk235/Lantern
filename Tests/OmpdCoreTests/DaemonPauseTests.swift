@@ -5,7 +5,7 @@ import Testing
 
 @testable import OmpdCore
 
-/// While no omp IDE window (`ClientKind.app`) is connected, every session is paused, and a window connecting
+/// While no Lantern window (`ClientKind.app`) is connected, every session is paused, and a window connecting
 /// resumes what ompd paused. The scripted bridge plays omp's pause gate; `cli` clients stand in for `ompd status`.
 @Suite(.timeLimit(.minutes(2)))
 struct DaemonPauseTests {

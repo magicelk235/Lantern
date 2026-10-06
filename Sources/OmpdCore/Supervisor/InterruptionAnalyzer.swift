@@ -10,7 +10,7 @@ import IDEProtocol
 enum InterruptionAnalyzer {
     /// Custom entry ompd appends through the bridge (`entry.append`) once an interruption was handled (continued or
     /// left): IDE bookkeeping, not model context. An interruption before one is never reported again.
-    static let markerType = "com.omp-ide.interrupted"
+    static let markerType = "com.magicelklabs.lantern.interrupted"
 
     static let mainWindow = 4 << 20
     static let agentWindow = 1 << 20
@@ -105,7 +105,7 @@ struct TranscriptState: Equatable {
     var pendingToolCalls: [InterruptedToolCall]
     /// `eval` ran since the dead run's start.
     var evalUsed: Bool
-    /// When the newest `com.omp-ide.interrupted` marker was written.
+    /// When the newest `com.magicelklabs.lantern.interrupted` marker was written.
     var lastMarkerAt: Date?
     /// The dead run's `session_exit` lists tool calls omp aborted in its teardown: the agent was mid-call.
     var teardownAbortedCalls = false

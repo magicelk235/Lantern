@@ -1,11 +1,11 @@
 import Foundation
 
-/// A crash report macOS wrote for ompd or omp IDE (`~/Library/Logs/DiagnosticReports/<process>-<date>.ips`). Local only:
+/// A crash report macOS wrote for ompd or Lantern (`~/Library/Logs/DiagnosticReports/<process>-<date>.ips`). Local only:
 /// only its name and modification date are read; nothing is parsed or sent anywhere.
 public struct CrashReport: Sendable, Equatable, Identifiable {
     public var id: URL { url }
     public var url: URL
-    /// `ompd` or `omp IDE`.
+    /// `ompd` or `Lantern`.
     public var process: String
     /// When macOS wrote it, about when the process quit.
     public var date: Date
@@ -17,14 +17,14 @@ public struct CrashReport: Sendable, Equatable, Identifiable {
     }
 
     /// The processes reported, by the prefix of their reports' names.
-    public static let processes = ["ompd", "omp IDE"]
+    public static let processes = ["ompd", "Lantern"]
 
     /// Where macOS writes the reports of the user's processes.
     public static var standardDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Logs/DiagnosticReports", directoryHint: .isDirectory)
     }
 
-    /// The reports in `directory` (not its subfolders) of `processes` — `ompd*.ips`, `omp IDE*.ips` — modified after
+    /// The reports in `directory` (not its subfolders) of `processes` — `ompd*.ips`, `Lantern*.ips` — modified after
     /// `lastSeen`, newest first. A missing or unreadable folder has none.
     public static func newer(than lastSeen: Date, in directory: URL) -> [CrashReport] {
         let keys: Set<URLResourceKey> = [.contentModificationDateKey, .isRegularFileKey]

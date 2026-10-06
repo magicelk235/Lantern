@@ -1,7 +1,7 @@
-# omp IDE app. Generate with `xcodegen generate --spec App/project.yml`; the .xcodeproj is not checked in.
-name: OmpIDE
+# Lantern app. Generate with `xcodegen generate --spec App/project.yml`; the .xcodeproj is not checked in.
+name: Lantern
 options:
-  bundleIdPrefix: com.omp-ide
+  bundleIdPrefix: com.magicelklabs
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
@@ -27,9 +27,9 @@ settings:
       ARCHS: arm64 x86_64
       ONLY_ACTIVE_ARCH: NO
 packages:
-  OmpIDE:
+  Lantern:
     path: ..
-  # Same package and requirement as the OmpIDE package's own dependency, so both resolve to one SwiftTerm.
+  # Same package and requirement as the Lantern package's own dependency, so both resolve to one SwiftTerm.
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     from: 1.2.0
@@ -49,29 +49,32 @@ packages:
     url: https://github.com/sparkle-project/Sparkle
     from: 2.10.0
 targets:
-  omp IDE:
+  Lantern:
     type: application
     platform: macOS
     sources:
       - path: Sources
-      - path: Resources/LaunchAgents/com.omp-ide.ompd.plist
+      # The app icon (omp's π as a lantern, glowing like an ember; sources and export in App/Icon and
+      # scripts/app-icon.sh); the menu-bar extra shares it for Login Items.
+      - path: Resources/Assets.xcassets
+      - path: Resources/LaunchAgents/com.magicelklabs.lantern.ompd.plist
         buildPhase:
           copyFiles:
             destination: wrapper
             subpath: Contents/Library/LaunchAgents
     dependencies:
-      - package: OmpIDE
+      - package: Lantern
         product: IDEModel
-      - package: OmpIDE
+      - package: Lantern
         product: IDEState
       # Terminal tabs render with SwiftTerm's AppKit `TerminalView`.
       - package: SwiftTerm
         product: SwiftTerm
-      - package: OmpIDE
+      - package: Lantern
         product: IDEEditorModel
       # The editor's language servers: ChimeHQ's LanguageClient comes with it, resolved from the
-      # OmpIDE package's own requirements.
-      - package: OmpIDE
+      # Lantern package's own requirements.
+      - package: Lantern
         product: IDELanguageModel
       - package: CodeEditSourceEditor
       - package: CodeEditTextView
@@ -83,9 +86,9 @@ targets:
         codeSign: true
         copy:
           destination: executables
-      # The menu-bar extra, a login item omp IDE registers with SMAppService while Settings › General shows
+      # The menu-bar extra, a login item Lantern registers with SMAppService while Settings › General shows
       # it; SMAppService.loginItem finds it in Contents/Library/LoginItems.
-      - target: omp IDE Menu Bar
+      - target: Lantern Menu Bar
         embed: true
         codeSign: true
         copy:
@@ -110,12 +113,12 @@ targets:
           fi
     settings:
       base:
-        PRODUCT_NAME: omp IDE
-        PRODUCT_BUNDLE_IDENTIFIER: com.omp-ide.app
+        PRODUCT_NAME: Lantern
+        PRODUCT_BUNDLE_IDENTIFIER: com.magicelklabs.lantern
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: omp IDE
+        INFOPLIST_KEY_CFBundleDisplayName: Lantern
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         # Merged into the generated Info.plist: Sparkle's feed and EdDSA public key from the two settings below.
         INFOPLIST_FILE: Resources/Info.plist
@@ -128,6 +131,7 @@ targets:
         # The ide-bridge copy reads a file outside the declared inputs (it may not exist).
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         COMBINE_HIDPI_IMAGES: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Under the hardened runtime, library validation rejects the ad-hoc signed Debug `*.debug.dylib` split
         # (no Team ID); link Debug as one executable like Release.
         ENABLE_DEBUG_DYLIB: NO
@@ -139,16 +143,16 @@ targets:
     sources:
       - path: ../Sources/ompd
     dependencies:
-      - package: OmpIDE
+      - package: Lantern
         product: OmpdCore
-      - package: OmpIDE
+      - package: Lantern
         product: IDETransport
     settings:
       base:
         PRODUCT_NAME: ompd
-        PRODUCT_BUNDLE_IDENTIFIER: com.omp-ide.ompd
+        PRODUCT_BUNDLE_IDENTIFIER: com.magicelklabs.lantern.ompd
         SKIP_INSTALL: YES
-        # A bare tool has no bundle: embed an Info.plist section so the code signature carries com.omp-ide.ompd.
+        # A bare tool has no bundle: embed an Info.plist section so the code signature carries com.magicelklabs.lantern.ompd.
         GENERATE_INFOPLIST_FILE: YES
         CREATE_INFOPLIST_SECTION_IN_BINARY: YES
         MARKETING_VERSION: "0.1.0"
@@ -159,26 +163,28 @@ targets:
           SWIFT_OPTIMIZATION_LEVEL: "-Osize"
   # The menu-bar extra: no windows, no Dock icon; a `cli` client of ompd, so it never keeps the sessions
   # running or resumes them.
-  omp IDE Menu Bar:
+  Lantern Menu Bar:
     type: application
     platform: macOS
     sources:
       - path: MenuBar/Sources
+      - path: Resources/Assets.xcassets
     dependencies:
-      - package: OmpIDE
+      - package: Lantern
         product: IDEModel
     settings:
       base:
-        PRODUCT_NAME: omp IDE Menu Bar
-        PRODUCT_BUNDLE_IDENTIFIER: com.omp-ide.menubar
+        PRODUCT_NAME: Lantern Menu Bar
+        PRODUCT_BUNDLE_IDENTIFIER: com.magicelklabs.lantern.menubar
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SKIP_INSTALL: YES
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: omp IDE Menu Bar
+        INFOPLIST_KEY_CFBundleDisplayName: Lantern Menu Bar
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_LSUIElement: YES
         ENABLE_APP_SANDBOX: NO
         COMBINE_HIDPI_IMAGES: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # As for the app: library validation under the hardened runtime rejects the ad-hoc signed Debug dylib split.
         ENABLE_DEBUG_DYLIB: NO

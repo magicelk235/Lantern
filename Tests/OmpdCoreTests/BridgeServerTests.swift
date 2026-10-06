@@ -193,8 +193,8 @@ import Testing
     @Test func terminalHelloIsAuthenticatedByTheTerminalsTokenAndServedUnderTheAdoptedKey() async throws {
         try await withBridgeServer { server in
             let credentials = await server.expectTerminal(ptyId: "t1")
-            #expect(credentials.environment.keys.sorted() == ["OMP_IDE_BRIDGE_SOCK", "OMP_IDE_DAEMON_PID", "OMP_IDE_TERMINAL_PTY", "OMP_IDE_TERMINAL_TOKEN"])
-            #expect(credentials.environment["OMP_IDE_TERMINAL_PTY"] == "t1" && credentials.environment["OMP_IDE_BRIDGE_SOCK"] == server.socketPath)
+            #expect(credentials.environment.keys.sorted() == ["LANTERN_BRIDGE_SOCK", "LANTERN_DAEMON_PID", "LANTERN_TERMINAL_PTY", "LANTERN_TERMINAL_TOKEN"])
+            #expect(credentials.environment["LANTERN_TERMINAL_PTY"] == "t1" && credentials.environment["LANTERN_BRIDGE_SOCK"] == server.socketPath)
             let hellos = Box<[TerminalHello]>([])
             let taking = Task { for await hello in await server.terminalHellos() { hellos.mutate { $0.append(hello) } } }
             defer { taking.cancel() }

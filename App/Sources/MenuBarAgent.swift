@@ -3,11 +3,11 @@ import IDEModel
 import Observation
 import ServiceManagement
 
-/// Registers the menu-bar extra, bundled at `Contents/Library/LoginItems/omp IDE Menu Bar.app`, as a login
+/// Registers the menu-bar extra, bundled at `Contents/Library/LoginItems/Lantern Menu Bar.app`, as a login
 /// item while Show in Menu Bar is on (Settings › General; the extra's own Hide from Menu Bar turns it off): launchd
-/// starts it at once and at every login, and it keeps running while omp IDE is closed. Turned off, it is unregistered,
+/// starts it at once and at every login, and it keeps running while Lantern is closed. Turned off, it is unregistered,
 /// which ends it. One that is registered but not running (it was killed), or that started before its executable was
-/// replaced (omp IDE was updated or rebuilt since), is registered again, which starts the bundle's.
+/// replaced (Lantern was updated or rebuilt since), is registered again, which starts the bundle's.
 ///
 /// Never with `OMPD_HOME` set (`external`): that ompd is a developer's, who starts the extra by hand for it, and the
 /// registered one is left alone.
@@ -95,7 +95,7 @@ final class MenuBarAgent {
     /// No extra runs from this bundle, or the one running started before its executable was written. The inode change
     /// time tells: a rebuild or an update writes a new file, whose modification date may be the build's.
     private var needsRestart: Bool {
-        let bundled = Self.path(Bundle.main.bundleURL.appending(path: "Contents/Library/LoginItems/omp IDE Menu Bar.app"))
+        let bundled = Self.path(Bundle.main.bundleURL.appending(path: "Contents/Library/LoginItems/Lantern Menu Bar.app"))
         let running = NSRunningApplication.runningApplications(withBundleIdentifier: MenuBarHelper.bundleIdentifier)
             .filter { $0.bundleURL.map(Self.path) == bundled }
         guard !running.isEmpty else { return true }

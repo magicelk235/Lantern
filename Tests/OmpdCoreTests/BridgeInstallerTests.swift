@@ -14,7 +14,7 @@ import Testing
     @Test func stagedAndGlobalCopiesMatchTheShippedBridgeAndAreRewrittenOnlyWhenStale() throws {
         let dir = try StorageTempDir()
         let shipped = try Data(contentsOf: BridgeInstaller.locateSource())
-        #expect(String(decoding: shipped, as: UTF8.self).contains("OMP_IDE_BRIDGE_SOCK"))
+        #expect(String(decoding: shipped, as: UTF8.self).contains("LANTERN_BRIDGE_SOCK"))
 
         let paths = AppSupportPaths(root: dir.url.appending(path: "home", directoryHint: .isDirectory))
         let staged = try BridgeInstaller.stage(into: paths)
@@ -30,7 +30,7 @@ import Testing
 
         let agentDir = dir.url.appending(path: "agent", directoryHint: .isDirectory)
         let global = try BridgeInstaller.installGlobal(agentDir: agentDir)
-        #expect(global == agentDir.appending(path: "extensions/omp-ide-bridge.ts", directoryHint: .notDirectory))
+        #expect(global == agentDir.appending(path: "extensions/lantern-bridge.ts", directoryHint: .notDirectory))
         #expect(try Data(contentsOf: global) == shipped)
         let installed = identity(global)
         _ = try BridgeInstaller.installGlobal(agentDir: agentDir)

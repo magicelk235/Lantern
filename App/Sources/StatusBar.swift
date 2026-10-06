@@ -14,10 +14,11 @@ struct StatusBar: View {
     var body: some View {
         HStack(spacing: 14) {
             if !project.isEmpty {
-                Text((project as NSString).abbreviatingWithTildeInPath)
+                let path = Self.displayPath(project)
+                Text((path as NSString).abbreviatingWithTildeInPath)
                     .lineLimit(1)
                     .truncationMode(.head)
-                    .help(project)
+                    .help(path)
             }
             connection
             Spacer(minLength: 8)
@@ -33,6 +34,19 @@ struct StatusBar: View {
         .frame(maxWidth: .infinity)
         .background(Chrome.surface)
         .overlay(alignment: .top) { Divider() }
+    }
+
+    /// The system's own links at the root (`/tmp`, `/var`, `/etc` into `/private`), by name.
+    private static let privateLinks = Set(["tmp", "var", "etc"].filter { AppState.normalized("/" + $0) == "/private/" + $0 })
+
+    /// `path` as the user knows it: through `/tmp` rather than `/private/tmp`, where projects are keyed by their real path
+    /// (`AppState.normalized`).
+    static func displayPath(_ path: String) -> String {
+        let components = path.split(separator: "/", maxSplits: 2)
+        guard components.count >= 2, components[0] == "private", privateLinks.contains(String(components[1])) else {
+            return path
+        }
+        return "/" + components.dropFirst().joined(separator: "/")
     }
 
     @ViewBuilder
@@ -116,11 +130,29 @@ private struct EditorState: View {
             }
             if let caret = document.caret {
                 Text("Ln \(caret.line), Col \(caret.column)")
+                    .modifier(JumpToLineAnchor(document: document, isAnchor: document.content == .text))
             }
             if document.isDirty {
                 Text("Edited")
             }
-            Text(document.language.id == .plainText ? "Plain Text" : document.language.tsName.capitalized)
+            // A file not shown as text (binary, too large, gone) has no language to speak of.
+            if document.content == .text {
+                Text(document.language.id == .plainText ? "Plain Text" : document.language.tsName.capitalized)
+                    .modifier(JumpToLineAnchor(document: document, isAnchor: document.caret == nil))
+            }
+        }
+    }
+}
+
+/// Jump to Line (⌘L) hangs from the status bar's caret position, as Xcode's does; from the language while the caret's
+/// line is not known.
+private struct JumpToLineAnchor: ViewModifier {
+    @Bindable var document: EditorDocument
+    let isAnchor: Bool
+
+    func body(content: Content) -> some View {
+        content.popover(isPresented: isAnchor ? $document.isJumpingToLine : .constant(false), arrowEdge: .top) {
+            JumpToLine(document: document)
         }
     }
 }
@@ -154,7 +186,7 @@ private struct LanguageServerState: View {
             }
         case .unavailable(let programs):
             Text("No Language Server")
-                .help("omp IDE looks for \(programs.joined(separator: " or ")) on your login shell’s PATH.")
+                .help("Lantern looks for \(programs.joined(separator: " or ")) on your login shell’s PATH.")
         case .failed(let reason):
             HStack(spacing: 5) {
                 StatusDot(color: .orange)

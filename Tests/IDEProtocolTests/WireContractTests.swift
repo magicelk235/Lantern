@@ -41,7 +41,7 @@ private let terminal = PTYInfo(ptyId: "t1", cwd: "/Users/me", command: ["/bin/zs
         #expect(try wire(cli).decoded == cli)
     }
 
-    /// Only omp IDE windows keep the sessions running; a client that does not say what it is, or whether it has a
+    /// Only Lantern windows keep the sessions running; a client that does not say what it is, or whether it has a
     /// window, counts as an app with one (apps from before the fields).
     @Test func aHelloWithoutAClientKindIsAnAppWindow() throws {
         let frame = try decode(ClientFrame.self, #"{"type":"hello","protocolVersion":4,"clientVersion":"0.1","token":"abc"}"#)

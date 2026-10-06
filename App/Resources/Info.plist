@@ -10,15 +10,15 @@
 	<!-- Sparkle downloads an update in the background and installs it when the app quits. -->
 	<key>SUAutomaticallyUpdate</key>
 	<true/>
-	<!-- omp-ide://session/<key>: the menu-bar extra opens a session's tab (SessionLink, OmpIDEApp.swift). -->
+	<!-- com.magicelklabs.lantern://session/<key>: the menu-bar extra opens a session's tab (SessionLink, LanternApp.swift). -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>com.omp-ide.app.session</string>
+			<string>com.magicelklabs.lantern.session</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>omp-ide</string>
+				<string>com.magicelklabs.lantern</string>
 			</array>
 		</dict>
 	</array>
@@ -29,7 +29,7 @@
 			<key>NSMenuItem</key>
 			<dict>
 				<key>default</key>
-				<string>Open in omp IDE</string>
+				<string>Open in Lantern</string>
 			</dict>
 			<key>NSMessage</key>
 			<string>openProject</string>

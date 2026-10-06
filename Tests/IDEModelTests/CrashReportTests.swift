@@ -14,7 +14,7 @@ import Testing
             try FileManager.default.setAttributes([.modificationDate: lastSeen.addingTimeInterval(offset)], ofItemAtPath: url.path(percentEncoded: false))
         }
         try report("ompd-2026-10-01-140212.ips", at: 60)
-        try report("omp IDE-2026-10-01-150000.ips", at: 120)
+        try report("Lantern-2026-10-01-150000.ips", at: 120)
         try report("ompd-2026-09-30-090000.ips", at: -60)
         try report("ompd-2026-10-01-130000.ips", at: 0)
         try report("omp-2026-10-01-140212.ips", at: 60)
@@ -22,8 +22,8 @@ import Testing
         try report("Retired/ompd-2026-10-01-160000.ips", at: 180)
 
         let found = CrashReport.newer(than: lastSeen, in: directory)
-        #expect(found.map(\.url.lastPathComponent) == ["omp IDE-2026-10-01-150000.ips", "ompd-2026-10-01-140212.ips"])
-        #expect(found.map(\.process) == ["omp IDE", "ompd"])
+        #expect(found.map(\.url.lastPathComponent) == ["Lantern-2026-10-01-150000.ips", "ompd-2026-10-01-140212.ips"])
+        #expect(found.map(\.process) == ["Lantern", "ompd"])
         #expect(CrashReport.newer(than: lastSeen.addingTimeInterval(120), in: directory).isEmpty, "seen up to the newest")
         #expect(CrashReport.newer(than: .distantPast, in: directory.appending(path: "missing")).isEmpty)
     }

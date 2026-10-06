@@ -28,10 +28,14 @@ public struct WindowState: Equatable, Sendable {
     public var projects: [String]
     /// Detail-area tabs and the tab on screen (so also the selected session).
     public var tabs: TabLayout
+    /// The projects whose windows are open, in the order of their window tabs; they open again at launch.
+    public var windows: [String]
+    /// The project whose window tab was in front.
+    public var frontWindow: String?
 
     public init(
         id: String, frame: WindowFrame? = nil, sidebarWidth: Double? = nil, sidebarVisible: Bool = true,
-        projects: [String] = [], tabs: TabLayout = TabLayout()
+        projects: [String] = [], tabs: TabLayout = TabLayout(), windows: [String] = [], frontWindow: String? = nil
     ) {
         self.id = id
         self.frame = frame
@@ -39,6 +43,8 @@ public struct WindowState: Equatable, Sendable {
         self.sidebarVisible = sidebarVisible
         self.projects = projects
         self.tabs = tabs
+        self.windows = windows
+        self.frontWindow = frontWindow
     }
 }
 

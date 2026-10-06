@@ -1,7 +1,7 @@
 import Foundation
 
 // Hardening: a session restarted onto the omp installed now, and what omp and
-// omp IDE can reclaim on disk. Additive to protocol 5: an ompd from before these methods answers `unknown_method`.
+// Lantern can reclaim on disk. Additive to protocol 5: an ompd from before these methods answers `unknown_method`.
 
 // MARK: - omp upgrades
 
@@ -127,7 +127,7 @@ public struct OmpStorage: Codable, Sendable, Equatable {
     }
 }
 
-/// omp IDE's own data under `$APP_SUPPORT`, as ompd sees it.
+/// Lantern's own data under `$APP_SUPPORT`, as ompd sees it.
 public struct IDEStorage: Codable, Sendable, Equatable {
     /// Everything under `$APP_SUPPORT`: the manifest, terminal snapshots, `state.sqlite`, hot-exit copies.
     public var totalBytes: Int64
@@ -143,7 +143,7 @@ public struct IDEStorage: Codable, Sendable, Equatable {
     }
 }
 
-/// What omp and omp IDE could reclaim, and the free space left.
+/// What omp and Lantern could reclaim, and the free space left.
 public struct StorageReport: Codable, Sendable, Equatable {
     /// One per omp agent directory: those the sessions use and the one a new session gets, as `omp gc --json` (a dry run)
     /// reports them.
@@ -165,7 +165,7 @@ public struct StorageReport: Codable, Sendable, Equatable {
 }
 
 /// `storage.report`: `omp gc --json` (a dry run) in every agent directory the sessions use, through a session's pinned
-/// omp and environment (else the omp a new session gets), plus omp IDE's own data and the free space.
+/// omp and environment (else the omp a new session gets), plus Lantern's own data and the free space.
 public enum StorageReportRequest: DaemonMethod {
     public static let name = "storage.report"
     public typealias Params = Empty

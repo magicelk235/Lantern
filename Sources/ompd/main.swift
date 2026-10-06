@@ -9,7 +9,7 @@ let usage = """
            ompd status [--json]
            ompd --version
 
-      run      Start the daemon (normally launched by the omp IDE LaunchAgent). $OMPD_HOME relocates its files.
+      run      Start the daemon (normally launched by the Lantern LaunchAgent). $OMPD_HOME relocates its files.
                --omp          omp executable for new sessions (default: $OMP_BIN, PATH, /opt/homebrew/bin/omp)
                --omp-arg      argument appended to every new session's omp command line (repeatable)
                --session-dir  omp --session-dir for new sessions (default: omp's per-workspace directory)
@@ -65,7 +65,7 @@ func status(json: Bool) async throws {
     else {
         fail("ompd is not running (no token at \(paths.token.path(percentEncoded: false)))")
     }
-    // A cli client: asking for the status must not resume sessions ompd paused because no omp IDE window is open.
+    // A cli client: asking for the status must not resume sessions ompd paused because no Lantern window is open.
     let client = IDEClient(
         socketPath: paths.socket.path(percentEncoded: false), token: token, clientVersion: "ompd-cli \(ompdVersion)", clientKind: .cli)
     do {

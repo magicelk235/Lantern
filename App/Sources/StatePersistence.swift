@@ -4,7 +4,7 @@ import IDEModel
 import IDEState
 import os
 
-let appLog = Logger(subsystem: "com.omp-ide.app", category: "state")
+let appLog = Logger(subsystem: "com.magicelklabs.lantern", category: "state")
 
 /// A write of `state.sqlite` or of a hot-exit copy failed: unsaved edits may not survive a crash.
 struct StateWriteFailure: Equatable, Sendable {
@@ -34,7 +34,7 @@ final class StatePersistence {
     private let store: StateStore?
     /// Dirty-buffer writes run here, one after the other in call order: each is durable (two `F_FULLFSYNC`s), which
     /// takes too long for the main thread.
-    private let dirtyBufferQueue = DispatchQueue(label: "com.omp-ide.hot-exit", qos: .userInitiated)
+    private let dirtyBufferQueue = DispatchQueue(label: "com.magicelklabs.lantern.hot-exit", qos: .userInitiated)
 
     init(paths: AppSupportPaths) {
         var store: StateStore?

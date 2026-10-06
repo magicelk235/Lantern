@@ -3,7 +3,7 @@ import IDEModel
 import UserNotifications
 
 /// What waits for the user in the session TUIs (tool approvals, `ask`) outside the window: the Dock badge
-/// counts it, and each new one posts a notification while omp IDE is in the background, titled by its session
+/// counts it, and each new one posts a notification while Lantern is in the background, titled by its session
 /// (permission is asked for with the first). A click on one brings the app forward on that session's tab; it is
 /// withdrawn once its approval or question is answered or its omp stopped, also when an earlier run of the app posted
 /// it.

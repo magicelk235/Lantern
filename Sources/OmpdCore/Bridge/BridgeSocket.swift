@@ -3,7 +3,7 @@ import Dispatch
 import Foundation
 import os
 
-let bridgeLog = Logger(subsystem: "com.omp-ide.ompd", category: "bridge")
+let bridgeLog = Logger(subsystem: "com.magicelklabs.lantern.ompd", category: "bridge")
 
 /// POSIX unix-domain-socket plumbing for `BridgeServer`. Network.framework cannot report the peer's pid, and the
 /// bridge authenticates omp by `LOCAL_PEERPID`.
@@ -108,7 +108,7 @@ final class BridgeListener: Sendable {
     private let source: any DispatchSourceRead
 
     init(fd: Int32, onAccept: @escaping @Sendable (_ client: Int32, _ peerPID: pid_t?) -> Void) {
-        source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: DispatchQueue(label: "com.omp-ide.bridge.listener"))
+        source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: DispatchQueue(label: "com.magicelklabs.lantern.bridge.listener"))
         source.setEventHandler {
             while true {
                 let client = accept(fd, nil, nil)
@@ -166,7 +166,7 @@ final class BridgeConnection: Sendable {
         self.peerPID = peerPID
         self.maxLineBytes = maxLineBytes
         (lines, sink) = AsyncStream.makeStream(of: Data.self)
-        let queue = DispatchQueue(label: "com.omp-ide.bridge.connection")
+        let queue = DispatchQueue(label: "com.magicelklabs.lantern.bridge.connection")
         self.queue = queue
         io = DispatchIO(type: .stream, fileDescriptor: fd, queue: queue, cleanupHandler: { _ in Darwin.close(fd) })
         io.setLimit(lowWater: 1)

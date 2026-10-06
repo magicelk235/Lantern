@@ -12,6 +12,7 @@ struct DaemonTests {
     static let allMethods = [
         DaemonStatus.name, SessionCreate.name, SessionOpen.name, ListSessions.name, SessionClose.name, SessionForget.name,
         PTYOpen.name, PTYAttach.name, PTYDetach.name, PTYWrite.name, PTYResize.name, PTYClose.name, PTYList.name,
+        PTYProcesses.name,
     ]
 
     @Test func routerServesEveryMethodAndSessionPTYsBehaveLikeTerminals() async throws {
@@ -78,6 +79,9 @@ struct DaemonTests {
         let listed = try await client.call(PTYList.self, Empty()).ptys
         served.insert(PTYList.name)
         #expect(listed.map(\.ptyId) == [opened.ptyId, pty.ptyId] && listed.map(\.sessionKey) == [opened.sessionKey, nil])
+        // `cat` is the PTY's own program: nothing else would end with it.
+        #expect(try await client.call(PTYProcesses.self, .init(ptyId: pty.ptyId)).processes.isEmpty)
+        served.insert(PTYProcesses.name)
         _ = try await client.call(PTYDetach.self, .init(ptyId: pty.ptyId))
         served.insert(PTYDetach.name)
         _ = try await client.call(PTYClose.self, .init(ptyId: pty.ptyId))

@@ -1,14 +1,14 @@
 import AppKit
 import IDEModel
 
-/// Crash reports macOS wrote for ompd or omp IDE since the user last saw one (telemetry-free), looked for at
+/// Crash reports macOS wrote for ompd or Lantern since the user last saw one (telemetry-free), looked for at
 /// launch and whenever the app becomes active; the window shows the newest as one notice. Only the reports' names and
 /// dates are read; nothing is parsed, and nothing leaves the Mac. The newest report seen is remembered in the defaults;
 /// on the very first look there is none, and reports from before then are not news.
 @MainActor @Observable
 final class CrashNotices {
     /// Overrides `CrashReport.standardDirectory` (tests and smoke runs), with a last-seen date of its own.
-    static let directoryEnvironmentKey = "OMP_IDE_DIAGNOSTIC_REPORTS"
+    static let directoryEnvironmentKey = "LANTERN_DIAGNOSTIC_REPORTS"
 
     /// Reports newer than the last one seen, newest first.
     private(set) var unseen: [CrashReport] = []

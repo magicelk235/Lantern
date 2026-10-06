@@ -8,7 +8,7 @@ import Testing
 
 /// Acceptance for TUI sessions, with the real `ompd` binary, real omp and `anthropic/claude-haiku-4-5`
 /// (costs model calls, a few minutes). Not part of the default run: `scripts/acceptance.sh` builds ompd and runs it with
-/// `OMPD_ACCEPTANCE=1`. Uses the dev LaunchAgent `com.omp-ide.ompd.dev` (installed and removed by the test) and only
+/// `OMPD_ACCEPTANCE=1`. Uses the dev LaunchAgent `com.magicelklabs.lantern.ompd.dev` (installed and removed by the test) and only
 /// signals processes it started.
 @Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["OMPD_ACCEPTANCE"] == "1", "set OMPD_ACCEPTANCE=1 (scripts/acceptance.sh)"))
 struct DaemonAcceptanceTests {
@@ -136,7 +136,7 @@ struct DaemonAcceptanceTests {
 
         let log = (try? String(contentsOf: rig.home.appending(path: "ompd.log"), encoding: .utf8)) ?? ""
         print("""
-            acceptance phase 2 (LaunchAgent com.omp-ide.ompd.dev):
+            acceptance phase 2 (LaunchAgent com.magicelklabs.lantern.ompd.dev):
               phase-1 session \(phase1Key) resumed at daemon start: \(restoredPhase1.status.rawValue), pty \(restoredPhase1.ptyId ?? "-")
               ompd pid \(firstStatus.pid) -> \(cliStatus.pid) after kickstart -k; session \(key): pty \(oldPTY) -> \(newPTY), \
             omp pid \(oldOmp) -> \(newOmp) (sleep \(sleeper) gone: \(kill(sleeper, 0) != 0))
@@ -225,7 +225,7 @@ struct AcceptanceRig {
         process.executableURL = URL(filePath: ompd)
         process.arguments = ["run"] + ompdArguments
         var environment = ProcessInfo.processInfo.environment.filter { key, _ in
-            !key.hasPrefix("DYLD_") && !key.hasPrefix("__XPC_") && !key.hasPrefix("OMP_IDE_")
+            !key.hasPrefix("DYLD_") && !key.hasPrefix("__XPC_") && !key.hasPrefix("LANTERN_")
                 && !["OMPCODE", "CLAUDECODE", "CI", "ORCA_PI_STATUS_OWNED", "AGENT", "OMPD_ACCEPTANCE", "OMPD_BINARY"].contains(key)
         }
         environment[AppSupportPaths.homeEnvironmentKey] = home.path(percentEncoded: false)

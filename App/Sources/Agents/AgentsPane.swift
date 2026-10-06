@@ -327,7 +327,7 @@ extension AgentStatus {
         case .aborted: "Aborted: its turn was stopped"
         case .interrupted: "Interrupted: omp stopped while it worked"
         case .paused: "Paused: it holds at its next step until omp's pause screen is dismissed"
-        case .unknown: "omp reports no state omp IDE knows"
+        case .unknown: "omp reports no state Lantern knows"
         }
     }
 }

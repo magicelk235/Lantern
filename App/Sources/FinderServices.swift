@@ -1,7 +1,7 @@
 import AppKit
 
 /// The Services menu entries for folders, declared under `NSServices` in `Resources/Info.plist`: in the
-/// Finder's context menu (and Services menu), "Open in omp IDE" adds the folder as a project and brings its window
+/// Finder's context menu (and Services menu), "Open in Lantern" adds the folder as a project and brings its window
 /// forward; "New omp Session" does that and starts omp in it. macOS launches the app for either when it is not running.
 @MainActor
 final class FinderServices: NSObject {

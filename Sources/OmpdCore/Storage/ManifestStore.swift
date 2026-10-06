@@ -15,7 +15,7 @@ public actor ManifestStore {
         encoder.outputFormatting.insert(.prettyPrinted)
         return encoder
     }()
-    private let queue = DispatchSerialQueue(label: "com.omp-ide.ompd.manifest")
+    private let queue = DispatchSerialQueue(label: "com.magicelklabs.lantern.ompd.manifest")
     public nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
 
     public init(url: URL) {

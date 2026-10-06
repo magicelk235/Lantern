@@ -51,7 +51,7 @@ public final class IDEServer: Sendable {
     private let startedAt: Date
     private let handler: any IDERequestHandler
     private let maxBacklogBytes: Int
-    private let queue = DispatchQueue(label: "com.omp-ide.transport.listener")
+    private let queue = DispatchQueue(label: "com.magicelklabs.lantern.transport.listener")
     private let state = OSAllocatedUnfairLock(initialState: State())
 
     private struct State: Sendable {
@@ -221,7 +221,7 @@ public final class IDEServer: Sendable {
 
     private func accept(_ nwConnection: NWConnection) {
         let channel = FrameChannel(
-            connection: nwConnection, queue: DispatchQueue(label: "com.omp-ide.transport.connection"),
+            connection: nwConnection, queue: DispatchQueue(label: "com.magicelklabs.lantern.transport.connection"),
             maxBacklogBytes: maxBacklogBytes)
         let connection = IDEConnection(channel: channel)
         let admitted = state.withLock { s in

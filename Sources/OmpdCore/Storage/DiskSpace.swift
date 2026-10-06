@@ -65,7 +65,7 @@ final class StorageWatch: Sendable {
         StorageIO.log.error("low disk space: \(free, privacy: .public) free")
         notify(DaemonNotice(
             level: "warning",
-            message: "Only \(free) is free on the disk omp IDE keeps its data on. Sessions keep running, but omp may fail to save them and terminal screens may not be kept across restarts.",
+            message: "Only \(free) is free on the disk Lantern keeps its data on. Sessions keep running, but omp may fail to save them and terminal screens may not be kept across restarts.",
             at: Date(), topic: DaemonNotice.diskSpaceTopic))
     }
 

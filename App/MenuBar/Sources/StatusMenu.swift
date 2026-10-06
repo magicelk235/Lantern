@@ -2,12 +2,12 @@ import AppKit
 import IDEModel
 import os
 
-private let menuLog = Logger(subsystem: "com.omp-ide.menubar", category: "menu")
+private let menuLog = Logger(subsystem: "com.magicelklabs.lantern.menubar", category: "menu")
 
 /// The menu-bar extra's status item and its menu. omp's terminal glyph and,
 /// while agents work, how many (`MenuBarStatus.runningAgents`); a dot on the glyph while an approval or a question
 /// waits; dimmed while ompd is out of reach. The menu lists the sessions that are not closed by project, each with its
-/// status, then Open omp IDE and Hide from Menu Bar.
+/// status, then Open Lantern and Hide from Menu Bar.
 ///
 /// It follows ompd as a `cli` client (`DaemonConnection`): it never keeps the sessions running or resumes them.
 /// Nothing polls: the item and the menu change when ompd pushes a change that alters what they show, and the
@@ -45,7 +45,7 @@ final class StatusMenu: NSObject {
 
     override init() {
         super.init()
-        item.autosaveName = "omp IDE"
+        item.autosaveName = "Lantern"
         menu.autoenablesItems = false
         item.menu = menu
         item.button?.imagePosition = .imageLeading
@@ -84,12 +84,12 @@ final class StatusMenu: NSObject {
     /// One line for the tooltip and VoiceOver.
     private static func summary(_ shown: Shown) -> String {
         switch shown.link {
-        case .connecting: return "omp IDE: connecting to ompd"
-        case .unreachable(let reason): return "omp IDE: \(reason)"
-        case .outdated: return "omp IDE: ompd is out of date. Open omp IDE to update it."
+        case .connecting: return "Lantern: connecting to ompd"
+        case .unreachable(let reason): return "Lantern: \(reason)"
+        case .outdated: return "Lantern: ompd is out of date. Open Lantern to update it."
         case .connected:
             let status = shown.status
-            var summary = "omp IDE: \(working(status.runningAgents).lowercased())"
+            var summary = "Lantern: \(working(status.runningAgents).lowercased())"
             if status.waitingCount > 0 { summary += ", \(waiting(status.waitingCount).lowercased())" }
             return summary
         }
@@ -126,9 +126,9 @@ final class StatusMenu: NSObject {
             }
         }
         menu.addItem(.separator())
-        menu.addItem(actionItem("Open omp IDE", #selector(openApp(_:))))
+        menu.addItem(actionItem("Open Lantern", #selector(openApp(_:))))
         let hide = actionItem("Hide from Menu Bar", #selector(hide(_:)))
-        hide.toolTip = "Show it again in omp IDE › Settings › General."
+        hide.toolTip = "Show it again in Lantern › Settings › General."
         menu.addItem(hide)
     }
 
@@ -144,7 +144,7 @@ final class StatusMenu: NSObject {
     }
 
     /// A session: its status as a dot, its title, and its status word trailing (what it waits for, when it does). A
-    /// click opens omp IDE on its tab (`SessionLink`).
+    /// click opens Lantern on its tab (`SessionLink`).
     private func sessionItem(_ session: MenuBarStatus.Session) -> NSMenuItem {
         let row = actionItem(session.title, #selector(openApp(_:)))
         row.representedObject = session.sessionKey
@@ -164,11 +164,11 @@ final class StatusMenu: NSObject {
 
     // MARK: - Actions
 
-    /// Launches omp IDE, or brings it forward (a window opens if none is: the sessions resume); a session
+    /// Launches Lantern, or brings it forward (a window opens if none is: the sessions resume); a session
     /// row's click also hands it the session to show.
     @objc private func openApp(_ sender: NSMenuItem) {
         guard let app = Self.appURL else {
-            menuLog.error("omp IDE not found")
+            menuLog.error("Lantern not found")
             return
         }
         let configuration = NSWorkspace.OpenConfiguration()
@@ -176,7 +176,7 @@ final class StatusMenu: NSObject {
         let environment = Self.forwardedEnvironment
         if !environment.isEmpty { configuration.environment = environment }
         let report: @Sendable (NSRunningApplication?, (any Error)?) -> Void = { _, error in
-            if let error { menuLog.error("opening omp IDE failed: \(String(describing: error), privacy: .public)") }
+            if let error { menuLog.error("opening Lantern failed: \(String(describing: error), privacy: .public)") }
         }
         if let sessionKey = sender.representedObject as? SessionKey, let link = SessionLink.url(for: sessionKey) {
             NSWorkspace.shared.open([link], withApplicationAt: app, configuration: configuration, completionHandler: report)
@@ -185,14 +185,14 @@ final class StatusMenu: NSObject {
         }
     }
 
-    /// Off in omp IDE's settings, and the extra ends: it stays away, also at the next login, until the user turns it on
+    /// Off in Lantern's settings, and the extra ends: it stays away, also at the next login, until the user turns it on
     /// again in Settings › General.
     @objc private func hide(_ sender: NSMenuItem) {
         MenuBarSetting.hide()
         NSApp.terminate(nil)
     }
 
-    /// The omp IDE this helper is part of (`<app>/Contents/Library/LoginItems/<helper>`), else the one Launch Services
+    /// The Lantern this helper is part of (`<app>/Contents/Library/LoginItems/<helper>`), else the one Launch Services
     /// knows.
     private static var appURL: URL? {
         let containing = Bundle.main.bundleURL
@@ -201,18 +201,18 @@ final class StatusMenu: NSObject {
         return NSWorkspace.shared.urlForApplication(withBundleIdentifier: MenuBarHelper.appBundleIdentifier)
     }
 
-    /// A helper started for another ompd (`OMPD_HOME`, by hand: omp IDE never registers one then) opens omp IDE for that
-    /// ompd too: `OMPD_HOME`, the omp storage it pins (`PI_CODING_AGENT_DIR`) and omp IDE's own overrides (`OMP_IDE_*`).
-    /// Nothing otherwise: omp IDE gets the user's environment.
+    /// A helper started for another ompd (`OMPD_HOME`, by hand: Lantern never registers one then) opens Lantern for that
+    /// ompd too: `OMPD_HOME`, the omp storage it pins (`PI_CODING_AGENT_DIR`) and Lantern's own overrides (`LANTERN_*`).
+    /// Nothing otherwise: Lantern gets the user's environment.
     private static var forwardedEnvironment: [String: String] {
         let environment = ProcessInfo.processInfo.environment
         guard let home = environment[AppSupportPaths.homeEnvironmentKey], !home.isEmpty else { return [:] }
         return environment.filter { key, _ in
-            key == AppSupportPaths.homeEnvironmentKey || key == "PI_CODING_AGENT_DIR" || key.hasPrefix("OMP_IDE_")
+            key == AppSupportPaths.homeEnvironmentKey || key == "PI_CODING_AGENT_DIR" || key.hasPrefix("LANTERN_")
         }
     }
 
-    /// "0.1.0 (1)", the way omp IDE reports its own version.
+    /// "0.1.0 (1)", the way Lantern reports its own version.
     private static let version: String = {
         let info = Bundle.main.infoDictionary ?? [:]
         let short = info["CFBundleShortVersionString"] as? String ?? "dev"
@@ -230,7 +230,7 @@ private enum StatusGlyph {
 
     private static func make(badged: Bool) -> NSImage {
         let configuration = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
-        guard let symbol = NSImage(systemSymbolName: "terminal", accessibilityDescription: "omp IDE")?
+        guard let symbol = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Lantern")?
             .withSymbolConfiguration(configuration)
         else { return NSImage() }
         guard badged else {
@@ -250,14 +250,14 @@ private enum StatusGlyph {
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = "omp IDE"
+        image.accessibilityDescription = "Lantern"
         return image
     }
 }
 
 /// A session's status as the dot before its title: red while it waits on the
 /// user or needs attention, green idle, yellow paused, orange interrupted, a dotted ring while omp works, starts or
-/// resumes (where omp IDE shows a spinner).
+/// resumes (where Lantern shows a spinner).
 @MainActor
 private enum StatusDot {
     static func image(for session: MenuBarStatus.Session) -> NSImage? {

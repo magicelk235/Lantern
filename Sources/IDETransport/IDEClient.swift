@@ -21,7 +21,7 @@ public actor IDEClient {
 
     private enum Phase { case idle, connecting, connected, closed }
 
-    /// `clientKind`: an omp IDE window (`app`, keeps the sessions running) or a client that is none (`cli`: `ompd status`,
+    /// `clientKind`: a Lantern window (`app`, keeps the sessions running) or a client that is none (`cli`: `ompd status`,
     /// the menu-bar extra).
     /// `hasWindow`: an `app` with a window open when it says hello (`ClientPresence` reports changes).
     public init(socketPath: String, token: String, clientVersion: String, clientKind: ClientKind = .app, hasWindow: Bool = true) {
@@ -52,7 +52,7 @@ public actor IDEClient {
         phase = .connecting
         let channel = FrameChannel(
             connection: NWConnection(to: .unix(path: socketPath), using: .unixStream()),
-            queue: DispatchQueue(label: "com.omp-ide.transport.client"))
+            queue: DispatchQueue(label: "com.magicelklabs.lantern.transport.client"))
         self.channel = channel
         let inbox = inbox
         do {

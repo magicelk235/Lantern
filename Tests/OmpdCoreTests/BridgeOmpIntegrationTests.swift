@@ -173,7 +173,7 @@ private struct Sandbox {
     /// `adding`.
     func environment(adding extra: [String: String] = [:]) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment.filter {
-            !$0.key.hasPrefix("OMP_IDE_") && !Self.terminalIdentifiers.contains($0.key)
+            !$0.key.hasPrefix("LANTERN_") && !Self.terminalIdentifiers.contains($0.key)
         }
         environment[AppSupportPaths.homeEnvironmentKey] = paths.root.path(percentEncoded: false)
         environment["PI_NO_TITLE"] = "1"
@@ -257,13 +257,13 @@ struct BridgeOmpIntegrationTests {
             #expect(introspection["internalErrors"] == [:])
 
             let appended = try await server.call(
-                "itest", method: "entry.append", params: ["customType": "com.omp-ide.test", "data": ["marker": "bridge-itest"]])
+                "itest", method: "entry.append", params: ["customType": "com.magicelklabs.lantern.test", "data": ["marker": "bridge-itest"]])
             let entryId = try #require(appended["entryId"]?.stringValue)
             let entries = try String(contentsOfFile: hello.sessionFile, encoding: .utf8).split(separator: "\n")
                 .map { try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8)) }
             let entry = entries.first { $0["id"]?.stringValue == entryId }
             #expect(entry?["type"] == "custom")
-            #expect(entry?["customType"] == "com.omp-ide.test")
+            #expect(entry?["customType"] == "com.magicelklabs.lantern.test")
             #expect(entry?["data"]?["marker"] == "bridge-itest")
 
             await #expect(throws: BridgeError.callFailed(method: "no.such.method", message: "unknown method: no.such.method")) {
@@ -402,7 +402,7 @@ struct BridgeOmpIntegrationTests {
             await server.setExpectedPID(creator.pid, for: "owner")
             let hello = try await server.waitForHello("owner", timeout: .seconds(60))
             _ = try await server.call("owner", method: "session.ensureOnDisk")
-            _ = try await server.call("owner", method: "entry.append", params: ["customType": "com.omp-ide.test", "data": [:]])
+            _ = try await server.call("owner", method: "entry.append", params: ["customType": "com.magicelklabs.lantern.test", "data": [:]])
             creator.closeStdin()
             #expect(try await creator.waitForExit().status == 0)
             let sessionFile = hello.sessionFile
@@ -416,14 +416,14 @@ struct BridgeOmpIntegrationTests {
             let resumed = try sandbox.spawn(omp, ["--resume", sessionFile])
             defer { resumed.killIfRunning() }
             #expect(try await resumed.waitForExit() == .init(status: SIGKILL, reason: .uncaughtSignal))
-            #expect(resumed.stderrText.contains("is open in omp IDE (--resume)"))
+            #expect(resumed.stderrText.contains("is open in Lantern (--resume)"))
             #expect(try Data(contentsOf: sessionURL) == before)
 
             // Refused at session_start: `--continue` only resolves the file after loading.
             let continued = try sandbox.spawn(omp, ["--continue"])
             defer { continued.killIfRunning() }
             #expect(try await continued.waitForExit() == .init(status: SIGKILL, reason: .uncaughtSignal))
-            #expect(continued.stderrText.contains("is open in omp IDE (session_start)"))
+            #expect(continued.stderrText.contains("is open in Lantern (session_start)"))
             #expect(try Data(contentsOf: sessionURL) == before)
 
             // A daemon-mode omp the daemon rejects gets the same treatment.
@@ -432,11 +432,11 @@ struct BridgeOmpIntegrationTests {
             let rejected = try sandbox.spawn(omp, ["--resume", sessionFile], adding: rejectedCredentials.environment)
             defer { rejected.killIfRunning() }
             #expect(try await rejected.waitForExit() == .init(status: SIGKILL, reason: .uncaughtSignal))
-            #expect(rejected.stderrText.contains("rejected by the omp IDE daemon"))
+            #expect(rejected.stderrText.contains("rejected by the Lantern daemon"))
             await #expect(throws: BridgeError.unauthorized) { try await server.waitForHello("rejected", timeout: .milliseconds(10)) }
             #expect(try Data(contentsOf: sessionURL) == before)
 
-            // An omp started by a process ompd spawned (a bash tool running `omp --resume`) inherits OMP_IDE_* but is
+            // An omp started by a process ompd spawned (a bash tool running `omp --resume`) inherits LANTERN_* but is
             // not ompd's child: lock mode, refused at load, and it never dials the daemon.
             let inheritedCredentials = await server.expect(sessionKey: "inherited")
             let shell = try OmpChild(
@@ -445,7 +445,7 @@ struct BridgeOmpIntegrationTests {
                 environment: sandbox.environment(adding: inheritedCredentials.environment), cwd: sandbox.workspace)
             defer { shell.killIfRunning() }
             #expect(try await shell.waitForExit() == .init(status: 128 + SIGKILL, reason: .exit))
-            #expect(shell.stderrText.contains("is open in omp IDE (--resume)"))
+            #expect(shell.stderrText.contains("is open in Lantern (--resume)"))
             await #expect(throws: BridgeError.helloTimeout) { try await server.waitForHello("inherited", timeout: .milliseconds(10)) }
             #expect(try Data(contentsOf: sessionURL) == before)
 

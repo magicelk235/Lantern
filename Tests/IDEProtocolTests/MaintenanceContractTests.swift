@@ -23,7 +23,7 @@ import Testing
         }
     }
 
-    @Test func onlyARunningSessionOfOmpIDEOnAnOlderOmpIsOfferedTheInstalledOne() {
+    @Test func onlyARunningSessionOfLanternOnAnOlderOmpIsOfferedTheInstalledOne() {
         var entry = SessionManifestEntry(
             sessionKey: "s1", workspace: "/w", launch: LaunchSpec(ompPath: "/opt/homebrew/bin/omp", ompVersion: "18.4.4"),
             status: .idle, createdAt: Date(timeIntervalSince1970: 1_790_000_000), installedOmpVersion: "18.4.8")

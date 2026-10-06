@@ -66,7 +66,7 @@ final class ServerProcess: @unchecked Sendable {
 
         let writer = input.fileHandleForWriting
         _ = fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1)
-        let writes = DispatchQueue(label: "omp-ide.language-server.writes")
+        let writes = DispatchQueue(label: "com.magicelklabs.lantern.language-server.writes")
         let channel = DataChannel(
             writeHandler: { message in
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in

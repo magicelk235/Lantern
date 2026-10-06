@@ -1,16 +1,16 @@
 #!/bin/sh
-# Development LaunchAgent for a locally built ompd (never the production com.omp-ide.ompd agent the app registers).
+# Development LaunchAgent for a locally built ompd (never the production com.magicelklabs.lantern.ompd agent the app registers).
 #
 #   scripts/dev-launchagent.sh install <OMPD_HOME> [-- <ompd run arguments>...]
 #   scripts/dev-launchagent.sh uninstall
 #   scripts/dev-launchagent.sh kickstart
 #
-# install writes ~/Library/LaunchAgents/com.omp-ide.ompd.dev.plist running `<ompd> run <arguments>` with
+# install writes ~/Library/LaunchAgents/com.magicelklabs.lantern.ompd.dev.plist running `<ompd> run <arguments>` with
 # OMPD_HOME=<OMPD_HOME> (KeepAlive, RunAtLoad, log in $OMPD_HOME/ompd.log) and bootstraps it into gui/$UID.
 # The binary is $OMPD_BINARY, else the ompd of this checkout's debug build.
 set -eu
 
-LABEL=com.omp-ide.ompd.dev
+LABEL=com.magicelklabs.lantern.ompd.dev
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
 REPO=$(cd "$(dirname "$0")/.." && pwd)

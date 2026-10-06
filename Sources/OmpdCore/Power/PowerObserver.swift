@@ -20,7 +20,7 @@ public final class PowerObserver: Sendable {
 
     private let willSleep: @Sendable () async -> Void
     private let didWake: @Sendable () async -> Void
-    private let queue = DispatchQueue(label: "com.omp-ide.ompd.power")
+    private let queue = DispatchQueue(label: "com.magicelklabs.lantern.ompd.power")
     private let registration = OSAllocatedUnfairLock<Registration?>(initialState: nil)
 
     private struct Registration: Sendable {
@@ -87,7 +87,7 @@ public final class PowerObserver: Sendable {
     }
 }
 
-private let powerLog = Logger(subsystem: "com.omp-ide.ompd", category: "power")
+private let powerLog = Logger(subsystem: "com.magicelklabs.lantern.ompd", category: "power")
 
 private let powerCallback: IOServiceInterestCallback = { refcon, _, message, argument in
     guard let refcon else { return }

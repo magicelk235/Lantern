@@ -6,8 +6,8 @@ import Foundation
 /// login shell first (rc files such as `.zshrc` add to `PATH` too), then a plain login shell, each given a few seconds;
 /// when neither answers, the app's own environment with the usual tool folders added to `PATH`.
 public enum LoginShellEnvironment {
-    public static let beginMarker = "__OMP_IDE_ENVIRONMENT_BEGIN__"
-    public static let endMarker = "__OMP_IDE_ENVIRONMENT_END__"
+    public static let beginMarker = "__LANTERN_ENVIRONMENT_BEGIN__"
+    public static let endMarker = "__LANTERN_ENVIRONMENT_END__"
 
     /// Variables about the shell itself, not the environment it sets up for programs.
     private static let shellOnly: Set<String> = ["PWD", "OLDPWD", "SHLVL", "_"]

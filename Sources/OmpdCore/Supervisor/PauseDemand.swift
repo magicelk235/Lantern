@@ -3,7 +3,7 @@ import os
 
 /// Who closed omp's pause gate, as the ide-bridge reports it (`pausedBy`, `pause {by}`).
 public enum PauseOwner: String, Sendable {
-    /// ompd (`session.pause`), because no omp IDE window was connected; ompd resumes it when one connects.
+    /// ompd (`session.pause`), because no Lantern window was connected; ompd resumes it when one connects.
     case daemon
     /// The user: `/pause` in the session's TUI. Only they resume it, from omp's pause screen.
     case user
@@ -17,7 +17,7 @@ extension PauseOwner {
     }
 }
 
-/// Whether ompd wants every session paused: no omp IDE window is open — an app said its last one closed,
+/// Whether ompd wants every session paused: no Lantern window is open — an app said its last one closed,
 /// or no app with one has been connected for the grace period. The daemon flips it; supervisors also read it when a
 /// bridge says hello, so an omp spawned while no window is open is paused right away.
 public final class PauseDemand: Sendable {

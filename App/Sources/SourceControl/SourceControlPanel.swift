@@ -2,13 +2,16 @@ import AppKit
 import SwiftUI
 
 /// The Changes side of the trailing panel: the branch and its menu, the commit message, and the project's changes in
-/// two lists, Staged and Changes (untracked files among the latter with a `?`). Return or a double-click opens a file
-/// in the project's strip; hovering a row shows Stage (+) or Unstage (−).
+/// two lists, Staged and Changes (untracked files among the latter with a `U`). A click on a change shows its diff
+/// against HEAD; Return or a double-click opens the file in the project's strip; hovering a row shows Stage (+) or
+/// Unstage (−).
 struct SourceControlPanel: View {
     let app: AppState
     @Bindable var repository: GitRepository
     @State private var selection: Set<ChangeSelection> = []
     @FocusState private var messageFocused: Bool
+    /// A click's diff, held for the double-click interval: a double-click opens the file instead.
+    @State private var pendingCompare: Task<Void, Never>?
 
     var body: some View {
         Group {
@@ -98,10 +101,10 @@ struct SourceControlPanel: View {
                     Text(headTitle)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    MenuChevron()
                 }
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
+            .paneHeaderMenu()
             .disabled(repository.isBusy)
             .help(repository.branch.map { "Branch \($0)" } ?? "Detached HEAD")
             Spacer(minLength: 4)
@@ -147,6 +150,7 @@ struct SourceControlPanel: View {
             HStack(spacing: 6) {
                 Spacer()
                 Button("Commit") { repository.commit() }
+                    .buttonStyle(ProminentWhileEnabled())
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(!repository.canCommit)
                     .help("Commit what is staged (⌘↩)")
@@ -172,8 +176,10 @@ struct SourceControlPanel: View {
                 Section {
                     ForEach(staged) { change in
                         ChangeRow(change: change, letter: change.staged ?? ".", staged: true, folder: folder(of: change)) {
+                            pendingCompare?.cancel()
                             repository.unstage([change])
                         }
+                        .simultaneousGesture(TapGesture().onEnded { clicked(change) })
                         .tag(ChangeSelection(path: change.path, staged: true))
                     }
                 } header: {
@@ -184,8 +190,10 @@ struct SourceControlPanel: View {
                 Section {
                     ForEach(unstaged) { change in
                         ChangeRow(change: change, letter: change.unstaged ?? ".", staged: false, folder: folder(of: change)) {
+                            pendingCompare?.cancel()
                             repository.stage([change])
                         }
+                        .simultaneousGesture(TapGesture().onEnded { clicked(change) })
                         .tag(ChangeSelection(path: change.path, staged: false))
                     }
                 } header: {
@@ -199,7 +207,22 @@ struct SourceControlPanel: View {
         .contextMenu(forSelectionType: ChangeSelection.self) { items in
             contextMenu(for: items)
         } primaryAction: { items in
+            pendingCompare?.cancel()
             open(items)
+        }
+    }
+
+    /// A plain click shows the change against HEAD once no second click follows (a ⌘- or ⇧-click only selects).
+    private func clicked(_ change: GitRepository.Change) {
+        pendingCompare?.cancel()
+        pendingCompare = nil
+        guard let event = NSApp.currentEvent, event.clickCount == 1,
+              event.modifierFlags.intersection([.command, .shift]).isEmpty
+        else { return }
+        pendingCompare = Task {
+            try? await Task.sleep(for: .seconds(NSEvent.doubleClickInterval))
+            guard !Task.isCancelled else { return }
+            repository.compare(change)
         }
     }
 
@@ -285,6 +308,21 @@ struct SourceControlPanel: View {
     }
 }
 
+/// The prominent push button while it can act, the plain bordered one, which the system greys out, while it cannot:
+/// a disabled `.borderedProminent` button keeps its accent fill and reads as enabled.
+private struct ProminentWhileEnabled: PrimitiveButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    @ViewBuilder
+    func makeBody(configuration: Configuration) -> some View {
+        if isEnabled {
+            Button(configuration).buttonStyle(.borderedProminent)
+        } else {
+            Button(configuration).buttonStyle(.bordered)
+        }
+    }
+}
+
 /// A row of the Changes panel: the same path may be listed under Staged and under Changes.
 private struct ChangeSelection: Hashable {
     let path: String
@@ -294,7 +332,7 @@ private struct ChangeSelection: Hashable {
 /// One changed file: name, folder, and trailing its status letter; Stage or Unstage shows on hover.
 private struct ChangeRow: View {
     let change: GitRepository.Change
-    /// `M`, `A`, `D`, `R`, `C`, `T`, `?` or `U`.
+    /// `M`, `A`, `D`, `R`, `C`, `T`, `U` (untracked) or `!` (conflicted).
     let letter: Character
     /// Listed under Staged: the hover button unstages.
     let staged: Bool
@@ -351,8 +389,8 @@ private struct ChangeRow: View {
         case "R": "Renamed" + (change.originalPath.map { " from \($0)" } ?? "")
         case "C": "Copied" + (change.originalPath.map { " from \($0)" } ?? "")
         case "T": "Type changed"
-        case "?": "Untracked"
-        case "U": "Conflicted"
+        case "U": "Untracked"
+        case "!": "Conflicted"
         default: String(letter)
         }
     }

@@ -1,6 +1,19 @@
 import AppKit
 import CodeEditSourceEditor
 
+/// Point size of editor text (SF Mono), changed by View › Bigger, Smaller and Actual Size; every editor follows it
+/// (`Editors`).
+enum EditorSettings {
+    static let fontSizeKey = "editorFontSize"
+    static let defaultFontSize = 12.0
+    static let fontSizes = 9.0 ... 24.0
+
+    static var fontSize: Double {
+        let size = UserDefaults.standard.double(forKey: fontSizeKey)
+        return size == 0 ? defaultFontSize : min(max(size, fontSizes.lowerBound), fontSizes.upperBound)
+    }
+}
+
 /// How editors look and indent: the system monospaced font and a theme after Xcode's default colors.
 ///
 /// CodeEditSourceEditor reads components of the theme's colors (brightness, `CGColor`), which dynamic system colors do
@@ -11,7 +24,7 @@ enum EditorStyle {
     static func configuration(indent: IndentOption, appearance: NSAppearance) -> SourceEditorConfiguration {
         SourceEditorConfiguration(
             appearance: .init(
-                theme: theme(for: appearance), font: .monospacedSystemFont(ofSize: 12, weight: .regular),
+                theme: theme(for: appearance), font: .monospacedSystemFont(ofSize: EditorSettings.fontSize, weight: .regular),
                 lineHeightMultiple: 1.25, wrapLines: false, tabWidth: 4),
             behavior: .init(indentOption: indent),
             // Below the tab strip, not under the toolbar: no automatic safe-area inset.

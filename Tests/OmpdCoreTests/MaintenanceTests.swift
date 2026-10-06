@@ -126,7 +126,7 @@ struct SessionRestartTests {
         let prompt = try await eventuallyValue("continuation prompt") {
             await fixture.bridge.requests.first { $0.method == "session.prompt" }?.params["text"]?.stringValue
         }
-        #expect(prompt.contains("restarted from omp IDE") && prompt.contains("- bash: ./deploy.sh"))
+        #expect(prompt.contains("restarted from Lantern") && prompt.contains("- bash: ./deploy.sh"))
         #expect(try await fixture.entry.pendingContinuation == waiting)
         await fixture.finish()
     }

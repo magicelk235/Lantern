@@ -2,7 +2,7 @@ import Foundation
 import IDEProtocol
 
 /// `storage.report` and `storage.clean`: `omp gc` in every omp agent directory the sessions
-/// use, omp IDE's own data under `$APP_SUPPORT` and its unreferenced terminal snapshots, and the free space. One
+/// use, Lantern's own data under `$APP_SUPPORT` and its unreferenced terminal snapshots, and the free space. One
 /// operation runs at a time: `omp gc` locks its agent directory, and a clean-up must not race a report over the same
 /// files.
 actor StorageMaintenance {

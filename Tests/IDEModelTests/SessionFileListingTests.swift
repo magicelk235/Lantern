@@ -6,7 +6,7 @@ import Testing
     // MARK: - Buckets
 
     @Test(arguments: [
-        ("/Users/u/Desktop/Projects/omp IDE", "-Desktop-Projects-omp IDE"),
+        ("/Users/u/Desktop/Projects/Lantern", "-Desktop-Projects-Lantern"),
         ("/Users/u", "-"),
         ("/Users/u/.omp/agent", "-.omp-agent"),
         ("/private/var/folders/x/T/tmp.VTr3", "-tmp-tmp.VTr3"),

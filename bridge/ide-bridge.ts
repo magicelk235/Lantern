@@ -1,9 +1,9 @@
 /**
- * omp IDE bridge — the only omp-side code of omp IDE.
+ * Lantern bridge — the only omp-side code of Lantern.
  *
  * One file, three modes, chosen at load from the environment:
  *
- *   daemon mode  OMP_IDE_BRIDGE_SOCK, OMP_IDE_SESSION_KEY, OMP_IDE_BRIDGE_TOKEN and OMP_IDE_DAEMON_PID are set and this
+ *   daemon mode  LANTERN_BRIDGE_SOCK, LANTERN_SESSION_KEY, LANTERN_BRIDGE_TOKEN and LANTERN_DAEMON_PID are set and this
  *                process's parent is that daemon: ompd spawned this omp's interactive TUI on a PTY with
  *                `-e <APP_SUPPORT>/bridge/ide-bridge.ts`. Anything this omp spawns inherits the variables (Bun keeps
  *                passing the launch environment to children even after `delete process.env.X`), so a nested `omp` in a
@@ -12,14 +12,14 @@
  *                this process's pid right after spawning it; a hello that beats it is held until then). After
  *                `welcome` it answers requests and pushes activity, title and agent-tree events. A process the daemon
  *                rejects gets lock-mode treatment for its session file.
- *   terminal mode OMP_IDE_BRIDGE_SOCK, OMP_IDE_TERMINAL_PTY, OMP_IDE_TERMINAL_TOKEN and OMP_IDE_DAEMON_PID are set (no
- *                session key) and that daemon is alive: the user typed `omp` into one of omp IDE's terminals, whose
+ *   terminal mode LANTERN_BRIDGE_SOCK, LANTERN_TERMINAL_PTY, LANTERN_TERMINAL_TOKEN and LANTERN_DAEMON_PID are set (no
+ *                session key) and that daemon is alive: the user typed `omp` into one of Lantern's terminals, whose
  *                shell ompd started with the terminal's credentials. Same as daemon mode, except that the hello names
  *                the terminal (`ptyId` and its token) instead of a session key, so ompd adopts this omp as a session
  *                shown in the IDE; there is no parent check (the shell is in between). ompd rejects a second omp in
  *                the same terminal (one started by the adopted omp inherits the variables) and a `--resume` of a file
  *                another session owns; a rejected process gets lock-mode treatment, exactly as above.
- *   lock mode    otherwise; installed as <agentDir>/extensions/omp-ide-bridge.ts so every omp loads it. Refuses to
+ *   lock mode    otherwise; installed as <agentDir>/extensions/lantern-bridge.ts so every omp loads it. Refuses to
  *                open a session file the daemon owns: SIGKILL at load (argv --resume/-r/--session), SIGKILL at
  *                `session_start`, `{cancel: true}` from `session_before_switch`. SIGKILL is the only exit that neither
  *                omp's load guard blocks nor appends `session_exit` to the owned JSONL.
@@ -34,7 +34,7 @@
  * timer runs while connected. A redial ompd rejects ends the connection for good, without lock-mode treatment.
  *
  * Ownership: ompd holds flock(LOCK_EX) on $APP_SUPPORT/run/owned-sessions/<sha256(canonical sessionFile)>.lock for
- * every session it owns; APP_SUPPORT = $OMPD_HOME or ~/Library/Application Support/omp-ide. The bridge probes it with
+ * every session it owns; APP_SUPPORT = $OMPD_HOME or ~/Library/Application Support/com.magicelklabs.lantern. The bridge probes it with
  * a shared non-blocking lock (open O_SHLOCK|O_NONBLOCK fails with EAGAIN while ompd holds it).
  *
  * Wire: JSON lines over the unix socket.
@@ -90,7 +90,7 @@
  * TUI instance, so omp's process-global `agentPauseGate` closes and omp's pause screen opens: the main agent, in-process
  * subagents and the advisor hold before their next model call or tool execution; nothing in flight is aborted. The
  * user's draft is kept. `session.resume` dismisses that screen the way a key press does (the handler hides it, returns
- * focus and opens the gate). The daemon pauses sessions while no omp IDE window is connected.
+ * focus and opens the gate). The daemon pauses sessions while no Lantern window is connected.
  *
  * Internal omp subpaths (registry/agent-lifecycle, registry/persisted-agents, modes/agent-hub-runtime,
  * slash-commands/builtin-registry, internal-urls/proc-protocol, internal-urls/parse), @oh-my-pi/pi-agent-core and
@@ -292,7 +292,7 @@ const O_SHLOCK = 0x10;
 const O_NONBLOCK = 0x4;
 /** setTimeout's largest delay; a longer `session.watchStall` timeout would fire at once. */
 const MAX_TIMER_MS = 2_147_483_647;
-const STALL_ABORT_REASON = "Model stream stalled after the machine woke (omp IDE)";
+const STALL_ABORT_REASON = "Model stream stalled after the machine woke (Lantern)";
 /** Main-agent events that count as progress for `session.watchStall`. */
 const PROGRESS_EVENTS = [
 	"message_start",
@@ -325,12 +325,12 @@ type Wiring =
 	| { mode: "terminal"; sock: string; ptyId: string; token: string; daemonPid: string };
 
 function resolveWiring(): Wiring | undefined {
-	const sock = process.env.OMP_IDE_BRIDGE_SOCK;
-	const daemonPid = process.env.OMP_IDE_DAEMON_PID;
-	const sessionKey = process.env.OMP_IDE_SESSION_KEY;
-	const token = process.env.OMP_IDE_BRIDGE_TOKEN;
-	const ptyId = process.env.OMP_IDE_TERMINAL_PTY;
-	const terminalToken = process.env.OMP_IDE_TERMINAL_TOKEN;
+	const sock = process.env.LANTERN_BRIDGE_SOCK;
+	const daemonPid = process.env.LANTERN_DAEMON_PID;
+	const sessionKey = process.env.LANTERN_SESSION_KEY;
+	const token = process.env.LANTERN_BRIDGE_TOKEN;
+	const ptyId = process.env.LANTERN_TERMINAL_PTY;
+	const terminalToken = process.env.LANTERN_TERMINAL_TOKEN;
 	if (sock && daemonPid && sessionKey && token) {
 		// Inherited by a process this daemon-spawned omp started: it must not pose as the session's bridge.
 		return String(process.ppid) === daemonPid ? { mode: "daemon", sock, sessionKey, token, daemonPid } : undefined;
@@ -340,7 +340,7 @@ function resolveWiring(): Wiring | undefined {
 		return daemonAlive(daemonPid) ? { mode: "terminal", sock, ptyId, token: terminalToken, daemonPid } : undefined;
 	}
 	if (sock || daemonPid || sessionKey || token || ptyId || terminalToken) {
-		writeStderr("ide-bridge: incomplete OMP_IDE_* environment; lock mode");
+		writeStderr("ide-bridge: incomplete LANTERN_* environment; lock mode");
 	}
 	return undefined;
 }
@@ -363,7 +363,7 @@ function appSupportDir(): string {
 		if (home === "~") return os.homedir();
 		return home.startsWith("~/") ? path.join(os.homedir(), home.slice(2)) : home;
 	}
-	return path.join(os.homedir(), "Library", "Application Support", "omp-ide");
+	return path.join(os.homedir(), "Library", "Application Support", "com.magicelklabs.lantern");
 }
 
 const OWNED_DIR = path.join(appSupportDir(), "run", "owned-sessions");
@@ -394,7 +394,7 @@ interface GuardSlot {
 	revision?: number;
 }
 
-const GUARD = Symbol.for("omp-ide.bridge");
+const GUARD = Symbol.for("lantern.bridge");
 const guardSlots = globalThis as unknown as Record<symbol, GuardSlot | undefined>;
 
 function claimGuard(): void {
@@ -584,7 +584,7 @@ function ownedSessionFor(target: string): string | undefined {
 
 /** Refuse a daemon-owned session. Only SIGKILL leaves the JSONL untouched (see header). */
 function refuse(sessionFile: string, where: string): void {
-	writeStderr(`omp IDE: ${sessionFile} is open in omp IDE (${where}); open it from the IDE instead.`);
+	writeStderr(`Lantern: ${sessionFile} is open in Lantern (${where}); open it from the IDE instead.`);
 	process.kill(process.pid, "SIGKILL");
 }
 
@@ -992,16 +992,16 @@ function onReject(reason: string): void {
 	if (S.phase !== "connecting" && S.phase !== "redialing") return;
 	if (S.everAccepted) {
 		// A redial the daemon does not take (it is not the one this process said hello to): the bridge goes quiet.
-		log(`the omp IDE daemon refused the reconnection: ${reason}`);
+		log(`the Lantern daemon refused the reconnection: ${reason}`);
 		endConnection("closed");
 		return;
 	}
-	log(`the omp IDE daemon rejected this process: ${reason}`);
+	log(`the Lantern daemon rejected this process: ${reason}`);
 	endConnection("rejected");
-	// Not the process ompd spawned (it got OMP_IDE_* from somewhere other than ompd), or an omp in a terminal ompd
+	// Not the process ompd spawned (it got LANTERN_* from somewhere other than ompd), or an omp in a terminal ompd
 	// turned away (another omp already runs there, or its file is another session's): same rule as lock mode.
 	const file = attempt(() => S.main?.ctx?.sessionManager.getSessionFile(), undefined);
-	if (isDaemonOwned(file)) refuse(file, "rejected by the omp IDE daemon");
+	if (isDaemonOwned(file)) refuse(file, "rejected by the Lantern daemon");
 }
 
 function onLine(line: string): void {
@@ -1203,12 +1203,12 @@ function connectionEnded(sock: net.Socket, wiring: Wiring): void {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Pause: omp's /pause gate, engaged for the daemon while no omp IDE window is connected
+// Pause: omp's /pause gate, engaged for the daemon while no Lantern window is connected
 // ---------------------------------------------------------------------------------------------------------------------
 
 /** A key the pause screen always reads as "resume" (Esc can be rebound to `app.interrupt`; Enter cannot). */
 const PAUSE_SCREEN_RESUME_KEY = "\r";
-const TUI_PROBE_WIDGET = "omp-ide.bridge.tui-probe";
+const TUI_PROBE_WIDGET = "lantern.bridge.tui-probe";
 
 function pauseState(): { paused: boolean; pausedBy: PausedBy | null } {
 	const paused = attempt(() => S.gate?.paused === true, false);
@@ -1777,7 +1777,7 @@ const METHODS: Record<string, (params: AnyRecord) => Promise<unknown>> = {
 		if (id === MAIN_AGENT_ID) throw new Error("the main agent cannot be killed through the bridge");
 		const ref = registry().get(id);
 		if (!ref) throw new Error(`unknown agent: ${id}`);
-		if (ref.status === "running" && ref.session) await ref.session.abort({ reason: "Killed from omp IDE" });
+		if (ref.status === "running" && ref.session) await ref.session.abort({ reason: "Killed from Lantern" });
 		const released = await (await lifecycle()).release(id, ref, { tombstone: true });
 		return { released, agent: agentRow(id) };
 	},
@@ -1803,7 +1803,7 @@ const METHODS: Record<string, (params: AnyRecord) => Promise<unknown>> = {
 	async "entry.append"(params) {
 		const customType = requireString(params, "customType");
 		// Bare names are reserved by omp core (session.md#custom); extension records must be namespaced.
-		if (!customType.includes(".")) throw new Error("customType must be namespaced, e.g. com.omp-ide.interrupted");
+		if (!customType.includes(".")) throw new Error("customType must be namespaced, e.g. com.magicelklabs.lantern.interrupted");
 		const sm = mainCtx().sessionManager;
 		const entryId = sm.appendCustomEntry(customType, params.data ?? {});
 		await sm.flush();
@@ -1839,7 +1839,7 @@ function vetoOwnedSwitch(event: unknown, rawCtx: unknown): { cancel: true } | un
 		const target = isRecord(event) && typeof event.targetSessionFile === "string" ? event.targetSessionFile : undefined;
 		if (!isDaemonOwned(target)) return undefined;
 		try {
-			(rawCtx as CtxLike).ui?.notify?.(`${target} is open in omp IDE; open it from the IDE instead.`, "error");
+			(rawCtx as CtxLike).ui?.notify?.(`${target} is open in Lantern; open it from the IDE instead.`, "error");
 		} catch {
 			// Headless: the veto alone is enough.
 		}
@@ -2039,7 +2039,7 @@ export default function ideBridge(pi: ExtensionAPI): void {
 	if (!owns()) return;
 	// ExtensionAPI methods keep their binding when detached (extensions.md).
 	const api = pi as unknown as ExtensionApiLike;
-	attempt(() => api.setLabel?.("omp IDE bridge"), undefined);
+	attempt(() => api.setLabel?.("Lantern bridge"), undefined);
 	if (WIRING) registerDaemonMode(api, WIRING);
 	else registerLockMode(api.on);
 }

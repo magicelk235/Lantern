@@ -309,7 +309,7 @@ extension CompletionCandidate.Category {
 
 /// Snippet syntax (LSP's `InsertTextFormat.snippet`, TextMate's) reduced to the text it inserts: tab stops are empty,
 /// placeholders and variables their default text, choices their first option, escapes (`\$`, `\}`, `\\`) their
-/// character. omp IDE asks servers for plain text (`snippetSupport` off); this is for those that send snippets anyway.
+/// character. Lantern asks servers for plain text (`snippetSupport` off); this is for those that send snippets anyway.
 public enum SnippetText {
     public static func plain(_ snippet: String) -> String {
         var parser = Parser(Array(snippet))
