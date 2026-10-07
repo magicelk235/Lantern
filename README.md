@@ -102,7 +102,7 @@ With `OMPD_HOME` set, Lantern doesn't register the production LaunchAgent, and o
 scripts/release.sh [<version> [<build>]]   # defaults to MARKETING_VERSION and CURRENT_PROJECT_VERSION in App/project.yml
 ```
 
-The script archives a universal Release build, signs it with a Developer ID and the hardened runtime, checks every signature in the bundle, and packages `Lantern-<version>.dmg`. Output goes to `~/Library/Developer/omp-ide/release` (`RELEASE_DIR` overrides it). It needs the `Developer ID Application` identity in the login keychain and network access.
+The script archives a universal Release build, signs it with a Developer ID and the hardened runtime, checks every signature in the bundle, and packages `Lantern-<version>.dmg`. Output goes to `~/Library/Developer/Lantern/release` (`RELEASE_DIR` overrides it). It needs the `Developer ID Application` identity in the login keychain and network access.
 
 Notarization and Sparkle updates are optional and controlled by environment variables:
 

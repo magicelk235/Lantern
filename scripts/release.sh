@@ -12,8 +12,8 @@
 #   NOTARY_PROFILE       notarytool keychain profile (`xcrun notarytool store-credentials`): notarize, staple the DMG.
 #   SPARKLE_KEY_FILE     EdDSA private key file (`generate_keys -x`): sign the DMG and write the appcast; needs FEED_URL.
 #   DOWNLOAD_URL_PREFIX  URL the DMG is served from, for the appcast enclosure (default: FEED_URL's directory).
-#   RELEASE_DIR          output directory (default ~/Library/Developer/omp-ide/release; keep it out of iCloud).
-#   DERIVED_DATA         derived data (default ~/Library/Developer/omp-ide/dd-release).
+#   RELEASE_DIR          output directory (default ~/Library/Developer/Lantern/release; keep it out of iCloud).
+#   DERIVED_DATA         derived data (default ~/Library/Developer/Lantern/dd-release).
 # Any signing problem stops the script with an error. Skipped steps are listed at the end.
 set -eu
 
@@ -23,8 +23,8 @@ SCHEME="Lantern"
 APP_NAME="Lantern"
 TEAM=V8K8L3ZSD5
 IDENTITY="Developer ID Application: Bella Cohen ($TEAM)"
-RELEASE_DIR=${RELEASE_DIR:-$HOME/Library/Developer/omp-ide/release}
-DERIVED_DATA=${DERIVED_DATA:-$HOME/Library/Developer/omp-ide/dd-release}
+RELEASE_DIR=${RELEASE_DIR:-$HOME/Library/Developer/Lantern/release}
+DERIVED_DATA=${DERIVED_DATA:-$HOME/Library/Developer/Lantern/dd-release}
 FEED_URL=${FEED_URL:-}
 SPARKLE_PUBLIC_KEY=${SPARKLE_PUBLIC_KEY:-}
 NOTARY_PROFILE=${NOTARY_PROFILE:-}
