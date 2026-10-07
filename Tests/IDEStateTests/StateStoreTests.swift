@@ -77,9 +77,7 @@ import Testing
         tabs.open(.session("s2"), in: "/src/lib")
         tabs.open(.session("s3"), in: "/src/app")
         tabs.select(.session("s2"))
-        let window = WindowState(
-            id: "main", frame: WindowFrame(x: 120.5, y: 64, width: 1280, height: 812.5), sidebarWidth: 312.5,
-            sidebarVisible: false, tabs: tabs)
+        let window = WindowState(id: "main", sidebarWidth: 312.5, sidebarVisible: false, tabs: tabs)
         do {
             let store = try home.store()
             store.setWindow(window)

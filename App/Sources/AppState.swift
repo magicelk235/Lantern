@@ -818,14 +818,16 @@ final class AppState {
     /// it is key, it is the project in focus.
     func attach(_ window: NSWindow, project: String) {
         guard windowsAttached.insert(ObjectIdentifier(window)).inserted else { return }
-        // One window per project: a second one (state restoration plus the default window, say) closes itself.
+        // One window per project: another one SwiftUI opens for it (its default window, say) closes itself.
         if !project.isEmpty, let existing = windowsByProject[project], existing != ObjectIdentifier(window) {
             windowsAttached.remove(ObjectIdentifier(window))
+            // SwiftUI's frame autosave keeps the frame of its window that moved last: this one's, unless it takes the
+            // frame of the project's window.
+            if let shown = self.window(of: project) { window.setFrame(shown.frame, display: false) }
             DispatchQueue.main.async { window.close() }
             return
         }
         windowsByProject[project] = ObjectIdentifier(window)
-        window.isRestorable = true
         window.tabbingMode = .preferred
         window.tabbingIdentifier = Self.windowTabbingIdentifier
         // The window may have turned key before it became a project window here.
@@ -865,12 +867,13 @@ final class AppState {
     }
 
     private func windowClosing(_ id: ObjectIdentifier, project: String) {
-        flushState()
         if removedProjectWindows.remove(project) == nil { noteClosedProject(project) }
         windowsAttached.remove(id)
         if windowsByProject[project] == id { windowsByProject[project] = nil }
         for observer in windowObservers.removeValue(forKey: id) ?? [] { NotificationCenter.default.removeObserver(observer) }
         if keyProject == project { keyProject = nil }
+        // Once the window is no longer a project window: the windows saved to reopen leave it out.
+        flushState()
         windowsChanged()
     }
 
@@ -942,7 +945,7 @@ final class AppState {
         persistence.flush()
     }
 
-    /// The layout and the project windows open (window frames are AppKit's to restore, per project window).
+    /// The layout and the project windows open (their frame is SwiftUI's frame autosave, `attach(_:project:)`).
     private func saveWindow() {
         let open = windowsAtQuit ?? openWindows()
         persistence.save(

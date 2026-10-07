@@ -81,10 +81,10 @@ struct ProjectWindow: View {
                 app.showInNoProjectWindow = { shown.wrappedValue = $0 }
             }
         }
-        // macOS restores the windows that were open; one can name a folder the app no longer lists (its state was lost
-        // or belongs to another data folder): a folder that is still there becomes a project again, a gone one gives
-        // way to the first project's window, else to the window of no project. After the window is up: the scene
-        // ignores opening and dismissing while it is still restoring.
+        // A window can name a folder the app does not list: one open at the last quit whose project only ompd's sessions
+        // named. A folder that is still there becomes a project, a gone one gives way to the first project's window,
+        // else to the window of no project. After the window is up: the scene ignores opening and dismissing while it
+        // is still restoring.
         .task(id: project) {
             guard !project.isEmpty, !app.projects.contains(project) else { return }
             if AppState.isFolder(project) {

@@ -1,25 +1,8 @@
 import Foundation
 
-/// A window frame in screen coordinates (AppKit: points, origin at the bottom left of the primary screen).
-public struct WindowFrame: Equatable, Sendable {
-    public var x: Double
-    public var y: Double
-    public var width: Double
-    public var height: Double
-
-    public init(x: Double, y: Double, width: Double, height: Double) {
-        self.x = x
-        self.y = y
-        self.width = width
-        self.height = height
-    }
-}
-
 /// One window's layout (table `window`).
 public struct WindowState: Equatable, Sendable {
     public var id: String
-    /// nil until the window was first placed.
-    public var frame: WindowFrame?
     /// Width of the sidebar column; nil until the user saw it.
     public var sidebarWidth: Double?
     public var sidebarVisible: Bool
@@ -34,11 +17,10 @@ public struct WindowState: Equatable, Sendable {
     public var frontWindow: String?
 
     public init(
-        id: String, frame: WindowFrame? = nil, sidebarWidth: Double? = nil, sidebarVisible: Bool = true,
+        id: String, sidebarWidth: Double? = nil, sidebarVisible: Bool = true,
         projects: [String] = [], tabs: TabLayout = TabLayout(), windows: [String] = [], frontWindow: String? = nil
     ) {
         self.id = id
-        self.frame = frame
         self.sidebarWidth = sidebarWidth
         self.sidebarVisible = sidebarVisible
         self.projects = projects

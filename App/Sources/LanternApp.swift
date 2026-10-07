@@ -91,6 +91,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The tab keys are watched before any editor or emulator watches keys.
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // AppKit does not reopen the windows of its saved state: after a kill or a crash it would bring back the ones it
+        // saved last, at their frames then. The windows that open are the ones state.sqlite lists
+        // (`AppState.launchProject`), at the frame SwiftUI's frame autosave keeps.
+        UserDefaults.standard.register(defaults: ["ApplePersistenceIgnoreState": true])
         app.installTabKeys()
     }
 

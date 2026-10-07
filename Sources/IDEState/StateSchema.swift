@@ -11,6 +11,7 @@ enum StateSchema {
         migrator.registerMigration("v1") { db in
             try db.create(table: WindowRecord.databaseTableName) { table in
                 table.primaryKey("id", .text)
+                // Unused since a window's frame is SwiftUI's frame autosave; kept because older builds write them.
                 table.column("frameX", .double)
                 table.column("frameY", .double)
                 table.column("frameWidth", .double)
@@ -73,11 +74,6 @@ struct WindowRecord: FetchableRecord, PersistableRecord {
 
     init(row: Row) throws {
         let id: String = row["id"]
-        var frame: WindowFrame?
-        if let x: Double = row["frameX"], let y: Double = row["frameY"], let width: Double = row["frameWidth"],
-           let height: Double = row["frameHeight"] {
-            frame = WindowFrame(x: x, y: y, width: width, height: height)
-        }
         let json: String = row["tabs"]
         let tabs: TabLayout
         do {
@@ -89,16 +85,12 @@ struct WindowRecord: FetchableRecord, PersistableRecord {
         let projects = (try? JSONDecoder().decode([String].self, from: Data((row["projects"] as String).utf8))) ?? []
         let windows = (try? JSONDecoder().decode([String].self, from: Data((row["windows"] as String).utf8))) ?? []
         state = WindowState(
-            id: id, frame: frame, sidebarWidth: row["sidebarWidth"], sidebarVisible: row["sidebarVisible"],
+            id: id, sidebarWidth: row["sidebarWidth"], sidebarVisible: row["sidebarVisible"],
             projects: projects, tabs: tabs, windows: windows, frontWindow: row["frontWindow"])
     }
 
     func encode(to container: inout PersistenceContainer) throws {
         container["id"] = state.id
-        container["frameX"] = state.frame?.x
-        container["frameY"] = state.frame?.y
-        container["frameWidth"] = state.frame?.width
-        container["frameHeight"] = state.frame?.height
         container["sidebarWidth"] = state.sidebarWidth
         container["sidebarVisible"] = state.sidebarVisible
         container["projects"] = String(decoding: try JSONEncoder().encode(state.projects), as: UTF8.self)
