@@ -95,6 +95,31 @@ import Testing
         #expect(first.hasPrefix("Plan the release:\nstep step"))
         #expect(first.count < 4096)
         #expect(info.displayTitle == "Plan the release:")
+        #expect(info.promptTitle == "Plan the release:")
+    }
+
+    @Test func onlyAUsersMessageIsAPrompt() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let file = try fixture.write("b", "s.jsonl", lines: [titleSlot(""), header(id: "s1"), developer("Plan mode is on."), assistant("Hello.")])
+        let unprompted = try #require(SessionFileListing.info(file: file))
+        #expect(unprompted.firstMessage == "Plan mode is on.")
+        #expect(unprompted.firstPrompt == nil)
+        #expect(unprompted.promptTitle == nil)
+        try fixture.write("b", "s.jsonl", lines: [
+            titleSlot(""), header(id: "s1"), developer("Plan mode is on."), user("Fix the login\\nIt fails in Safari"),
+        ])
+        let prompted = try #require(SessionFileListing.info(file: file))
+        #expect(prompted.firstMessage == "Fix the login\nIt fails in Safari")
+        #expect(prompted.promptTitle == "Fix the login")
+    }
+
+    @Test func aFileThatIsNoSessionReadsAsNothing() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let file = try fixture.write("b", "history.jsonl", lines: [#"{"prompt":"not a session"}"#])
+        #expect(SessionFileListing.info(file: file) == nil)
+        #expect(SessionFileListing.info(file: fixture.bucket("b").appending(path: "missing.jsonl")) == nil)
     }
 
     @Test func aCompactionSummaryTitlesAnUntitledSession() throws {
@@ -239,7 +264,10 @@ private func user(blocks: [String]) -> String {
     let content = blocks.map { #"{"type":"text","text":"\#($0)"}"# }.joined(separator: ",")
     return #"{"type":"message","id":"u","parentId":null,"timestamp":"2026-09-01T10:00:01.000Z","message":{"role":"user","content":[\#(content)],"timestamp":1}}"#
 }
-
 private func assistant(_ text: String) -> String {
     #"{"type":"message","id":"a","parentId":"u","timestamp":"2026-09-01T10:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"\#(text)"}],"stopReason":"stop","timestamp":2}}"#
+}
+
+private func developer(_ text: String) -> String {
+    #"{"type":"message","id":"d","parentId":null,"timestamp":"2026-09-01T10:00:00.500Z","message":{"role":"developer","content":"\#(text)","timestamp":0}}"#
 }

@@ -123,7 +123,7 @@ extension AppState.CloseRequest {
         case .forget: "Remove this session from the list?"
         case .removeProject(let project, _): "Remove “\(AppState.projectName(project))” from the projects?"
         case .close(let closing) where closing.count > 1: "Close \(closing.count) tabs?"
-        case .close: sessions.first.map { "Close “\($0.title)”?" } ?? "Do you want to terminate running processes in this tab?"
+        case .close: sessions.first.map { "Close \(Self.quoted($0.title))?" } ?? "Do you want to terminate running processes in this tab?"
         }
     }
 
@@ -158,7 +158,7 @@ extension AppState.CloseRequest {
     private var ending: String {
         var ending: [String] = []
         if !sessions.isEmpty {
-            let titles = ListFormatter.localizedString(byJoining: sessions.map { "“\($0.title)”" })
+            let titles = ListFormatter.localizedString(byJoining: sessions.map { Self.quoted($0.title) })
             ending.append(sessions.count == 1 ? "the omp session \(titles) ends" : "the omp sessions \(titles) end")
         }
         if !processes.isEmpty {
@@ -176,6 +176,11 @@ extension AppState.CloseRequest {
     private var resume: String {
         guard !sessions.isEmpty, sessions.allSatisfy(\.resumable) else { return "" }
         return sessions.count == 1 ? " You can resume it later from Open Session…" : " You can resume them later from Open Session…"
+    }
+
+    /// A session's title in quotes, cut short: an untitled session goes by its whole first prompt line.
+    private static func quoted(_ title: String) -> String {
+        "“\(title.count > 60 ? title.prefix(59).trimmingCharacters(in: .whitespaces) + "…" : title)”"
     }
 }
 

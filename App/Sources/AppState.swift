@@ -16,6 +16,8 @@ final class AppState {
     let outdatedDaemon: OutdatedDaemon
     /// Crash reports of ompd and Lantern the user has not seen yet (local only).
     let crashNotices = CrashNotices()
+    /// The first prompt of each session omp has not titled, which titles it (`sessionTitle`).
+    let sessionPrompts = SessionPrompts()
     /// Open files and the file navigators.
     let editors: Editors
     /// Terminal emulators: `.terminal` tabs on PTYs in ompd, and `.session` tabs showing omp's TUI.
@@ -178,6 +180,7 @@ final class AppState {
         agent.registerIfNeeded()
         outdatedDaemon.start()
         connection.start()
+        sessionPrompts.follow(connection)
         crashNotices.start()
         if let reason = persistence.unavailableReason {
             alert = AlertMessage(
@@ -674,24 +677,19 @@ final class AppState {
         }
     }
 
-    /// omp's name for the session, else what its TUI titles its window (without the `π >` glyph, and only when it
-    /// says more than the folder), else "New session". A session running in a terminal is titled by that terminal.
+    /// What the session goes by everywhere (`SessionTitle`): omp's title, else the first prompt typed into it, else
+    /// what its TUI titles its window, else "New session". A session running in a terminal is titled by that terminal.
     func sessionTitle(_ sessionKey: SessionKey) -> String {
         let entry = entry(for: sessionKey)
-        if let title = entry?.title, !title.isEmpty { return title }
-        let program =
+        let windowTitle =
             if let entry, entry.adopted, let ptyId = entry.ptyId {
                 terminals.model(ptyId)?.programTitle
             } else {
                 connection.openSessions[sessionKey]?.programTitle
             }
-        if let program {
-            var title = program.trimmingCharacters(in: .whitespaces)
-            if title.hasPrefix("π >") { title = String(title.dropFirst(3)).trimmingCharacters(in: .whitespaces) }
-            let folder = entry.map { Self.projectName($0.workspace) }
-            if !title.isEmpty, title != folder { return title }
-        }
-        return "New session"
+        return SessionTitle.resolve(
+            title: entry?.title, prompt: sessionPrompts.prompt(forFile: entry?.sessionFile), windowTitle: windowTitle,
+            folder: entry.map { Self.projectName($0.workspace) })
     }
 
     private func show(_ entry: SessionManifestEntry) {

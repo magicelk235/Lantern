@@ -31,6 +31,8 @@ public struct SessionFileInfo: Equatable, Sendable {
     public var title: String?
     /// The first user message's text in the prefix, else the first developer or assistant text; nil without messages.
     public var firstMessage: String?
+    /// The first user message's text in the prefix; nil until someone wrote to the session.
+    public var firstPrompt: String? = nil
     /// The header's `timestamp`.
     public var created: Date?
     public var modified: Date
@@ -41,6 +43,9 @@ public struct SessionFileInfo: Equatable, Sendable {
     public var displayTitle: String {
         Self.firstLine(title) ?? Self.firstLine(firstMessage) ?? "Untitled"
     }
+
+    /// The first prompt's first line (control characters stripped); nil until someone wrote to the session.
+    public var promptTitle: String? { Self.firstLine(firstPrompt) }
 
     /// Every whitespace-separated token of `query` appears (case- and diacritic-insensitively) in the title or the first
     /// message. An empty query matches everything.
@@ -97,21 +102,26 @@ public enum SessionFileListing {
     /// The sessions in one folder: its visible top-level `*.jsonl` files that start with an omp session header,
     /// newest first.
     public static func list(directory: URL) -> [SessionFileInfo] {
-        let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
         guard let files = try? FileManager.default.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])
+            at: directory, includingPropertiesForKeys: Array(fileKeys), options: [.skipsHiddenFiles])
         else { return [] }
         return files
             .filter { $0.pathExtension == "jsonl" }
-            .compactMap { file -> SessionFileInfo? in
-                guard let values = try? file.resourceValues(forKeys: Set(keys)), values.isRegularFile == true,
-                      let (prefix, tail) = readSlices(file)
-                else { return nil }
-                return info(
-                    path: file.path(percentEncoded: false), prefix: prefix, tail: tail,
-                    modified: values.contentModificationDate ?? .distantPast, size: values.fileSize ?? 0)
-            }
+            .compactMap(info(file:))
             .sorted(by: newestFirst)
+    }
+
+    private static let fileKeys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
+
+    /// One session file, read as `list` reads each: nil when it is no regular file or starts with no omp session
+    /// header.
+    public static func info(file: URL) -> SessionFileInfo? {
+        guard let values = try? file.resourceValues(forKeys: fileKeys), values.isRegularFile == true,
+              let (prefix, tail) = readSlices(file)
+        else { return nil }
+        return info(
+            path: file.path(percentEncoded: false), prefix: prefix, tail: tail,
+            modified: values.contentModificationDate ?? .distantPast, size: values.fileSize ?? 0)
     }
 
     /// omp's order: modified, then created, then path, each descending.
@@ -220,10 +230,12 @@ public enum SessionFileListing {
             else { continue }
             firstUserText = text
         }
-        let firstMessage = firstUserText ?? scannedFirstMessage(bytes)
+        let scanned = firstUserText == nil ? scannedFirstMessages(bytes) : (user: nil, other: nil)
+        let firstPrompt = (firstUserText ?? scanned.user).flatMap { $0.isEmpty ? nil : $0 }
+        let firstMessage = firstPrompt ?? scanned.other.flatMap { $0.isEmpty ? nil : $0 }
         return SessionFileInfo(
             path: path, id: header.id, cwd: header.cwd ?? "", title: header.title ?? compactionSummary,
-            firstMessage: firstMessage.flatMap { $0.isEmpty ? nil : $0 }, created: header.timestamp.flatMap(parseDate),
+            firstMessage: firstMessage, firstPrompt: firstPrompt, created: header.timestamp.flatMap(parseDate),
             modified: modified, size: size, status: status(tail: Array(tail)))
     }
 
@@ -303,20 +315,20 @@ public enum SessionFileListing {
     }
 
     /// omp's text-scan fallback for a first message cut off by the prefix: the first `"role"` that is a user's with a
-    /// string `content` or `text` after it, else the first developer's or assistant's.
-    private static func scannedFirstMessage(_ bytes: [UInt8]) -> String? {
+    /// string `content` or `text` after it, and the first developer's or assistant's.
+    private static func scannedFirstMessages(_ bytes: [UInt8]) -> (user: String?, other: String?) {
         let role = Array(#""role""#.utf8)
-        var fallback: String?
+        var other: String?
         var start = find(role, in: bytes, from: 0)
         while let index = start {
             let name = stringField(bytes, "role", from: index)
             if let text = stringField(bytes, "content", from: index) ?? stringField(bytes, "text", from: index), !text.isEmpty {
-                if name == "user" { return text }
-                if fallback == nil, name == "developer" || name == "assistant" { fallback = text }
+                if name == "user" { return (text, other) }
+                if other == nil, name == "developer" || name == "assistant" { other = text }
             }
             start = find(role, in: bytes, from: index + role.count)
         }
-        return fallback
+        return (nil, other)
     }
 
     /// omp's `extractStringField`: the string value after the first `"key"` at or after `from`, read up to its closing
