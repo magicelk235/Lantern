@@ -150,7 +150,7 @@ private struct SessionPickerRow: View {
             }
             .font(.system(size: 11))
             .monospacedDigit()
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.chromeSecondary)
         }
         .font(.system(size: 13))
         .help(session.firstMessage.map { "\($0.prefix(300))" } ?? session.displayTitle)

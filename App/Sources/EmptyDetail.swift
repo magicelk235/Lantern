@@ -83,7 +83,7 @@ private struct OmpInstallHint: View {
     var body: some View {
         VStack(spacing: 8) {
             Text("Lantern can’t find omp. Install it with Homebrew:")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.chromeSecondary)
             HStack(spacing: 6) {
                 Text(OmpLocation.installCommand)
                     .font(.system(size: 12, design: .monospaced))

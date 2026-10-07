@@ -399,7 +399,7 @@ private struct AgentRow: View {
                 if let detail {
                     Text(detail)
                         .font(.system(size: 11))
-                        .foregroundStyle(waiting != nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                        .foregroundStyle(waiting != nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.chromeSecondary))
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -564,12 +564,12 @@ private struct JobRow: View {
                         if let startedAt = job.startedAt { Text(startedAt, style: .timer) }
                     } else {
                         Text(ending)
-                            .foregroundStyle(job.status == "failed" ? AnyShapeStyle(Color.red) : AnyShapeStyle(.secondary))
+                            .foregroundStyle(job.status == "failed" ? AnyShapeStyle(Color.red) : AnyShapeStyle(.chromeSecondary))
                     }
                 }
                 .font(.system(size: 11))
                 .monospacedDigit()
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.chromeSecondary)
             }
             .contentShape(Rectangle())
         }
@@ -673,7 +673,7 @@ private struct ServiceRow: View {
             Text([stateWord, service.mode].compactMap { $0 }.joined(separator: " · "))
                 .font(.system(size: 11))
                 .monospacedDigit()
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.chromeSecondary)
                 .lineLimit(1)
         }
         .contentShape(Rectangle())

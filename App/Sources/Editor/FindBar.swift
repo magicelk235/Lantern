@@ -70,7 +70,7 @@ struct FindBar: View {
             Text(status)
                 .font(.system(size: 11))
                 .monospacedDigit()
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.chromeSecondary)
                 .lineLimit(1)
                 .frame(minWidth: 72, alignment: .trailing)
             options

@@ -28,7 +28,7 @@ struct StatusBar: View {
         }
         .font(.system(size: 11))
         .monospacedDigit()
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.chromeSecondary)
         .padding(.horizontal, 10)
         .frame(height: Chrome.statusBarHeight)
         .frame(maxWidth: .infinity)
@@ -221,7 +221,7 @@ struct SessionStatusBadge: View {
         switch indicator {
         case .working: AnyShapeStyle(Chrome.ember)
         case .waiting, .unfinished: AnyShapeStyle(.primary)
-        default: AnyShapeStyle(.secondary)
+        default: AnyShapeStyle(.chromeSecondary)
         }
     }
 }

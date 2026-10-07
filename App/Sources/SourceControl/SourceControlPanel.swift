@@ -124,7 +124,7 @@ struct SourceControlPanel: View {
                 }
                 .font(.system(size: 11))
                 .monospacedDigit()
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.chromeSecondary)
                 .help("\(repository.ahead) to push, \(repository.behind) to pull")
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(
@@ -244,7 +244,7 @@ struct SourceControlPanel: View {
             Text("\(count)")
                 .font(.system(size: 11))
                 .monospacedDigit()
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.chromeSecondary)
         }
     }
 
@@ -363,7 +363,7 @@ private struct ChangeRow: View {
             if !folder.isEmpty {
                 Text(folder)
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.chromeSecondary)
                     .lineLimit(1)
                     .truncationMode(.head)
             }
@@ -382,7 +382,7 @@ private struct ChangeRow: View {
             Text(String(letter))
                 .font(.system(size: 11))
                 .monospacedDigit()
-                .foregroundStyle(change.isConflicted ? Color.red : Color.secondary)
+                .foregroundStyle(change.isConflicted ? AnyShapeStyle(Color.red) : AnyShapeStyle(.chromeSecondary))
                 .frame(width: 12, alignment: .trailing)
                 .help(statusWord)
         }

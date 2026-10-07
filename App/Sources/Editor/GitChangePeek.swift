@@ -38,7 +38,7 @@ struct GitChangePeek: View {
             if count > 1 {
                 Text("\(position) of \(count)")
                     .font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.chromeSecondary)
                 HStack(spacing: 0) {
                     step("Previous Change", "chevron.up", previous)
                     step("Next Change", "chevron.down", next)

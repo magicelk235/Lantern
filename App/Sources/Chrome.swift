@@ -34,6 +34,11 @@ enum Chrome {
     static let gitAdded = Color(nsColor: dynamic(light: 0x1F8033, dark: .systemGreen))
     static let gitModified = Color(nsColor: dynamic(light: 0x906901, dark: .systemYellow))
 
+    /// Secondary text in the chrome: the rail's names, unselected tabs, the status bar, notices' messages, the panes'
+    /// quieter words. The system's secondary label reads 3.9:1 on the light surface, so it is spelled out: 5.3:1 on
+    /// the surface and 5.6:1 on the canvas in light mode, 5.3:1 and 6.0:1 in dark mode. Use it as `.chromeSecondary`.
+    static let secondaryTextColor = dynamic(light: 0x6B655F, dark: 0xA19A94)
+
     /// One sRGB color (`0xRRGGBB`) for light mode and one for dark mode.
     private static func dynamic(light: Int, dark: Int) -> NSColor {
         NSColor(name: nil) { appearance in
@@ -53,6 +58,19 @@ enum Chrome {
             srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255, blue: CGFloat(hex & 0xFF) / 255,
             alpha: 1)
     }
+}
+
+/// `Chrome.secondaryTextColor` as a foreground style. On a selected row, whose highlight is the accent, it gives way to
+/// the system's secondary, which turns white there as the row's other text does.
+struct ChromeSecondaryStyle: ShapeStyle {
+    func resolve(in environment: EnvironmentValues) -> some ShapeStyle {
+        environment.backgroundProminence == .increased
+            ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color(nsColor: Chrome.secondaryTextColor))
+    }
+}
+
+extension ShapeStyle where Self == ChromeSecondaryStyle {
+    static var chromeSecondary: ChromeSecondaryStyle { ChromeSecondaryStyle() }
 }
 
 /// One line about a tab or the app, and what the user can do about it: why a session's TUI is not on screen, that a
@@ -96,7 +114,7 @@ struct NoticeBar<Actions: View>: View {
         guard !title.isEmpty else { return Text(message) }
         let title = Text(title).fontWeight(.medium)
         guard !message.isEmpty else { return title }
-        return title + Text("  ") + Text(message).foregroundStyle(.secondary)
+        return title + Text("  ") + Text(message).foregroundStyle(.chromeSecondary)
     }
 }
 

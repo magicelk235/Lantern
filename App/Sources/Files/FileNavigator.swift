@@ -307,7 +307,7 @@ private struct ProjectsPane: View {
             // The window of no project: its detail area offers Add Project.
             if app.projects.isEmpty {
                 Text("No Projects")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.chromeSecondary)
             }
         }
     }
@@ -459,7 +459,7 @@ private struct FileRows: View {
         if let failure = tree.failures[folder] {
             Text(failure)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.chromeSecondary)
         }
         ForEach(tree.children[folder] ?? []) { entry in
             if entry.isDirectory {

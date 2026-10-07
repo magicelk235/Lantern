@@ -128,7 +128,7 @@ struct JumpToLine: View {
             Text("Lines 1–\(document.lineCount)")
                 .font(.system(size: 11))
                 .monospacedDigit()
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.chromeSecondary)
         }
         .padding(10)
         .onAppear { focused = true }
