@@ -25,7 +25,8 @@ struct TabStrip: View {
                 HStack(spacing: 0) {
                     TabScroller(
                         metrics: metrics, tabs: strip.tabs, selected: strip.preferredTab.flatMap(strip.tabs.firstIndex(of:)),
-                        interaction: interaction, isDragging: interaction.isDragging, close: { app.closeTab($0) }
+                        interaction: interaction, isDragging: interaction.isDragging, close: { app.closeTab($0) },
+                        select: { app.selectTab($0) }, describe: { [strip] tab in TabRow.accessibilityLabel(of: tab, in: strip, app: app) }
                     ) {
                         TabRow(app: app, strip: strip, titles: app.tabTitles(in: strip), width: metrics.width, interaction: interaction)
                     }
@@ -234,11 +235,11 @@ private struct TabRow: View {
             ForEach(Array(strip.tabs.enumerated()), id: \.element) { index, tab in
                 // A terminal running an adopted session stands for that session: its title, status and menu.
                 let hosted = tab.ptyId.flatMap(app.adoptedSession(on:))
-                let indicator = (tab.sessionKey.flatMap(app.entry(for:)) ?? hosted).map(app.indicator(of:))
+                let indicator = Self.indicator(of: tab, app: app)
                 let title = titles[tab] ?? TabNumbers.Number(title: "", number: 1)
                 TabItem(
                     tab: tab, title: title, help: help(for: tab, title: title.numberedTitle, indicator: indicator), indicator: indicator,
-                    terminalExited: hosted == nil ? tab.ptyId.map { app.terminals.model($0)?.hasExited == true } : nil,
+                    terminal: hosted == nil ? tab.ptyId.map { terminalMark($0) } : nil,
                     document: tab.editorPath.flatMap(app.editors.document(for:)),
                     isSelected: strip.preferredTab == tab, isHovered: interaction.hovered == tab, width: width,
                     select: { app.selectTab(tab) }, close: { app.closeTab(tab) },
@@ -276,6 +277,32 @@ private struct TabRow: View {
 
     private func release() {
         interaction.release(width: width) { tab, index in app.moveTab(tab, to: index) }
+    }
+
+    /// The state of the session `tab` shows, or of the one running in its terminal.
+    static func indicator(of tab: TabKind, app: AppState) -> SessionIndicator? {
+        let hosted = tab.ptyId.flatMap(app.adoptedSession(on:))
+        return (tab.sessionKey.flatMap(app.entry(for:)) ?? hosted).map(app.indicator(of:))
+    }
+
+    /// What VoiceOver says for a tab: its title as the strip shows it, a session's state in words and "edited" for
+    /// unsaved changes ("Fix login — working, 2 subagents"). Its role says it is a tab.
+    static func accessibilityLabel(of tab: TabKind, in strip: TabLayout.Strip, app: AppState) -> String {
+        let title = app.tabTitles(in: strip)[tab]?.numberedTitle ?? ""
+        let state = indicator(of: tab, app: app).map { " — \($0.words)" } ?? ""
+        let edited = tab.editorPath.flatMap(app.editors.document(for:))?.isDirty == true ? ", edited" : ""
+        return title + state + edited
+    }
+
+    /// A terminal tab's symbol, by what runs in it (Open Transcript's drawing, Show Logs' log, else a program), and
+    /// whether that ended.
+    private func terminalMark(_ ptyId: PTYID) -> TerminalTabMark {
+        let symbol = switch app.purpose(ofTerminal: ptyId) {
+        case .transcript: "text.bubble"
+        case .logs: "list.bullet.rectangle"
+        case nil: "terminal"
+        }
+        return .init(symbol: symbol, exited: app.terminals.model(ptyId)?.hasExited == true)
     }
 
     /// The tooltip: a session's title and state ("Fix login — working, 2 subagents"); an editor's path; a terminal's
@@ -323,11 +350,15 @@ private struct TabScroller<Content: View>: NSViewRepresentable {
     let isDragging: Bool
     /// A middle click closes the tab under it.
     let close: (TabKind) -> Void
+    /// For VoiceOver, which hears the row as a tab group (`SidewaysScrollView`): showing a tab, and what a tab says.
+    let select: (TabKind) -> Void
+    let describe: (TabKind) -> String
     let content: Content
 
     init(
         metrics: TabMetrics, tabs: [TabKind], selected: Int?, interaction: TabInteraction, isDragging: Bool,
-        close: @escaping (TabKind) -> Void, @ViewBuilder content: () -> Content
+        close: @escaping (TabKind) -> Void, select: @escaping (TabKind) -> Void, describe: @escaping (TabKind) -> String,
+        @ViewBuilder content: () -> Content
     ) {
         self.metrics = metrics
         self.tabs = tabs
@@ -335,6 +366,8 @@ private struct TabScroller<Content: View>: NSViewRepresentable {
         self.interaction = interaction
         self.isDragging = isDragging
         self.close = close
+        self.select = select
+        self.describe = describe
         self.content = content()
     }
 
@@ -368,7 +401,9 @@ private struct TabScroller<Content: View>: NSViewRepresentable {
     func updateNSView(_ scrollView: SidewaysScrollView, context: Context) {
         guard let hosting = scrollView.documentView as? TabRowHostingView<Content> else { return }
         hosting.rootView = content
-        scrollView.update(tabs: tabs, width: metrics.width, interaction: interaction, close: close)
+        scrollView.update(
+            tabs: tabs, selected: selected, width: metrics.width, interaction: interaction, close: close, select: select,
+            describe: describe)
         hosting.setFrameSize(CGSize(width: metrics.width * CGFloat(tabs.count), height: Chrome.tabStripHeight))
         scrollView.isDragging = isDragging
         let reveal = Reveal(selected: selected, tabCount: tabs.count, metrics: metrics)
@@ -402,6 +437,11 @@ private final class SidewaysScrollView: NSScrollView {
     private var tabWidth: CGFloat = 0
     private weak var interaction: TabInteraction?
     private var close: ((TabKind) -> Void)?
+    private var select: ((TabKind) -> Void)?
+    private var describe: ((TabKind) -> String)?
+    private var selected: Int?
+    /// The tabs as VoiceOver hears them, kept while their tab is open so that it keeps its place.
+    private var elements: [TabKind: TabElement] = [:]
     private var hoverArea: NSTrackingArea?
     private var autoscroll: Timer?
     /// The tab the middle button went down on.
@@ -443,10 +483,16 @@ private final class SidewaysScrollView: NSScrollView {
     }
 
     /// The strip laid the row out again. At a new tab width the same tab stays first in view.
-    func update(tabs: [TabKind], width: CGFloat, interaction: TabInteraction, close: @escaping (TabKind) -> Void) {
+    func update(
+        tabs: [TabKind], selected: Int?, width: CGFloat, interaction: TabInteraction, close: @escaping (TabKind) -> Void,
+        select: @escaping (TabKind) -> Void, describe: @escaping (TabKind) -> String
+    ) {
         self.tabs = tabs
         self.interaction = interaction
         self.close = close
+        self.select = select
+        self.describe = describe
+        updateElements(selected: selected)
         guard width != tabWidth else { return }
         let first = tabWidth > 0 ? (contentView.bounds.minX / tabWidth).rounded() : 0
         tabWidth = width
@@ -655,6 +701,148 @@ private final class SidewaysScrollView: NSScrollView {
     }
 }
 
+// MARK: - Accessibility
+
+/// VoiceOver hears the row as NSTabView's tabs: a tab group named Tabs whose tabs are radio buttons of the tab subrole,
+/// each with its selected state and a Close Tab button ("Fix login — working, selected, tab, 3 of 9"). The tabs'
+/// SwiftUI views are not read: they would be plain buttons.
+extension SidewaysScrollView {
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .tabGroup }
+    override func accessibilityLabel() -> String? { "Tabs" }
+    override func accessibilityChildren() -> [Any]? { orderedElements }
+    override func accessibilityTabs() -> [Any]? { orderedElements }
+    /// The selected tab, as NSTabView's group reports it.
+    override func accessibilityValue() -> Any? {
+        selected.flatMap { tabs.indices.contains($0) ? elements[tabs[$0]] : nil }
+    }
+
+    override func accessibilityHitTest(_ point: NSPoint) -> Any? {
+        // Asked on the main thread, as all of AppKit's accessibility is.
+        nonisolated(unsafe) var hit: Any? = self
+        MainActor.assumeIsolated {
+            if let element = orderedElements.first(where: { NSPointInRect(point, $0.accessibilityFrame()) }) {
+                hit = element.accessibilityHitTest(point)
+            }
+        }
+        return hit
+    }
+
+    private var orderedElements: [TabElement] { tabs.compactMap { elements[$0] } }
+
+    /// An element for each open tab, the same one for as long as the tab is open; VoiceOver hears of a new selection.
+    fileprivate func updateElements(selected: Int?) {
+        for tab in tabs where elements[tab] == nil {
+            elements[tab] = TabElement(tab: tab, group: self)
+        }
+        if elements.count > tabs.count {
+            let open = Set(tabs)
+            elements = elements.filter { open.contains($0.key) }
+        }
+        let changed = selected != self.selected
+        self.selected = selected
+        if changed, let selected, tabs.indices.contains(selected), let element = elements[tabs[selected]] {
+            NSAccessibility.post(element: element, notification: .valueChanged)
+        }
+    }
+
+    fileprivate func isSelected(_ tab: TabKind) -> Bool {
+        selected.map { tabs.indices.contains($0) && tabs[$0] == tab } ?? false
+    }
+
+    fileprivate func label(of tab: TabKind) -> String { describe?(tab) ?? "" }
+    fileprivate func showTab(_ tab: TabKind) { select?(tab) }
+    fileprivate func closeTab(_ tab: TabKind) { close?(tab) }
+
+    /// Where `tab` is on screen, scrolled along with the row; `closeButton` for its ×, at the tab's trailing end.
+    fileprivate func screenFrame(of tab: TabKind, closeButton: Bool = false) -> NSRect {
+        guard let window, tabWidth > 0, let index = tabs.firstIndex(of: tab) else { return .zero }
+        var rect = NSRect(x: CGFloat(index) * tabWidth - contentView.bounds.minX, y: 0, width: tabWidth, height: bounds.height)
+        if closeButton {
+            // `TabItem`: a 16-point × with 6 points after it.
+            rect = NSRect(x: rect.maxX - 22, y: rect.midY - 8, width: 16, height: 16)
+        }
+        return window.convertToScreen(convert(rect, to: nil))
+    }
+}
+
+/// One tab, for VoiceOver. Asked on the main thread, as AppKit asks for all accessibility.
+private final class TabElement: NSAccessibilityElement {
+    let tab: TabKind
+    weak var group: SidewaysScrollView?
+    private let closeButton: TabCloseElement
+
+    init(tab: TabKind, group: SidewaysScrollView) {
+        self.tab = tab
+        self.group = group
+        closeButton = TabCloseElement(tab: tab, group: group)
+        super.init()
+        closeButton.tabElement = self
+    }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func isAccessibilityEnabled() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .radioButton }
+    override func accessibilityRoleDescription() -> String? { NSAccessibility.Role.radioButton.description(with: .tabButtonSubrole) }
+    override func accessibilitySubrole() -> NSAccessibility.Subrole? { .tabButtonSubrole }
+    override func accessibilityParent() -> Any? { group }
+    override func accessibilityChildren() -> [Any]? { [closeButton] }
+
+    // The strip is the main actor's, and so is AppKit's accessibility: only it and the tab go into the main actor.
+    override func accessibilityLabel() -> String? {
+        MainActor.assumeIsolated { [group, tab] in group?.label(of: tab) }
+    }
+
+    override func isAccessibilitySelected() -> Bool {
+        MainActor.assumeIsolated { [group, tab] in group?.isSelected(tab) ?? false }
+    }
+
+    override func accessibilityValue() -> Any? {
+        NSNumber(value: isAccessibilitySelected())
+    }
+
+    override func accessibilityFrame() -> NSRect {
+        MainActor.assumeIsolated { [group, tab] in group?.screenFrame(of: tab) ?? .zero }
+    }
+
+    override func accessibilityHitTest(_ point: NSPoint) -> Any? {
+        NSPointInRect(point, closeButton.accessibilityFrame()) ? closeButton : self
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        MainActor.assumeIsolated { [group, tab] in group?.showTab(tab) }
+        return true
+    }
+}
+
+/// A tab's ×, for VoiceOver: a button inside the tab, there whether or not the × shows.
+private final class TabCloseElement: NSAccessibilityElement {
+    let tab: TabKind
+    weak var group: SidewaysScrollView?
+    weak var tabElement: TabElement?
+
+    init(tab: TabKind, group: SidewaysScrollView) {
+        self.tab = tab
+        self.group = group
+        super.init()
+    }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func isAccessibilityEnabled() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { "Close Tab" }
+    override func accessibilityParent() -> Any? { tabElement }
+
+    override func accessibilityFrame() -> NSRect {
+        MainActor.assumeIsolated { [group, tab] in group?.screenFrame(of: tab, closeButton: true) ?? .zero }
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        MainActor.assumeIsolated { [group, tab] in group?.closeTab(tab) }
+        return true
+    }
+}
+
 /// The strip's empty end. Dragging it moves the window, as dragging a title bar does; a double click runs
 /// `doubleClick`.
 private struct StripBackground: NSViewRepresentable {
@@ -727,8 +915,8 @@ private struct TabItem<Press: Gesture>: View {
     let help: String
     /// The state of the session the tab shows (or of the one running in its terminal).
     let indicator: SessionIndicator?
-    /// Whether the program ended, for a terminal tab.
-    let terminalExited: Bool?
+    /// What runs in a terminal tab and whether it ended; nil for other tabs.
+    let terminal: TerminalTabMark?
     /// The file an editor tab shows.
     let document: EditorDocument?
     let isSelected: Bool
@@ -737,8 +925,10 @@ private struct TabItem<Press: Gesture>: View {
     let width: CGFloat
     let select: () -> Void
     let close: () -> Void
-    /// What a press on the tab does, besides `select` for the keyboard and accessibility.
+    /// What a press on the tab does, besides `select` for the keyboard.
     let press: Press
+    /// The selected tab's top edge is the accent in the key window, quieter in the others.
+    @Environment(\.controlActiveState) private var activeState
 
     var body: some View {
         HStack(spacing: 0) {
@@ -767,9 +957,6 @@ private struct TabItem<Press: Gesture>: View {
             .buttonStyle(.plain)
             .simultaneousGesture(press)
             .help(help)
-            .accessibilityLabel(
-                "Tab \(title.numberedTitle)" + (indicator.map { " — \($0.words)" } ?? "") + (document?.isDirty == true ? ", edited" : ""))
-            .accessibilityAddTraits(isSelected ? .isSelected : [])
             Button(action: close) {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .semibold))
@@ -780,24 +967,30 @@ private struct TabItem<Press: Gesture>: View {
             .foregroundStyle(.secondary)
             .opacity(isSelected || isHovered ? 1 : 0)
             .help(tab.ptyId != nil ? "Close Terminal" : document != nil ? "Close Tab" : "Close Session")
-            .accessibilityLabel("Close Tab \(title.numberedTitle)")
         }
         .font(.system(size: 12))
-        .foregroundStyle(isSelected ? .primary : .secondary)
+        .foregroundStyle(isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(.chromeSecondary))
         .padding(.trailing, 6)
         .frame(width: width)
         .frame(maxHeight: .infinity)
+        // The selected tab is the canvas, open to the content below it (it covers the strip's bottom hairline), with
+        // its top edge drawn: on the light surface the canvas alone is a step too faint to find it by.
         .background(isSelected ? Chrome.canvas : isHovered ? Color.primary.opacity(0.04) : .clear)
+        .overlay(alignment: .top) {
+            if isSelected {
+                (activeState == .inactive ? Color.primary.opacity(0.25) : Color.accentColor).frame(height: 2)
+            }
+        }
         .overlay(alignment: .trailing) { Chrome.hairline.frame(width: 1) }
     }
 
     /// The tab's kind or state: a terminal's symbol, an editor's (a dot while it has unsaved edits), a session's mark.
     @ViewBuilder
     private var mark: some View {
-        if let terminalExited {
-            Image(systemName: "terminal")
+        if let terminal {
+            Image(systemName: terminal.symbol)
                 .font(.system(size: 10))
-                .foregroundStyle(terminalExited ? .tertiary : .secondary)
+                .foregroundStyle(terminal.exited ? .tertiary : .secondary)
         } else if let document {
             if document.isDirty {
                 Circle().fill(.primary).frame(width: 7, height: 7).help("Unsaved changes")
@@ -812,4 +1005,10 @@ private struct TabItem<Press: Gesture>: View {
             StatusDot(color: .secondary, hollow: true)
         }
     }
+}
+
+/// A terminal tab's symbol (a program, Open Transcript's drawing, Show Logs' log) and whether its program ended.
+private struct TerminalTabMark {
+    let symbol: String
+    let exited: Bool
 }
