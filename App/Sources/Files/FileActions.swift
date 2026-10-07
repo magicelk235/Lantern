@@ -121,7 +121,7 @@ enum FileNamePrompt {
         let confirm = alert.addButton(withTitle: button)
         alert.addButton(withTitle: "Cancel")
         let width = 260.0
-        let field = NSTextField(frame: NSRect(x: 0, y: 20, width: width, height: 24))
+        let field = NameField(frame: NSRect(x: 0, y: 20, width: width, height: 24))
         field.placeholderString = placeholder
         field.stringValue = initial
         let reason = NSTextField(labelWithString: "")
@@ -177,6 +177,33 @@ enum FileNamePrompt {
 
         func controlTextDidChange(_ notification: Notification) {
             check()
+        }
+    }
+
+    /// A text field that takes a file name as typed: no smart quotes or dashes, text replacements or spelling
+    /// corrections, which would turn `"a--b"` into `“a–b”`.
+    private final class NameField: NSTextField {
+        override class var cellClass: AnyClass? {
+            get { NameFieldCell.self }
+            set {}
+        }
+    }
+
+    private final class NameFieldCell: NSTextFieldCell {
+        private var editor: NSTextView?
+
+        override func fieldEditor(for controlView: NSView) -> NSTextView? {
+            if let editor { return editor }
+            let editor = NSTextView()
+            editor.isFieldEditor = true
+            editor.isAutomaticQuoteSubstitutionEnabled = false
+            editor.isAutomaticDashSubstitutionEnabled = false
+            editor.isAutomaticTextReplacementEnabled = false
+            editor.isAutomaticSpellingCorrectionEnabled = false
+            editor.isContinuousSpellCheckingEnabled = false
+            editor.isAutomaticTextCompletionEnabled = false
+            self.editor = editor
+            return editor
         }
     }
 
