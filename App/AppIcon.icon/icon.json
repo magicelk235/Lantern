@@ -1,0 +1,78 @@
+{
+  "features" : [
+    "refractivity"
+  ],
+  "fill" : "system-light",
+  "groups" : [
+    {
+      "blur-material" : 0.5,
+      "layers" : [
+        {
+          "blend-mode-specializations" : [
+            {
+              "value" : "hard-light"
+            },
+            {
+              "appearance" : "dark",
+              "value" : "overlay"
+            }
+          ],
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "lantern.svg",
+          "name" : "lantern",
+          "position" : {
+            "scale" : 1.4,
+            "translation-in-points" : [
+              -2.3870000000000005,
+              -22
+            ]
+          }
+        },
+        {
+          "blend-mode-specializations" : [
+            {
+              "value" : "hard-light"
+            },
+            {
+              "appearance" : "dark",
+              "value" : "overlay"
+            }
+          ],
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "lantern.svg",
+          "name" : "lantern",
+          "position" : {
+            "scale" : 1.4,
+            "translation-in-points" : [
+              -2.3870000000000005,
+              -32
+            ]
+          }
+        }
+      ],
+      "lighting" : "individual",
+      "refractivity" : {
+        "depth" : 0.8828515625,
+        "enabled" : true,
+        "strength" : 0.9278515625
+      },
+      "shadow" : {
+        "kind" : "layer-color",
+        "opacity" : 2
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

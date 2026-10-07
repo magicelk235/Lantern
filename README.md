@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="App/Icon/AppIcon.svg" width="128" height="128" alt="Lantern icon">
+  <img src="App/AppIcon.png" width="128" height="128" alt="Lantern icon">
 </p>
 
 <h1 align="center">Lantern</h1>

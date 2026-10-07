@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<title>Lantern pi</title>
+<defs>
+<radialGradient id="ember" cx="128" cy="150" r="130" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FFE9B8"/><stop offset="0.4" stop-color="#F7B25A"/><stop offset="0.8" stop-color="#E07E2E"/><stop offset="1" stop-color="#B85A22"/></radialGradient>
+</defs>
+<g transform="translate(198.88 192.88) scale(2.45)">
+<path fill="url(#ember)" d="M98 62A30 30 0 0 1 158 62H144A16 16 0 0 0 112 62Z M54 60H202A10 10 0 0 1 212 70V80A10 10 0 0 1 202 90H54A10 10 0 0 1 44 80V70A10 10 0 0 1 54 60Z M78 80H86A10 10 0 0 1 96 90V212A10 10 0 0 1 86 222H78A10 10 0 0 1 68 212V90A10 10 0 0 1 78 80Z M160 80H188V196C188 208 194 214 202 214A10 10 0 0 1 202 236H196C178 236 160 222 160 198Z"/>
+</g>
+</svg>

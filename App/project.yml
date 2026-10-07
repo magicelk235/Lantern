@@ -54,9 +54,8 @@ targets:
     platform: macOS
     sources:
       - path: Sources
-      # The app icon (omp's π as a lantern, glowing like an ember; sources and export in App/Icon and
-      # scripts/app-icon.sh); the menu-bar extra shares it for Login Items.
-      - path: Resources/Assets.xcassets
+      # The app icon (Icon Composer). README.md shows App/AppIcon.png, exported from it with Icon Composer's ictool.
+      - path: AppIcon.icon
       - path: Resources/LaunchAgents/com.magicelklabs.lantern.ompd.plist
         buildPhase:
           copyFiles:
@@ -103,6 +102,18 @@ targets:
           else
             rm -f "$dest"
           fi
+      # Xcode rewrites the bundle in place, so its modification date never changes and macOS keeps showing the
+      # icon it cached for this path. Touching the bundle makes it re-read the icon, so do it whenever AppIcon.icon
+      # changes. Icon Composer saves the whole package (new folder dates); icon.json and Assets cover edits by hand.
+      - name: Refresh icon cache
+        inputFiles:
+          - $(SRCROOT)/AppIcon.icon
+          - $(SRCROOT)/AppIcon.icon/icon.json
+          - $(SRCROOT)/AppIcon.icon/Assets
+        outputFiles:
+          - $(DERIVED_FILE_DIR)/app-icon.stamp
+        script: |
+          touch "${TARGET_BUILD_DIR}/${WRAPPER_NAME}" "${DERIVED_FILE_DIR}/app-icon.stamp"
     settings:
       base:
         PRODUCT_NAME: Lantern
