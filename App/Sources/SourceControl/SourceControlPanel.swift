@@ -98,6 +98,7 @@ struct SourceControlPanel: View {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.triangle.branch")
                         .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                     Text(headTitle)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -107,6 +108,7 @@ struct SourceControlPanel: View {
             .paneHeaderMenu()
             .disabled(repository.isBusy)
             .help(repository.branch.map { "Branch \($0)" } ?? "Detached HEAD")
+            .accessibilityLabel(repository.branch.map { "Branch \($0)" } ?? headTitle)
             Spacer(minLength: 4)
             if repository.isBusy {
                 ProgressView()
@@ -124,6 +126,10 @@ struct SourceControlPanel: View {
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .help("\(repository.ahead) to push, \(repository.behind) to pull")
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(
+                    [repository.ahead > 0 ? "\(repository.ahead) to push" : nil, repository.behind > 0 ? "\(repository.behind) to pull" : nil]
+                        .compactMap(\.self).joined(separator: ", "))
             }
         }
     }
@@ -141,6 +147,7 @@ struct SourceControlPanel: View {
                 .lineLimit(1...6)
                 .font(.system(size: 12))
                 .focused($messageFocused)
+                .accessibilityLabel("Commit message")
                 .onChange(of: app.editors.repositories.commitFocusPending, initial: true) { _, pending in
                     guard pending else { return }
                     app.editors.repositories.commitFocusPending = false
@@ -163,6 +170,8 @@ struct SourceControlPanel: View {
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .disabled(repository.isBusy)
+                .help("More ways to commit")
+                .accessibilityLabel("Commit Options")
             }
             .controlSize(.small)
         }
@@ -181,6 +190,7 @@ struct SourceControlPanel: View {
                         }
                         .simultaneousGesture(TapGesture().onEnded { clicked(change) })
                         .tag(ChangeSelection(path: change.path, staged: true))
+                        .listRowSeparator(.hidden)
                     }
                 } header: {
                     sectionHeader("Staged", count: staged.count)
@@ -195,6 +205,7 @@ struct SourceControlPanel: View {
                         }
                         .simultaneousGesture(TapGesture().onEnded { clicked(change) })
                         .tag(ChangeSelection(path: change.path, staged: false))
+                        .listRowSeparator(.hidden)
                     }
                 } header: {
                     sectionHeader("Changes", count: unstaged.count)
@@ -378,7 +389,12 @@ private struct ChangeRow: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .help(change.path)
-        .accessibilityLabel("\(change.name), \(statusWord)")
+        // One element for VoiceOver: the name and its folder (two changes can share a name), what git says, and Stage or
+        // Unstage as an action, which the pointer finds on hover.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(folder.isEmpty ? change.name : "\(change.name), \(folder)")
+        .accessibilityValue(statusWord)
+        .accessibilityAction(named: staged ? "Unstage" : "Stage", action)
     }
 
     private var statusWord: String {
@@ -475,7 +491,8 @@ extension AppState {
 }
 
 /// The Source Control menu, for the project on screen: Commit… (⌥⌘C), Stage All, Fetch, Pull (⌥⌘X), Push, Switch
-/// Branch, New Branch…, and Show Changes (⌃⌘G). All but Show Changes need the project to be a repository.
+/// Branch, New Branch…, and Show Changes (View › Changes, ⌃⌘G, which carries the key). All but Show Changes need the
+/// project to be a repository.
 struct SourceControlCommands: Commands {
     let app: AppState
 
@@ -513,7 +530,6 @@ struct SourceControlCommands: Commands {
             .disabled(!ready)
             Divider()
             Button("Show Changes") { app.showChanges() }
-                .keyboardShortcut("g", modifiers: [.command, .control])
         }
     }
 }

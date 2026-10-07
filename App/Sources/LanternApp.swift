@@ -53,8 +53,11 @@ struct LanternApp: App {
             CommandGroup(replacing: .sidebar) {
                 Button(app.sidebarVisible ? "Hide Sidebar" : "Show Sidebar") { app.sidebarVisible.toggle() }
                     .keyboardShortcut("s", modifiers: [.command, .control])
+                // The rail's panes, in its order; Changes is also Source Control › Show Changes.
                 Button("Files") { app.showPane(.files) }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
+                Button("Changes") { app.showChanges() }
+                    .keyboardShortcut("g", modifiers: [.command, .control])
                 Button("Agents") { app.showPane(.agents) }
                     .keyboardShortcut("a", modifiers: [.command, .control])
                 Button("Projects") { app.showPane(.projects) }
