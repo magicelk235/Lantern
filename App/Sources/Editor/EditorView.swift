@@ -147,7 +147,6 @@ private struct DiskNotices: View {
                 Button("Reveal in Finder") { app.revealInFinder(document.path) }
                 Button("Try Again") { try? document.save() }
             }
-            .help("Your changes are kept in Lantern until they can be saved.")
         } else if document.conflict != nil {
             NoticeBar(
                 systemImage: "exclamationmark.triangle", tint: .orange, title: "Changed on disk",

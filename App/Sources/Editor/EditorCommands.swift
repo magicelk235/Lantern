@@ -30,12 +30,17 @@ extension AppState {
         alert.informativeText = "Your changes are kept in Lantern. Use Save As… to save them in another location."
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Save As…")
-        let response = if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+        let response = if let window = sheetWindow(for: document) {
             await alert.beginSheetModal(for: window)
         } else {
             alert.runModal()
         }
         if response == .alertSecondButtonReturn { await saveAs(document) }
+    }
+
+    /// The window a sheet about `document` hangs from: its project's, else the one in front.
+    private func sheetWindow(for document: EditorDocument) -> NSWindow? {
+        window(of: document.workspace) ?? NSApp.keyWindow ?? NSApp.mainWindow
     }
 
     /// Save As…: the text goes to a file the user picks, and the editor tab follows it there; the original file stays
@@ -45,7 +50,7 @@ extension AppState {
         panel.nameFieldStringValue = document.name
         panel.directoryURL = URL(filePath: (document.path as NSString).deletingLastPathComponent, directoryHint: .isDirectory)
         panel.canCreateDirectories = true
-        let response = if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+        let response = if let window = sheetWindow(for: document) {
             await panel.beginSheetModal(for: window)
         } else {
             panel.runModal()
