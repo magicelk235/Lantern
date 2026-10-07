@@ -10,6 +10,9 @@ import IDEModel
 final class SessionPrompts {
     /// The first prompt's first line, by session file.
     private(set) var prompts: [String: String] = [:]
+    /// The session files looked at for a prompt at least once, with one found or not (or no file there yet): until
+    /// then, an untitled session's title is not known (`AppState.tabTitles(in:)`).
+    private(set) var looked: Set<String> = []
     /// The size and modification date of each file read without a prompt in it, by session file.
     @ObservationIgnored private var stamps: [String: FileStamp] = [:]
     /// The files to read next, once the read under way is done.
@@ -23,6 +26,10 @@ final class SessionPrompts {
         sessionFile.flatMap { prompts[$0] }
     }
 
+    func hasLooked(atFile sessionFile: String) -> Bool {
+        looked.contains(sessionFile)
+    }
+
     /// Follows `connection`'s sessions from now on.
     func follow(_ connection: DaemonConnection) {
         let (wanted, listed) = withObservationTracking {
@@ -32,6 +39,7 @@ final class SessionPrompts {
         }
         // Sessions ompd no longer lists take their prompts with them.
         if prompts.keys.contains(where: { !listed.contains($0) }) { prompts = prompts.filter { listed.contains($0.key) } }
+        if !looked.isSubset(of: listed) { looked.formIntersection(listed) }
         stamps = stamps.filter { listed.contains($0.key) }
         if !wanted.isEmpty { schedule(wanted) }
     }
@@ -84,6 +92,8 @@ final class SessionPrompts {
                 stamps[file] = stamp
             }
         }
+        let seen = looked.union(found.map(\.file))
+        if seen != looked { looked = seen }
     }
 }
 

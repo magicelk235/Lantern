@@ -72,9 +72,10 @@ public struct TerminalSize: Hashable, Sendable {
 extension PTYInfo {
     public var size: TerminalSize { TerminalSize(cols: cols, rows: rows) }
 
-    /// The folder the terminal is in and its program, e.g. `Lantern — zsh`.
-    public var displayTitle: String {
-        let folder = URL(filePath: cwd, directoryHint: .isDirectory).lastPathComponent
+    /// What runs in the terminal, after the folder it is in unless that is `workspace`, the project's own, which the
+    /// window's tab names already: "zsh", "docs — zsh".
+    public func displayTitle(in workspace: String?) -> String {
+        let folder = cwd == workspace ? "" : URL(filePath: cwd, directoryHint: .isDirectory).lastPathComponent
         let program = command.first.map { URL(filePath: $0).lastPathComponent } ?? ""
         switch (folder.isEmpty, program.isEmpty) {
         case (false, false): return "\(folder) — \(program)"
@@ -82,5 +83,45 @@ extension PTYInfo {
         case (true, false): return program
         case (true, true): return "Terminal"
         }
+    }
+
+    /// omp's arguments when the terminal runs omp: itself, or through the login shell the way Lantern starts it when it
+    /// knows no omp (`shell -l -c "'omp' 'render' …"`, each word in single quotes).
+    public var ompArguments: [String]? {
+        guard let first = command.first else { return nil }
+        if URL(filePath: first).lastPathComponent == "omp" { return Array(command.dropFirst()) }
+        guard command.count == 4, command[1] == "-l", command[2] == "-c", let words = Self.quotedWords(command[3]),
+              words.first == "omp"
+        else { return nil }
+        return Array(words.dropFirst())
+    }
+
+    /// The words of `script` when it is nothing but single-quoted words (an embedded quote written `'\''`), else nil.
+    static func quotedWords(_ script: String) -> [String]? {
+        var words: [String] = []
+        var word: String?
+        var quoted = false
+        var escaped = false
+        for character in script {
+            if quoted {
+                if character == "'" { quoted = false } else { word?.append(character) }
+            } else if escaped {
+                word = (word ?? "") + String(character)
+                escaped = false
+            } else if character == "'" {
+                quoted = true
+                word = word ?? ""
+            } else if character == "\\" {
+                escaped = true
+            } else if character == " " {
+                if let finished = word { words.append(finished) }
+                word = nil
+            } else {
+                return nil
+            }
+        }
+        guard !quoted, !escaped else { return nil }
+        if let word { words.append(word) }
+        return words
     }
 }

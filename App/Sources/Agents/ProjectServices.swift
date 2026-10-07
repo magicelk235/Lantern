@@ -107,6 +107,38 @@ extension AppState {
         runOmp(["render", transcript], in: project, preferring: sessionKey)
     }
 
+    /// What Lantern opened a terminal for, read from what it runs: Open Transcript's `omp render <transcript>`, Show
+    /// Logs' `omp ps logs <service> --follow`. Known again after a relaunch, and for a terminal started again.
+    enum TerminalPurpose: Equatable {
+        case transcript(String)
+        case logs(String)
+    }
+
+    func purpose(ofTerminal ptyId: PTYID) -> TerminalPurpose? {
+        guard let arguments = terminals.info(ptyId)?.ompArguments, let verb = arguments.first else { return nil }
+        if verb == "render", arguments.count >= 2 { return .transcript(arguments[1]) }
+        if verb == "ps", arguments.count >= 3, arguments[1] == "logs" { return .logs(arguments[2]) }
+        return nil
+    }
+
+    /// A terminal tab's title: what Lantern opened it for ("Transcript — Subagent2", "Logs — web"), else what its
+    /// program says or what runs in it (`TerminalsController.title(for:in:)`).
+    func terminalTitle(_ ptyId: PTYID, in workspace: String?) -> String {
+        switch purpose(ofTerminal: ptyId) {
+        case .transcript(let path): "Transcript — \(transcriptAgent(path))"
+        case .logs(let service): "Logs — \(service)"
+        case nil: terminals.title(for: ptyId, in: workspace)
+        }
+    }
+
+    /// The agent whose transcript `path` is, as the Agents pane names it: the main agent's is its session's own file,
+    /// named by the session's title; a subagent's is `<id>.jsonl`, named by the last part of its id.
+    private func transcriptAgent(_ path: String) -> String {
+        if let session = connection.sessions.first(where: { $0.sessionFile == path }) { return sessionTitle(session.sessionKey) }
+        let id = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        return id.split(separator: ".").last.map(String.init) ?? id
+    }
+
     /// A terminal tab of `project` running omp with `arguments`: the omp ompd starts `sessionKey` (else the project's
     /// sessions) with, else the login shell's `omp`.
     private func runOmp(_ arguments: [String], in project: String, preferring sessionKey: SessionKey?) {

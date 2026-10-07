@@ -157,11 +157,17 @@ final class TerminalsController {
 
     // MARK: - Titles and sidebar
 
-    /// The title the program set, else the terminal's folder and program.
-    func title(for ptyId: PTYID) -> String {
+    /// The title the program set, else what runs in the terminal, after its folder unless that is `workspace` (the
+    /// project's own folder): "zsh", "docs — zsh".
+    func title(for ptyId: PTYID, in workspace: String?) -> String {
         let model = registry.models[ptyId]
         if let title = model?.programTitle, !title.isEmpty { return title }
-        return (model?.info ?? registry.info(ptyId))?.displayTitle ?? "Terminal"
+        return info(ptyId)?.displayTitle(in: workspace) ?? "Terminal"
+    }
+
+    /// ompd's latest description of the PTY.
+    func info(_ ptyId: PTYID) -> PTYInfo? {
+        registry.models[ptyId]?.info ?? registry.info(ptyId)
     }
 
     /// The workspace a PTY belongs to: the one it was opened or shown in during this run, else the deepest of

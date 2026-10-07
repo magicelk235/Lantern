@@ -77,7 +77,8 @@ import Testing
         tabs.open(.session("s2"), in: "/src/lib")
         tabs.open(.session("s3"), in: "/src/app")
         tabs.select(.session("s2"))
-        let window = WindowState(id: "main", sidebarWidth: 312.5, sidebarVisible: false, tabs: tabs)
+        let numbers = TabNumbers([.session("s3"): .init(title: "New session", number: 2)])
+        let window = WindowState(id: "main", sidebarWidth: 312.5, sidebarVisible: false, tabs: tabs, tabNumbers: numbers)
         do {
             let store = try home.store()
             store.setWindow(window)
@@ -89,6 +90,7 @@ import Testing
         #expect(restored.tabs.strips.map(\.tabs) == [[.session("s1"), .session("s3")], [.session("s2")]])
         #expect(restored.tabs.selectedSession == "s2")
         #expect(restored.tabs.selectedStrip?.workspace == "/src/lib")
+        #expect(restored.tabNumbers == numbers)
     }
 
     @Test func changesStayPendingUntilFlushButReadsSeeThem() throws {

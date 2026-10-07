@@ -13,13 +13,7 @@ struct TabStrip: View {
     let strip: TabLayout.Strip
     /// The pointer over the tabs and the tab being dragged, shared with the scrolling row.
     @State private var interaction = TabInteraction()
-    /// The number each session or terminal of the strip carries among those with its title.
-    @State private var numbers = TabNumbers()
 
-    /// Widest a tab gets; with many tabs they shrink evenly to `minimumTabWidth`, then the strip scrolls sideways.
-    static let maximumTabWidth: CGFloat = 220
-    /// Narrowest a tab gets: its icon, close button and a readable part of its title.
-    static let minimumTabWidth: CGFloat = 120
     private static let newTabButtonWidth: CGFloat = 28
 
     var body: some View {
@@ -33,7 +27,7 @@ struct TabStrip: View {
                         metrics: metrics, tabs: strip.tabs, selected: strip.preferredTab.flatMap(strip.tabs.firstIndex(of:)),
                         interaction: interaction, isDragging: interaction.isDragging, close: { app.closeTab($0) }
                     ) {
-                        TabRow(app: app, strip: strip, titles: titles(), width: metrics.width, interaction: interaction)
+                        TabRow(app: app, strip: strip, titles: app.tabTitles(in: strip), width: metrics.width, interaction: interaction)
                     }
                     .frame(width: metrics.viewport)
                     newTabMenu
@@ -73,64 +67,17 @@ struct TabStrip: View {
         guard app.connection.isConnected else { return NSSound.beep() }
         app.newTerminal(in: strip.workspace)
     }
-
-    /// Each tab's title: an editor is its file's name; sessions and terminals of the strip with the same title carry a
-    /// number from the second on, "tabs — zsh" then "tabs — zsh 2", as Terminal names its windows (`TabNumbers`).
-    private func titles() -> [TabKind: String] {
-        let titles = Dictionary(uniqueKeysWithValues: strip.tabs.map { ($0, title(of: $0)) })
-        let numbered = strip.tabs.filter { $0.editorPath == nil }.sorted { age(of: $0) < age(of: $1) }
-        return titles.merging(numbers.titles(of: numbered, titled: titles)) { _, numbered in numbered }
-    }
-
-    private func title(of tab: TabKind) -> String {
-        switch tab {
-        case .session(let key): app.sessionTitle(key)
-        case .terminal(let ptyId):
-            app.adoptedSession(on: ptyId).map { app.sessionTitle($0.sessionKey) } ?? app.terminals.title(for: ptyId)
-        case .editor(let path): (path as NSString).lastPathComponent
-        }
-    }
-
-    /// Where ompd lists the tab's session or terminal: older first.
-    private func age(of tab: TabKind) -> (Int, Int) {
-        switch tab {
-        case .session(let key): (0, app.connection.sessions.firstIndex { $0.sessionKey == key } ?? .max)
-        case .terminal(let ptyId): (1, app.connection.terminals.ptys.firstIndex { $0.ptyId == ptyId } ?? .max)
-        case .editor: (2, 0)
-        }
-    }
-}
-
-/// The numbers that tell apart a strip's sessions and terminals of the same title. A tab keeps its number while it is
-/// open and its title stays, so no title changes under the user when another tab closes ("zsh 2" stays "zsh 2" once
-/// "zsh" is gone); a tab that needs one takes the lowest free, the older first. Number 1 is the title alone.
-@MainActor
-final class TabNumbers {
-    private var assigned: [TabKind: (title: String, number: Int)] = [:]
-
-    /// The numbered titles of `tabs` (older first), whose plain titles are `titles`.
-    func titles(of tabs: [TabKind], titled titles: [TabKind: String]) -> [TabKind: String] {
-        let open = Set(tabs)
-        assigned = assigned.filter { open.contains($0.key) && titles[$0.key] == $0.value.title }
-        var result: [TabKind: String] = [:]
-        for tab in tabs {
-            guard let title = titles[tab] else { continue }
-            let number = assigned[tab]?.number ?? {
-                let taken = Set(assigned.values.filter { $0.title == title }.map(\.number))
-                let free = (1...).first { !taken.contains($0) } ?? 1
-                assigned[tab] = (title, free)
-                return free
-            }()
-            result[tab] = number == 1 ? title : "\(title) \(number)"
-        }
-        return result
-    }
 }
 
 /// How wide the tabs are and how much of their row shows. They share the strip up to their maximum width; once they
 /// would go below their minimum, as many whole tabs as fit show at once and the row scrolls, coming to rest on a tab's
 /// edge, so no tab at rest is cut in two (Safari's tab bar).
 struct TabMetrics: Equatable {
+    /// Widest a tab gets; with many tabs they shrink evenly to `minimumWidth`, then the strip scrolls sideways.
+    static let maximumWidth: CGFloat = 220
+    /// Narrowest a tab gets: its icon, close button and a readable part of its title.
+    static let minimumWidth: CGFloat = 120
+
     let width: CGFloat
     /// The width of the row's visible part.
     let viewport: CGFloat
@@ -139,11 +86,11 @@ struct TabMetrics: Equatable {
     init(available: CGFloat, count: Int) {
         let count = CGFloat(max(count, 1))
         let shared = (available / count).rounded(.down)
-        if shared >= TabStrip.minimumTabWidth {
-            width = min(TabStrip.maximumTabWidth, shared)
+        if shared >= Self.minimumWidth {
+            width = min(Self.maximumWidth, shared)
             viewport = width * count
         } else {
-            let shown = max(1, (available / TabStrip.minimumTabWidth).rounded(.down))
+            let shown = max(1, (available / Self.minimumWidth).rounded(.down))
             width = max(1, (available / shown).rounded(.down))
             viewport = width * shown
         }
@@ -273,7 +220,7 @@ struct TabDrag {
 private struct TabRow: View {
     let app: AppState
     let strip: TabLayout.Strip
-    let titles: [TabKind: String]
+    let titles: [TabKind: TabNumbers.Number]
     let width: CGFloat
     let interaction: TabInteraction
 
@@ -288,9 +235,9 @@ private struct TabRow: View {
                 // A terminal running an adopted session stands for that session: its title, status and menu.
                 let hosted = tab.ptyId.flatMap(app.adoptedSession(on:))
                 let indicator = (tab.sessionKey.flatMap(app.entry(for:)) ?? hosted).map(app.indicator(of:))
-                let title = titles[tab] ?? ""
+                let title = titles[tab] ?? TabNumbers.Number(title: "", number: 1)
                 TabItem(
-                    tab: tab, title: title, help: help(for: tab, title: title, indicator: indicator), indicator: indicator,
+                    tab: tab, title: title, help: help(for: tab, title: title.numberedTitle, indicator: indicator), indicator: indicator,
                     terminalExited: hosted == nil ? tab.ptyId.map { app.terminals.model($0)?.hasExited == true } : nil,
                     document: tab.editorPath.flatMap(app.editors.document(for:)),
                     isSelected: strip.preferredTab == tab, isHovered: interaction.hovered == tab, width: width,
@@ -775,7 +722,8 @@ private struct TabMenu: View {
 
 private struct TabItem<Press: Gesture>: View {
     let tab: TabKind
-    let title: String
+    /// Its title and its number among the strip's tabs of that title.
+    let title: TabNumbers.Number
     let help: String
     /// The state of the session the tab shows (or of the one running in its terminal).
     let indicator: SessionIndicator?
@@ -798,9 +746,18 @@ private struct TabItem<Press: Gesture>: View {
                 HStack(spacing: 6) {
                     mark
                         .frame(minWidth: 12)
-                    Text(title)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    // The start tells tabs apart, and the number those of the same title: the title gives way at
+                    // its end, the number never does.
+                    HStack(spacing: 0) {
+                        Text(title.title)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        if title.number > 1 {
+                            Text(verbatim: " \(title.number)")
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                    }
                 }
                 .padding(.leading, 12)
                 .padding(.trailing, 6)
@@ -811,7 +768,7 @@ private struct TabItem<Press: Gesture>: View {
             .simultaneousGesture(press)
             .help(help)
             .accessibilityLabel(
-                "Tab \(title)" + (indicator.map { " — \($0.words)" } ?? "") + (document?.isDirty == true ? ", edited" : ""))
+                "Tab \(title.numberedTitle)" + (indicator.map { " — \($0.words)" } ?? "") + (document?.isDirty == true ? ", edited" : ""))
             .accessibilityAddTraits(isSelected ? .isSelected : [])
             Button(action: close) {
                 Image(systemName: "xmark")
@@ -823,7 +780,7 @@ private struct TabItem<Press: Gesture>: View {
             .foregroundStyle(.secondary)
             .opacity(isSelected || isHovered ? 1 : 0)
             .help(tab.ptyId != nil ? "Close Terminal" : document != nil ? "Close Tab" : "Close Session")
-            .accessibilityLabel("Close Tab \(title)")
+            .accessibilityLabel("Close Tab \(title.numberedTitle)")
         }
         .font(.system(size: 12))
         .foregroundStyle(isSelected ? .primary : .secondary)

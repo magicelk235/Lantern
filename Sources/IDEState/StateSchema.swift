@@ -62,6 +62,12 @@ enum StateSchema {
                 table.add(column: "frontWindow", .text)
             }
         }
+        migrator.registerMigration("tab_numbers") { db in
+            try db.alter(table: WindowRecord.databaseTableName) { table in
+                // `TabNumbers` as JSON: `[{tab, title, number}]`.
+                table.add(column: "tabNumbers", .text).notNull().defaults(to: "[]")
+            }
+        }
         return migrator
     }()
 }
@@ -84,9 +90,10 @@ struct WindowRecord: FetchableRecord, PersistableRecord {
         }
         let projects = (try? JSONDecoder().decode([String].self, from: Data((row["projects"] as String).utf8))) ?? []
         let windows = (try? JSONDecoder().decode([String].self, from: Data((row["windows"] as String).utf8))) ?? []
+        let tabNumbers = (try? JSONDecoder().decode(TabNumbers.self, from: Data((row["tabNumbers"] as String).utf8))) ?? TabNumbers()
         state = WindowState(
             id: id, sidebarWidth: row["sidebarWidth"], sidebarVisible: row["sidebarVisible"],
-            projects: projects, tabs: tabs, windows: windows, frontWindow: row["frontWindow"])
+            projects: projects, tabs: tabs, tabNumbers: tabNumbers, windows: windows, frontWindow: row["frontWindow"])
     }
 
     func encode(to container: inout PersistenceContainer) throws {
@@ -99,6 +106,7 @@ struct WindowRecord: FetchableRecord, PersistableRecord {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         container["tabs"] = String(decoding: try encoder.encode(state.tabs), as: UTF8.self)
+        container["tabNumbers"] = String(decoding: try encoder.encode(state.tabNumbers), as: UTF8.self)
     }
 }
 

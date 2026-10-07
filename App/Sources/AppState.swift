@@ -60,6 +60,9 @@ final class AppState {
 
     /// `state.sqlite` and the hot-exit copies; its `writeFailure` is the window's banner while writes fail.
     @ObservationIgnored let persistence: StatePersistence
+    /// The numbers the strips' sessions and terminals of the same title carry (`tabTitles(in:)`). Not observed: the
+    /// strips number their tabs as they draw them.
+    @ObservationIgnored private var tabNumbers: TabNumbers
     @ObservationIgnored private var started = false
     /// Windows `attach(_:project:)` set up, until they close, and their observers.
     @ObservationIgnored private var windowsAttached: Set<ObjectIdentifier> = []
@@ -77,6 +80,8 @@ final class AppState {
     @ObservationIgnored private var windowsAtQuit: (windows: [String], front: String?)?
     /// Projects the user removed whose window is closing: what ran in them is ending, so no notice says it runs on.
     @ObservationIgnored private var removedProjectWindows: Set<String> = []
+    /// Terminals whose program runs again on a new PTY in their tab while the old PTY closes (`restartTerminal`).
+    @ObservationIgnored private var restartedTerminals: Set<PTYID> = []
 
     struct AlertMessage: Identifiable {
         let id = UUID()
@@ -135,6 +140,7 @@ final class AppState {
         let restored = persistence.restoredWindow
         editors = Editors(persistence: persistence)
         tabs = restored?.tabs ?? TabLayout()
+        tabNumbers = restored?.tabNumbers ?? TabNumbers()
         windowsToReopen = restored?.windows ?? []
         frontToReopen = restored?.frontWindow
         terminals = TerminalsController(registry: connection.terminals)
@@ -511,7 +517,7 @@ final class AppState {
             tabs.add(.session(entry.sessionKey), in: entry.workspace)
             changed = true
         }
-        for info in connection.terminals.terminals where !tabs.contains(.terminal(info.ptyId)) {
+        for info in connection.terminals.terminals where !tabs.contains(.terminal(info.ptyId)) && !restartedTerminals.contains(info.ptyId) {
             let workspace = terminals.workspace(of: info, among: knownWorkspaces)
             terminals.adopt(info.ptyId, workspace: workspace)
             tabs.add(.terminal(info.ptyId), in: workspace)
@@ -692,6 +698,45 @@ final class AppState {
             folder: entry.map { Self.projectName($0.workspace) })
     }
 
+    /// What each tab of `strip` is called on it: an editor by its file's name, a session or a terminal by its title,
+    /// those of the same title numbered from the second on as Terminal numbers its windows, "zsh" then "zsh 2"
+    /// (`TabNumbers`, the older first: sessions and terminals in the order ompd started them).
+    func tabTitles(in strip: TabLayout.Strip) -> [TabKind: TabNumbers.Number] {
+        var titles: [TabKind: TabNumbers.Number] = [:]
+        var numbered: [(tab: TabNumbers.Tab, age: (Int, Int, Int))] = []
+        for (index, tab) in strip.tabs.enumerated() {
+            switch tab {
+            case .editor(let path):
+                titles[tab] = TabNumbers.Number(title: (path as NSString).lastPathComponent, number: 1)
+            case .session(let key):
+                let age = connection.sessions.firstIndex { $0.sessionKey == key } ?? .max
+                numbered.append((TabNumbers.Tab(tab: tab, title: sessionTitle(key), isSettled: titleIsSettled(tab)), (0, age, index)))
+            case .terminal(let ptyId):
+                let title = adoptedSession(on: ptyId).map { sessionTitle($0.sessionKey) } ?? terminalTitle(ptyId, in: strip.workspace)
+                let age = connection.terminals.ptys.firstIndex { $0.ptyId == ptyId } ?? .max
+                numbered.append((TabNumbers.Tab(tab: tab, title: title, isSettled: titleIsSettled(tab)), (1, age, index)))
+            }
+        }
+        let older = numbered.sorted { $0.age < $1.age }.map(\.tab)
+        return titles.merging(tabNumbers.numbered(older, open: Set(tabs.tabs))) { _, numbered in numbered }
+    }
+
+    /// Whether what titles `tab` is in: ompd listed its session or terminal, and the file of a session omp has not
+    /// titled was looked at for its first prompt. Until then its title is made up ("New session", "Terminal").
+    private func titleIsSettled(_ tab: TabKind) -> Bool {
+        func settled(_ entry: SessionManifestEntry) -> Bool {
+            guard entry.title?.isEmpty ?? true, let file = entry.sessionFile else { return true }
+            return sessionPrompts.hasLooked(atFile: file)
+        }
+        switch tab {
+        case .session(let key): return entry(for: key).map(settled) ?? false
+        case .terminal(let ptyId):
+            if let hosted = adoptedSession(on: ptyId) { return settled(hosted) }
+            return connection.terminals.info(ptyId) != nil
+        case .editor: return true
+        }
+    }
+
     private func show(_ entry: SessionManifestEntry) {
         connection.open(entry.sessionKey)
         tabs.open(.session(entry.sessionKey), in: entry.workspace)
@@ -776,13 +821,17 @@ final class AppState {
         }
     }
 
-    /// Runs an exited terminal's program again, on a new PTY in the same tab.
+    /// Runs an exited terminal's program again, on a new PTY in the same tab, which keeps its number.
     func restartTerminal(_ ptyId: PTYID) {
         Task {
             do {
                 let restarted = try await terminals.restart(ptyId)
                 terminals.release(ptyId)
+                // ompd lists the old PTY until it is closed: it gets no tab of its own meanwhile.
+                restartedTerminals.insert(ptyId)
+                defer { restartedTerminals.remove(ptyId) }
                 tabs.replace(.terminal(ptyId), with: .terminal(restarted))
+                tabNumbers.replace(.terminal(ptyId), with: .terminal(restarted))
                 saveWindow()
                 try await terminals.close(ptyId)
             } catch {
@@ -951,7 +1000,7 @@ final class AppState {
         persistence.save(
             WindowState(
                 id: Self.mainWindowID, sidebarWidth: sidebarWidth, sidebarVisible: sidebarVisible,
-                projects: addedProjects, tabs: tabs, windows: open.windows, frontWindow: open.front))
+                projects: addedProjects, tabs: tabs, tabNumbers: tabNumbers, windows: open.windows, frontWindow: open.front))
     }
 
     /// The project the scene's first window shows at launch: the first of the windows open at the last quit, else the
