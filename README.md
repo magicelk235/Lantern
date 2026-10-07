@@ -111,10 +111,24 @@ Notarization and Sparkle updates are optional and controlled by environment vari
 | `NOTARY_PROFILE` | `notarytool` keychain profile; the DMG is notarized and stapled | Gatekeeper rejects the download |
 | `FEED_URL` | Sparkle appcast URL baked into the app; needs `SPARKLE_PUBLIC_KEY` | the app never checks for updates |
 | `SPARKLE_PUBLIC_KEY` | EdDSA public key baked into the app | |
-| `SPARKLE_KEY_FILE` | EdDSA private key used to sign the DMG and update the appcast | no appcast |
+| `SPARKLE_KEY_ACCOUNT` | Keychain account of the EdDSA private key (`ed25519` unless `generate_keys --account` named another); signs the appcast | no appcast |
+| `SPARKLE_KEY_FILE` | The same key as an exported file, instead of the keychain | |
 | `DOWNLOAD_URL_PREFIX` | Where the DMG is hosted, for the appcast | the directory of `FEED_URL` |
 
-To set up updates, create the key pair once with Sparkle's `generate_keys` and store notarization credentials once with `xcrun notarytool store-credentials`. Never change the key pair after a build has shipped: installed copies only accept updates signed with the key they carry. Keep `release/appcast` between releases, since `generate_appcast` adds to the existing feed.
+To set up updates, create the key pair once with Sparkle's `generate_keys` and store notarization credentials once with `xcrun notarytool store-credentials`. Never change the key pair after a build has shipped: installed copies only accept updates signed with the key they carry. The appcast lists only the release being built.
+
+Releases are published on GitHub, with the appcast attached to each release so the feed URL always points at the latest one:
+
+```sh
+VERSION=0.1.0
+FEED_URL=https://github.com/magicelk235/Lantern/releases/latest/download/appcast.xml \
+SPARKLE_PUBLIC_KEY=apcUCBF2JH7SFuH8ohkVJGa+zu9Yzu21IAYbvwI1vbM= \
+SPARKLE_KEY_ACCOUNT=ed25519 NOTARY_PROFILE=<profile> \
+DOWNLOAD_URL_PREFIX=https://github.com/magicelk235/Lantern/releases/download/v$VERSION/ \
+scripts/release.sh $VERSION
+gh release create v$VERSION ~/Library/Developer/Lantern/release/Lantern-$VERSION.dmg \
+  ~/Library/Developer/Lantern/release/appcast/appcast.xml --title "Lantern $VERSION" --notes-file <notes>
+```
 
 ## Security
 

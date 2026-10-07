@@ -11,6 +11,7 @@
 #   SPARKLE_PUBLIC_KEY   EdDSA public key (base64, from Sparkle's generate_keys) baked in as SUPublicEDKey.
 #   NOTARY_PROFILE       notarytool keychain profile (`xcrun notarytool store-credentials`): notarize, staple the DMG.
 #   SPARKLE_KEY_FILE     EdDSA private key file (`generate_keys -x`): sign the DMG and write the appcast; needs FEED_URL.
+#   SPARKLE_KEY_ACCOUNT  the same from the login keychain instead (`generate_keys` stores it as account ed25519).
 #   DOWNLOAD_URL_PREFIX  URL the DMG is served from, for the appcast enclosure (default: FEED_URL's directory).
 #   RELEASE_DIR          output directory (default ~/Library/Developer/Lantern/release; keep it out of iCloud).
 #   DERIVED_DATA         derived data (default ~/Library/Developer/Lantern/dd-release).
@@ -29,6 +30,7 @@ FEED_URL=${FEED_URL:-}
 SPARKLE_PUBLIC_KEY=${SPARKLE_PUBLIC_KEY:-}
 NOTARY_PROFILE=${NOTARY_PROFILE:-}
 SPARKLE_KEY_FILE=${SPARKLE_KEY_FILE:-}
+SPARKLE_KEY_ACCOUNT=${SPARKLE_KEY_ACCOUNT:-}
 skipped=""
 
 die() {
@@ -85,8 +87,11 @@ EOF
 if [ -n "$FEED_URL" ] && [ -z "$SPARKLE_PUBLIC_KEY" ]; then
 	die "FEED_URL needs SPARKLE_PUBLIC_KEY: Sparkle does not install updates it cannot verify"
 fi
+[ -z "$SPARKLE_KEY_FILE" ] || [ -z "$SPARKLE_KEY_ACCOUNT" ] || die "set SPARKLE_KEY_FILE or SPARKLE_KEY_ACCOUNT, not both"
+if [ -n "$SPARKLE_KEY_FILE$SPARKLE_KEY_ACCOUNT" ]; then
+	[ -n "$FEED_URL" ] || die "an appcast key needs FEED_URL (and SPARKLE_PUBLIC_KEY): the appcast is for an app that reads it"
+fi
 if [ -n "$SPARKLE_KEY_FILE" ]; then
-	[ -n "$FEED_URL" ] || die "SPARKLE_KEY_FILE needs FEED_URL (and SPARKLE_PUBLIC_KEY): the appcast is for an app that reads it"
 	[ -r "$SPARKLE_KEY_FILE" ] || die "SPARKLE_KEY_FILE is not readable: $SPARKLE_KEY_FILE"
 	derived=$(public_key_of "$SPARKLE_KEY_FILE") || die "SPARKLE_KEY_FILE is not a Sparkle EdDSA private key"
 	[ "$derived" = "$SPARKLE_PUBLIC_KEY" ] ||
@@ -200,20 +205,32 @@ else
 	skip "notarization and stapling (set NOTARY_PROFILE): Gatekeeper rejects the DMG and app as unnotarized"
 fi
 
-if [ -n "$SPARKLE_KEY_FILE" ]; then
+if [ -n "$SPARKLE_KEY_FILE$SPARKLE_KEY_ACCOUNT" ]; then
 	step "Writing the appcast"
 	tools="$DERIVED_DATA/SourcePackages/artifacts/sparkle/Sparkle/bin"
-	[ -x "$tools/generate_appcast" ] && [ -x "$tools/sign_update" ] || die "no Sparkle tools in $tools"
-	"$tools/sign_update" --ed-key-file "$SPARKLE_KEY_FILE" "$DMG"
-	# generate_appcast adds an item per archive in the directory to the appcast already there (named after FEED_URL).
+	[ -x "$tools/generate_appcast" ] && [ -x "$tools/generate_keys" ] || die "no Sparkle tools in $tools"
+	if [ -n "$SPARKLE_KEY_FILE" ]; then
+		key_option="--ed-key-file"
+		key_value=$SPARKLE_KEY_FILE
+	else
+		key_option="--account"
+		key_value=$SPARKLE_KEY_ACCOUNT
+		derived=$("$tools/generate_keys" --account "$SPARKLE_KEY_ACCOUNT" -p) ||
+			die "no Sparkle key in the keychain for account $SPARKLE_KEY_ACCOUNT"
+		[ "$derived" = "$SPARKLE_PUBLIC_KEY" ] ||
+			die "the keychain's Sparkle key does not match SPARKLE_PUBLIC_KEY: the app would reject every update it signs"
+	fi
+	# Only this release goes in the appcast: Sparkle needs the newest item alone, and one download prefix fits one
+	# release (GitHub serves each release's assets under its own tag).
 	appcast_dir="$RELEASE_DIR/appcast"
+	rm -rf "$appcast_dir"
 	mkdir -p "$appcast_dir"
 	cp -f "$DMG" "$appcast_dir/"
-	"$tools/generate_appcast" --ed-key-file "$SPARKLE_KEY_FILE" \
-		--download-url-prefix "${DOWNLOAD_URL_PREFIX:-${FEED_URL%/*}/}" "$appcast_dir"
+	"$tools/generate_appcast" "$key_option" "$key_value" \
+		--download-url-prefix "${DOWNLOAD_URL_PREFIX:-${FEED_URL%/*}/}" -o "$appcast_dir/${FEED_URL##*/}" "$appcast_dir"
 	echo "appcast: $appcast_dir/${FEED_URL##*/} (upload it and the DMG)"
 else
-	skip "Sparkle appcast (set SPARKLE_KEY_FILE, FEED_URL, SPARKLE_PUBLIC_KEY)"
+	skip "Sparkle appcast (set SPARKLE_KEY_ACCOUNT or SPARKLE_KEY_FILE, FEED_URL, SPARKLE_PUBLIC_KEY)"
 fi
 [ -n "$FEED_URL" ] || skip "update feed (set FEED_URL, SPARKLE_PUBLIC_KEY): this build never checks for updates"
 
