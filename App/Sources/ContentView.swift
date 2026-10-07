@@ -300,41 +300,6 @@ private struct SidebarResizeHandle: View {
     }
 }
 
-/// The detail area with no tab on screen: what to do first.
-private struct EmptyDetail: View {
-    let app: AppState
-    let project: String?
-
-    var body: some View {
-        ContentUnavailableView {
-            if let project {
-                Label(AppState.projectName(project), systemImage: "folder")
-            } else {
-                Label("No Projects", systemImage: "folder.badge.plus")
-            }
-        } description: {
-            if project != nil {
-                Text("Start omp here, or open a terminal. Sessions keep running after you quit; closing a tab ends it.")
-            } else {
-                Text("Add a project folder to start omp in it, open terminals, and browse its files.")
-            }
-        } actions: {
-            if let project {
-                Button("New Session") { app.newSession(in: project) }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!app.connection.isConnected)
-                Button("New Terminal") { app.newTerminal(in: project) }
-                    .disabled(!app.connection.isConnected)
-            } else {
-                Button("Add Project…") { app.addProject() }
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Chrome.canvas)
-    }
-}
-
 /// What the project in focus offers: New Session, New Terminal, Open Session…, Finder, and Remove Project, which closes
 /// its tabs first (asking when that ends sessions or running commands).
 struct ProjectMenu: View {
