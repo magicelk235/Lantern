@@ -19,7 +19,8 @@ enum Chrome {
 
     /// What works: a session or an agent omp is busy with, and the status bar's "Working". The icon's ember: its lit
     /// amber in dark mode, its deep ember in light mode, where amber is too faint on the surfaces (4.6:1 there).
-    static let ember = Color(nsColor: dynamic(light: 0xAD581F, dark: 0xF0AC45))
+    static let emberColor = dynamic(light: 0xAD581F, dark: 0xF0AC45)
+    static let ember = Color(nsColor: emberColor)
 
     /// Git marks in the Files pane: a file (or a folder holding one) new to the repository, or changed.
     /// The system green and yellow in dark mode; darker in light mode, where those two fail against white.
@@ -107,5 +108,132 @@ struct StatusDot: View {
             }
         }
         .frame(width: 7, height: 7)
+    }
+}
+
+/// What works, as a dot: the 7-point dot in ember, lit by a soft glow that breathes slowly (steady with Reduce Motion).
+/// White on a selected row, whose highlight is the accent.
+struct WorkingDot: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.backgroundProminence) private var prominence
+
+    var body: some View {
+        let onSelection = prominence == .increased
+        Circle()
+            .fill(onSelection ? Color.white : Chrome.ember)
+            .frame(width: 7, height: 7)
+            // Wider than the dot without taking room from what sits beside it.
+            .background {
+                EmberGlow(color: onSelection ? .white : Chrome.emberColor, breathes: !reduceMotion)
+                    .frame(width: 15, height: 15)
+            }
+    }
+}
+
+/// The glow behind `WorkingDot`, animated by Core Animation on its own clock: a session working for an hour costs no
+/// redraws. Every glow breathes in step with the others.
+private struct EmberGlow: NSViewRepresentable {
+    let color: NSColor
+    let breathes: Bool
+
+    func makeNSView(context: Context) -> GlowView { GlowView() }
+
+    func updateNSView(_ view: GlowView, context: Context) {
+        view.color = color
+        view.breathes = breathes
+    }
+
+    final class GlowView: NSView {
+        private let glow = CAGradientLayer()
+        /// One breath: brighter, then fainter again.
+        private static let period: CFTimeInterval = 2.4
+
+        var breathes = true {
+            didSet { if breathes != oldValue { animate() } }
+        }
+        var color = Chrome.emberColor {
+            didSet { if color != oldValue { needsDisplay = true } }
+        }
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            wantsLayer = true
+            glow.type = .radial
+            glow.startPoint = CGPoint(x: 0.5, y: 0.5)
+            glow.endPoint = CGPoint(x: 1, y: 1)
+            layer?.addSublayer(glow)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+        override var wantsUpdateLayer: Bool { true }
+
+        override func updateLayer() {
+            // The color as the view's own appearance has it.
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                glow.colors = [color.withAlphaComponent(0.55).cgColor, color.withAlphaComponent(0).cgColor]
+            }
+        }
+
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            needsDisplay = true
+        }
+
+        override func layout() {
+            super.layout()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            glow.frame = bounds
+            CATransaction.commit()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            animate()
+        }
+
+        /// Clicks go to what the dot is part of.
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        private func animate() {
+            glow.removeAnimation(forKey: "breathe")
+            guard breathes, window != nil else {
+                glow.opacity = 0.75
+                return
+            }
+            glow.opacity = 1
+            let breath = CABasicAnimation(keyPath: "opacity")
+            breath.fromValue = 0.3
+            breath.toValue = 1
+            breath.duration = Self.period / 2
+            breath.autoreverses = true
+            breath.repeatCount = .infinity
+            breath.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            // In step with every other glow: each starts at the same point of a shared clock.
+            let now = CACurrentMediaTime()
+            breath.beginTime = glow.convertTime(now - now.truncatingRemainder(dividingBy: Self.period), from: nil)
+            glow.add(breath, forKey: "breathe")
+        }
+    }
+}
+
+/// A count in a small capsule, white on red for what waits on the user, on the accent for a plain count; the other way
+/// round on a selected row, whose highlight is the accent.
+struct CountBadge: View {
+    let count: Int
+    var tint: Color = .red
+    @Environment(\.backgroundProminence) private var prominence
+
+    var body: some View {
+        let onSelection = prominence == .increased
+        Text(count > 99 ? "99+" : String(count))
+            .font(.system(size: 9, weight: .semibold))
+            .monospacedDigit()
+            .padding(.horizontal, 4)
+            .frame(minWidth: 15, minHeight: 15)
+            .background(onSelection ? Color.white : tint, in: Capsule())
+            .foregroundStyle(onSelection ? tint : Color.white)
     }
 }

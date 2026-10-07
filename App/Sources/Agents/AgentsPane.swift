@@ -458,8 +458,8 @@ private struct AgentRow: View {
     }
 }
 
-/// An agent's state as a dot: red while it waits on the user, a spinner while it works, green idle,
-/// yellow paused, orange interrupted, grey parked, hollow once it ended.
+/// An agent's state as a dot, in the sessions' vocabulary (`SessionIndicator`): red while it waits on the user, ember
+/// and lit while it works, green idle, yellow paused, orange interrupted, grey parked, hollow once it ended.
 private struct AgentStatusMark: View {
     let status: AgentStatus
     let needsUser: Bool
@@ -469,7 +469,7 @@ private struct AgentStatusMark: View {
             StatusDot(color: .red)
         } else {
             switch status {
-            case .running: ProgressView().controlSize(.mini)
+            case .running: WorkingDot()
             case .idle: StatusDot(color: .green)
             case .paused: StatusDot(color: .yellow)
             case .interrupted: StatusDot(color: .orange)

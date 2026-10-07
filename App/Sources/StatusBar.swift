@@ -80,12 +80,12 @@ private struct TabState: View {
     var body: some View {
         switch tab {
         case .session(let key):
-            if let status = app.entry(for: key)?.status {
-                SessionStatusBadge(status: status)
+            if let entry = app.entry(for: key) {
+                SessionStatusBadge(indicator: app.indicator(of: entry))
             }
         case .terminal(let ptyId):
             if let hosted = app.adoptedSession(on: ptyId) {
-                SessionStatusBadge(status: hosted.status)
+                SessionStatusBadge(indicator: app.indicator(of: hosted))
             } else if let model = app.terminals.model(ptyId) {
                 TerminalState(phase: model.phase, hasExited: model.hasExited)
             }
@@ -209,32 +209,29 @@ private struct LanguageServerState: View {
     }
 }
 
-/// A session's status: a spinner while omp works or starts, else a dot, and a word.
+/// A session's state in words beside its dot: "Working" in ember beside the lit dot, what waits on the user beside a
+/// red one, a spinner while omp starts or resumes.
 struct SessionStatusBadge: View {
-    let status: SessionStatus
+    let indicator: SessionIndicator
 
     var body: some View {
         HStack(spacing: 5) {
-            if status.isInProgress {
-                ProgressView().controlSize(.mini)
-            } else {
-                StatusDot(color: status.dotColor, hollow: status == .closed)
+            switch indicator {
+            case .waiting: StatusDot(color: .red)
+            case .working: WorkingDot()
+            default: SessionMark(indicator: indicator)
             }
-            Text(status.label)
+            Text(indicator.label)
+                .foregroundStyle(word)
         }
-        .help(status.explanation)
+        .help(indicator.explanation)
     }
-}
 
-extension SessionStatus {
-    /// The dot beside its word.
-    var dotColor: Color {
-        switch self {
-        case .idle: .green
-        case .interrupted: .orange
-        case .needsAttention: .red
-        case .paused: .yellow
-        case .closed, .starting, .busy, .resuming: .secondary
+    private var word: AnyShapeStyle {
+        switch indicator {
+        case .working: AnyShapeStyle(Chrome.ember)
+        case .waiting: AnyShapeStyle(.primary)
+        default: AnyShapeStyle(.secondary)
         }
     }
 }

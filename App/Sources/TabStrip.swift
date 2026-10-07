@@ -287,10 +287,10 @@ private struct TabRow: View {
             ForEach(Array(strip.tabs.enumerated()), id: \.element) { index, tab in
                 // A terminal running an adopted session stands for that session: its title, status and menu.
                 let hosted = tab.ptyId.flatMap(app.adoptedSession(on:))
+                let indicator = (tab.sessionKey.flatMap(app.entry(for:)) ?? hosted).map(app.indicator(of:))
                 let title = titles[tab] ?? ""
                 TabItem(
-                    tab: tab, title: title, help: help(for: tab, title: title),
-                    entry: tab.sessionKey.flatMap(app.entry(for:)) ?? hosted,
+                    tab: tab, title: title, help: help(for: tab, title: title, indicator: indicator), indicator: indicator,
                     terminalExited: hosted == nil ? tab.ptyId.map { app.terminals.model($0)?.hasExited == true } : nil,
                     document: tab.editorPath.flatMap(app.editors.document(for:)),
                     isSelected: strip.preferredTab == tab, isHovered: interaction.hovered == tab, width: width,
@@ -331,9 +331,10 @@ private struct TabRow: View {
         interaction.release(width: width) { tab, index in app.moveTab(tab, to: index) }
     }
 
-    /// The tooltip: an editor's path; a terminal's folder and what runs in it now (its program at the prompt); else the
-    /// title.
-    private func help(for tab: TabKind, title: String) -> String {
+    /// The tooltip: a session's title and state ("Fix login — working, 2 subagents"); an editor's path; a terminal's
+    /// folder and what runs in it now (its program at the prompt); else the title.
+    private func help(for tab: TabKind, title: String, indicator: SessionIndicator?) -> String {
+        if let indicator { return "\(title) — \(indicator.words)" }
         guard case .terminal(let ptyId) = tab else { return tab.editorPath ?? title }
         let info = app.connection.terminals.info(ptyId)
         let fresh = interaction.hoveredTerminal.flatMap { $0.ptyId == ptyId ? $0 : nil }
@@ -776,8 +777,8 @@ private struct TabItem<Press: Gesture>: View {
     let tab: TabKind
     let title: String
     let help: String
-    /// The session, for a session tab.
-    let entry: SessionManifestEntry?
+    /// The state of the session the tab shows (or of the one running in its terminal).
+    let indicator: SessionIndicator?
     /// Whether the program ended, for a terminal tab.
     let terminalExited: Bool?
     /// The file an editor tab shows.
@@ -795,8 +796,8 @@ private struct TabItem<Press: Gesture>: View {
         HStack(spacing: 0) {
             Button(action: select) {
                 HStack(spacing: 6) {
-                    indicator
-                        .frame(width: 12)
+                    mark
+                        .frame(minWidth: 12)
                     Text(title)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -809,7 +810,8 @@ private struct TabItem<Press: Gesture>: View {
             .buttonStyle(.plain)
             .simultaneousGesture(press)
             .help(help)
-            .accessibilityLabel("Tab \(title)" + (document?.isDirty == true ? ", edited" : ""))
+            .accessibilityLabel(
+                "Tab \(title)" + (indicator.map { " — \($0.words)" } ?? "") + (document?.isDirty == true ? ", edited" : ""))
             .accessibilityAddTraits(isSelected ? .isSelected : [])
             Button(action: close) {
                 Image(systemName: "xmark")
@@ -832,8 +834,9 @@ private struct TabItem<Press: Gesture>: View {
         .overlay(alignment: .trailing) { Chrome.hairline.frame(width: 1) }
     }
 
+    /// The tab's kind or state: a terminal's symbol, an editor's (a dot while it has unsaved edits), a session's mark.
     @ViewBuilder
-    private var indicator: some View {
+    private var mark: some View {
         if let terminalExited {
             Image(systemName: "terminal")
                 .font(.system(size: 10))
@@ -846,12 +849,8 @@ private struct TabItem<Press: Gesture>: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
-        } else if let status = entry?.status {
-            if status.isInProgress {
-                ProgressView().controlSize(.mini)
-            } else {
-                StatusDot(color: status.dotColor, hollow: status == .closed)
-            }
+        } else if let indicator {
+            SessionMark(indicator: indicator)
         } else {
             StatusDot(color: .secondary, hollow: true)
         }

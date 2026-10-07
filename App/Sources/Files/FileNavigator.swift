@@ -249,8 +249,8 @@ private struct MenuTargetRing: View {
     }
 }
 
-/// The projects, this window's marked, each with what waits on the user in its sessions; a click brings a project's
-/// window forward.
+/// The projects, this window's marked, each with what its sessions do at a glance (`ProjectBadge`); a click brings a
+/// project's window forward.
 private struct ProjectsPane: View {
     let app: AppState
     let project: String
@@ -282,17 +282,7 @@ private struct ProjectsPane: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
-                    let waiting = app.attentionCount(in: candidate)
-                    if waiting > 0 {
-                        Text(waiting > 99 ? "99+" : String(waiting))
-                            .font(.system(size: 9, weight: .semibold))
-                            .monospacedDigit()
-                            .padding(.horizontal, 4)
-                            .frame(minWidth: 15, minHeight: 15)
-                            .background(.red, in: Capsule())
-                            .foregroundStyle(.white)
-                            .help(waiting == 1 ? "An approval or question waits for you" : "\(waiting) approvals or questions wait for you")
-                    }
+                    ProjectBadge(app: app, project: candidate)
                 }
                 .tag(candidate)
                 .listRowSeparator(.hidden)
@@ -309,6 +299,31 @@ private struct ProjectsPane: View {
                 Text("No Projects")
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+/// What a project's running sessions do, in the sessions' vocabulary (`SessionIndicator`): a red count of the approvals
+/// and questions waiting in them, else the lit ember dot while one works, else nothing. The tooltip names those
+/// sessions and what each does ("Fix login — working, 2 subagents").
+private struct ProjectBadge: View {
+    let app: AppState
+    let project: String
+
+    var body: some View {
+        let sessions = app.runningSessions(in: project).map { (title: app.sessionTitle($0.id), indicator: app.indicator(of: $0.entry)) }
+        let waiting = sessions.reduce(0) { $0 + $1.indicator.waitingCount }
+        let shown = sessions.filter { waiting > 0 ? $0.indicator.waitingCount > 0 : $0.indicator.isWorking }
+        let help = shown.map { "\($0.title) — \($0.indicator.words)" }.joined(separator: "\n")
+        if waiting > 0 {
+            CountBadge(count: waiting)
+                .help(help)
+                .accessibilityLabel(waiting == 1 ? "1 waiting for you" : "\(waiting) waiting for you")
+        } else if !shown.isEmpty {
+            WorkingDot()
+                .padding(.horizontal, 4)
+                .help(help)
+                .accessibilityLabel("Working")
         }
     }
 }
