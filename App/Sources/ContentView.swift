@@ -340,8 +340,9 @@ struct SessionMenu: View {
     }
 }
 
-/// Connection, outdated-ompd, daemon-notice and daemon-registration problems, failing state writes and crash reports,
-/// above the detail pane. Notices about disk space offer Free Up Space…, which opens Settings › Storage.
+/// Connection, outdated-ompd, daemon-wide notices and daemon-registration problems, failing state writes and crash
+/// reports, above the detail pane: what concerns the whole app, once per window. A notice about one session is that
+/// session's tab's (`SessionTabView`). Notices about disk space offer Free Up Space…, which opens Settings › Storage.
 struct StatusBanners: View {
     let app: AppState
     /// The window's project; empty for the window of no project.
@@ -367,7 +368,7 @@ struct StatusBanners: View {
                     }
                 }
             }
-            if let notice = connection.latestNotice, !shownBySessionBar(notice) {
+            if let notice = connection.latestNotice {
                 NoticeBar(
                     systemImage: notice.level == "info" ? "info.circle" : "exclamationmark.triangle",
                     tint: notice.level == "error" ? .red : notice.level == "warning" ? .orange : .blue,
@@ -376,7 +377,7 @@ struct StatusBanners: View {
                     if notice.topic == DaemonNotice.diskSpaceTopic {
                         Button("Free Up Space…", action: freeUpSpace)
                     }
-                    Button("Dismiss", action: connection.dismissNotices)
+                    Button("Dismiss") { connection.dismissNotices() }
                 }
             }
             if let failure = app.persistence.writeFailure {
@@ -457,12 +458,6 @@ struct StatusBanners: View {
         case .external(let home): "\(reason) Start ompd for OMPD_HOME=\(home) (`ompd run`) to reconnect."
         default: "\(reason) Lantern keeps trying, and your agents keep running."
         }
-    }
-
-    /// A notice about a session that needs attention: that session's own bar already shows it, with its actions.
-    private func shownBySessionBar(_ notice: DaemonNotice) -> Bool {
-        guard let key = notice.sessionKey else { return false }
-        return connection.sessions.first { $0.sessionKey == key }?.status == .needsAttention
     }
 
     private func freeUpSpace() {

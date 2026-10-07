@@ -5,17 +5,18 @@ import SwiftUI
 /// A session tab: omp's own TUI in a terminal emulator, following omp from PTY to PTY. While the TUI is not
 /// live, a bar under the last screen says why and offers Resume or Close Session; before the tab showed anything, a
 /// placeholder does. While it is live, a bar there asks whether the agents omp's last death interrupted should carry on
-/// (restore policy `ask`), and a quiet one offers to restart the session on a newer omp installed since it
-/// started.
+/// (restore policy `ask`), one shows what ompd warns about the session, and a quiet one offers to restart the session
+/// on a newer omp installed since it started. Out of ompd's reach the window's banner speaks for every tab: the last
+/// screen stays without a bar of its own.
 struct SessionTabView: View {
     let app: AppState
     let sessionKey: SessionKey
 
     var body: some View {
         if let session = app.connection.openSessions[sessionKey] {
+            let connected = app.connection.isConnected
             let notice = SessionNotice(
-                session: session, connected: app.connection.isConnected,
-                daemonMessage: app.connection.notices.last { $0.sessionKey == sessionKey }?.message)
+                session: session, connected: connected, daemonMessage: app.connection.latestNotice(about: sessionKey)?.message)
             VStack(spacing: 0) {
                 ZStack {
                     TerminalPane { app.terminals.emulator(for: session) }
@@ -23,7 +24,7 @@ struct SessionTabView: View {
                         SessionPlaceholder(notice: notice, perform: perform)
                     }
                 }
-                if session.hasScreen, let notice {
+                if session.hasScreen, connected, let notice {
                     NoticeBar(
                         systemImage: notice.systemImage, tint: notice.tint, title: notice.title, message: notice.message,
                         inProgress: notice.inProgress, rule: .top
@@ -32,12 +33,13 @@ struct SessionTabView: View {
                             Button(action.title) { perform(action) }
                         }
                     }
-                } else if notice == nil {
-                    if let interruption = session.entry?.pendingContinuation {
+                } else if notice == nil, let entry = session.entry {
+                    if let interruption = entry.pendingContinuation {
                         ContinuationBar(app: app, sessionKey: sessionKey, interruption: interruption)
                             .id(interruption.detectedAt)
                     }
-                    if let entry = session.entry, let installed = entry.ompUpgrade {
+                    SessionReportBar(app: app, entry: entry)
+                    if let installed = entry.ompUpgrade {
                         UpgradeBar(app: app, entry: entry, installed: installed)
                     }
                 }
@@ -87,9 +89,8 @@ struct SessionNotice {
     @MainActor
     init?(session: SessionTerminal, connected: Bool, daemonMessage: String?) {
         guard connected else {
-            self.init(
-                "Offline", "ompd is not reachable; the tab reconnects by itself. omp keeps running.", "bolt.horizontal.circle",
-                .orange, inProgress: true)
+            // The window's banner says why and what to do; this only stands in for the screen the tab has not shown yet.
+            self.init("Waiting for ompd", "", "bolt.horizontal.circle", .orange, inProgress: true)
             return
         }
         guard let entry = session.entry else {
@@ -265,6 +266,26 @@ private struct UpgradeBar: View {
             .help(entry.status == .idle
                 ? "Stops omp and resumes this conversation on omp \(installed)."
                 : "Available once the agent is idle.")
+        }
+    }
+}
+
+/// The newest warning or error ompd sent about the session since its omp started (`DaemonNotice`), with Dismiss: a
+/// notice about one session shows on its tab and nowhere else. What ompd sends as info only narrates what the
+/// session's mark and bars show already (resuming, exited), and what came before the omp running now is over.
+struct SessionReportBar: View {
+    let app: AppState
+    let entry: SessionManifestEntry
+
+    var body: some View {
+        let since = entry.spawnedAt ?? .distantPast
+        if let report = app.connection.notices.last(where: { $0.sessionKey == entry.sessionKey && $0.level != "info" && $0.at >= since }) {
+            NoticeBar(
+                systemImage: report.level == "error" ? "exclamationmark.octagon" : "exclamationmark.triangle",
+                tint: report.level == "error" ? .red : .orange, title: "", message: report.message, rule: .top
+            ) {
+                Button("Dismiss") { app.connection.dismissNotices(about: entry.sessionKey) }
+            }
         }
     }
 }

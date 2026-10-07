@@ -4,7 +4,8 @@ import IDEState
 import SwiftUI
 
 /// A terminal tab: the emulator filling the detail area, and a bar with Restart once its program ended. Close
-/// Terminal (which ends the PTY) lives in the tab's menu and the Session menu.
+/// Terminal (which ends the PTY) lives in the tab's menu and the Session menu. A terminal running an adopted session
+/// shows what ompd warns about that session, as the session's own tab would.
 struct TerminalDetailView: View {
     let app: AppState
     let ptyId: PTYID
@@ -19,6 +20,9 @@ struct TerminalDetailView: View {
                     }
                 }
                 TerminalPane { app.terminals.emulator(for: ptyId) }
+                if let hosted = app.adoptedSession(on: ptyId) {
+                    SessionReportBar(app: app, entry: hosted)
+                }
                 if model.hasExited {
                     NoticeBar(systemImage: "stop.circle", tint: .secondary, title: "The program exited", rule: .top) {
                         Button("Restart") { app.restartTerminal(ptyId) }

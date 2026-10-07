@@ -90,9 +90,13 @@ struct DaemonConnectionTests {
         server.broadcast(.notice(readOnly))
         server.broadcast(.notice(slow))
         try await eventually("notices") { connection.notices == [readOnly, slow] }
-        #expect(connection.latestNotice == slow)
+        #expect(connection.latestNotice == readOnly, "the window's banner: a notice about a session is its tab's")
+        #expect(connection.latestNotice(about: "s1") == slow)
         connection.dismissNotices()
         #expect(connection.latestNotice == nil)
+        #expect(connection.notices == [slow], "dismissing the banner leaves the sessions' notices")
+        connection.dismissNotices(about: "s1")
+        #expect(connection.notices.isEmpty)
 
         server.broadcast(.notice(readOnly))
         try await eventually("notice") { connection.latestNotice == readOnly }

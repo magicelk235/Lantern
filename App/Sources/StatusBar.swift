@@ -3,9 +3,9 @@ import IDEModel
 import IDEState
 import SwiftUI
 
-/// The line under the detail area: the workspace on screen, the link to ompd when it is not up, and the state of the
-/// tab on screen (a session's status, a terminal's, the editor's problems, caret and language). The only place these
-/// live.
+/// The line under the detail area: the workspace on screen, "Connecting to ompd" while the app connects, and the state
+/// of the tab on screen (a session's status, a terminal's, the editor's problems, caret and language). An ompd out of
+/// reach or out of date is the window's banner, and the tabs it leaves without a state say Offline.
 struct StatusBar: View {
     let app: AppState
     /// The window's project; empty for the window of no project.
@@ -49,26 +49,14 @@ struct StatusBar: View {
         return "/" + components.dropFirst().joined(separator: "/")
     }
 
+    /// While the app connects; once an attempt failed, the window's banner says why (`StatusBanners`, `OutdatedDaemonBar`).
     @ViewBuilder
     private var connection: some View {
-        switch app.connection.status {
-        case .connecting:
+        if case .connecting = app.connection.status {
             HStack(spacing: 5) {
                 ProgressView().controlSize(.mini)
                 Text("Connecting to ompd")
             }
-        case .daemonUnavailable:
-            HStack(spacing: 5) {
-                StatusDot(color: .orange)
-                Text("ompd unavailable")
-            }
-        case .versionMismatch:
-            HStack(spacing: 5) {
-                StatusDot(color: .orange)
-                Text("ompd out of date")
-            }
-        case .connected:
-            EmptyView()
         }
     }
 }

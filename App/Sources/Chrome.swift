@@ -44,7 +44,7 @@ enum Chrome {
 
 /// One line about a tab or the app, and what the user can do about it: why a session's TUI is not on screen, that a
 /// terminal's program ended, that a file changed on disk, that ompd is out of reach. Title and message run in one
-/// line; the actions sit at the trailing edge.
+/// line; a notice in one sentence has no title, its sentence in the primary color. The actions sit at the trailing edge.
 struct NoticeBar<Actions: View>: View {
     let systemImage: String
     let tint: Color
@@ -80,6 +80,7 @@ struct NoticeBar<Actions: View>: View {
     }
 
     private var text: Text {
+        guard !title.isEmpty else { return Text(message) }
         let title = Text(title).fontWeight(.medium)
         guard !message.isEmpty else { return title }
         return title + Text("  ") + Text(message).foregroundStyle(.secondary)

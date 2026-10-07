@@ -48,7 +48,7 @@ public final class DaemonConnection: TerminalBackend {
     /// Sessions shown in a tab, each following its omp TUI from PTY to PTY.
     public private(set) var openSessions: [SessionKey: SessionTerminal] = [:]
     /// Out-of-band notices from the running ompd (`ServerFrame.notice`, e.g. read-only mode), oldest first. At most
-    /// `noticeLimit`; cleared when the app connects to a different ompd process or by `dismissNotices()`.
+    /// `noticeLimit`; cleared when the app connects to a different ompd process or by `dismissNotices(about:)`.
     public private(set) var notices: [DaemonNotice] = []
     public nonisolated static let noticeLimit = 50
     /// ompd's PTYs: the terminals, and the PTYs the session TUIs run on.
@@ -86,11 +86,17 @@ public final class DaemonConnection: TerminalBackend {
     /// Sessions grouped by workspace folder.
     public var workspaces: [WorkspaceGroup] { WorkspaceGroup.group(sessions) }
 
-    /// The newest notice, for the connection banner.
-    public var latestNotice: DaemonNotice? { notices.last }
+    /// The newest daemon-wide notice, for the window's banner: a notice about a session is its tab's.
+    public var latestNotice: DaemonNotice? { notices.last { $0.sessionKey == nil } }
 
-    public func dismissNotices() {
-        notices = []
+    /// The newest notice about `sessionKey`.
+    public func latestNotice(about sessionKey: SessionKey) -> DaemonNotice? {
+        notices.last { $0.sessionKey == sessionKey }
+    }
+
+    /// Clears the daemon-wide notices, or those about `sessionKey`.
+    public func dismissNotices(about sessionKey: SessionKey? = nil) {
+        notices.removeAll { $0.sessionKey == sessionKey }
     }
 
     /// Starts connecting (idempotent). Keeps reconnecting until `stop()`.
