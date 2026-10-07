@@ -13,7 +13,10 @@ struct TerminalDetailView: View {
         if let model = app.terminals.model(ptyId) {
             VStack(spacing: 0) {
                 if case .failed(let message) = model.phase {
-                    NoticeBar(systemImage: "exclamationmark.triangle", tint: .orange, title: "ompd could not attach this terminal", message: message)
+                    NoticeBar(systemImage: "exclamationmark.triangle", tint: .orange, title: "ompd could not attach this terminal", message: message) {
+                        Button("Close Tab") { app.closeTab(.terminal(ptyId)) }
+                            .help("Close this tab; New Terminal (⌃`) opens another")
+                    }
                 }
                 TerminalPane { app.terminals.emulator(for: ptyId) }
                 if model.hasExited {
@@ -24,9 +27,15 @@ struct TerminalDetailView: View {
                 }
             }
         } else {
-            ContentUnavailableView("Terminal Closed", systemImage: "terminal", description: Text("ompd no longer has this terminal."))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Chrome.canvas)
+            ContentUnavailableView {
+                Label("Terminal Closed", systemImage: "terminal")
+            } description: {
+                Text("ompd no longer has this terminal.")
+            } actions: {
+                Button("Close Tab") { app.closeTab(.terminal(ptyId)) }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Chrome.canvas)
         }
     }
 }

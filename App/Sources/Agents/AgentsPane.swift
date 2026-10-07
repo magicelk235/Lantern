@@ -26,6 +26,7 @@ struct AgentsPane: View {
         VStack(spacing: 0) {
             if let failure = services.failure {
                 NoticeBar(systemImage: "exclamationmark.triangle", tint: .red, title: "Could not list the named services", message: failure) {
+                    Button("Try Again") { services.load(project, from: app.connection) }
                     Button("Dismiss") { services.failure = nil }
                 }
                 .help(failure)

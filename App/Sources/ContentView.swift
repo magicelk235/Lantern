@@ -358,7 +358,7 @@ struct StatusBanners: View {
             if case .daemonUnavailable(let reason) = connection.status, app.outdatedDaemon.phase != .restarting {
                 NoticeBar(
                     systemImage: "bolt.horizontal.circle", tint: .orange, title: "ompd is not reachable",
-                    message: agent.isRepairing ? "Registering ompd with launchd again." : "\(reason) Retrying; running agents are not affected.",
+                    message: agent.isRepairing ? "Registering ompd with launchd again." : unreachable(reason),
                     inProgress: agent.isRepairing
                 ) {
                     if agent.state == .enabled {
@@ -382,7 +382,10 @@ struct StatusBanners: View {
             if let failure = app.persistence.writeFailure {
                 NoticeBar(
                     systemImage: "exclamationmark.triangle", tint: .orange, title: "Unsaved edits may not survive a crash",
-                    message: "Lantern could not save its state: \(failure.reason)"
+                    message: failure.outOfSpace
+                        ? "The disk is full, so Lantern could not save its state. Free up space to keep them."
+                        : "Lantern could not save its state: \(failure.reason.trimmingCharacters(in: CharacterSet(charactersIn: ". "))). "
+                            + "It tries again with each change; quit and reopen Lantern if this stays."
                 ) {
                     if failure.outOfSpace {
                         Button("Free Up Space…", action: freeUpSpace)
@@ -423,13 +426,16 @@ struct StatusBanners: View {
                     Button("Open Login Items", action: agent.openLoginItemsSettings)
                 }
             case .failed(let message):
-                NoticeBar(systemImage: "exclamationmark.triangle", tint: .red, title: "Could not register ompd", message: message) {
+                NoticeBar(
+                    systemImage: "exclamationmark.triangle", tint: .red, title: "Could not register ompd",
+                    message: "\(message) Allow Lantern in Login Items, then reopen Lantern."
+                ) {
                     Button("Open Login Items", action: agent.openLoginItemsSettings)
                 }
             case .notRegistered:
                 NoticeBar(
                     systemImage: "exclamationmark.triangle", tint: .orange, title: "ompd is not registered",
-                    message: "The background daemon is not set up to run."
+                    message: "Register it to keep your agents running in the background."
                 ) {
                     Button("Register", action: agent.registerIfNeeded)
                 }
@@ -440,6 +446,16 @@ struct StatusBanners: View {
             case .unknown, .external, .enabled:
                 EmptyView()
             }
+        }
+    }
+
+    /// Why ompd is out of reach and what comes next: Lantern keeps trying; the user can restart the ompd it registered,
+    /// or start the developer's own.
+    private func unreachable(_ reason: String) -> String {
+        switch agent.state {
+        case .enabled: "\(reason) Lantern keeps trying and your agents keep running; Restart ompd if this lasts."
+        case .external(let home): "\(reason) Start ompd for OMPD_HOME=\(home) (`ompd run`) to reconnect."
+        default: "\(reason) Lantern keeps trying, and your agents keep running."
         }
     }
 

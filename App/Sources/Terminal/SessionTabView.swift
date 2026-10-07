@@ -93,7 +93,9 @@ struct SessionNotice {
             return
         }
         guard let entry = session.entry else {
-            self.init("Unknown Session", "ompd does not list this session.", "questionmark.circle", .secondary, actions: [.closeTab])
+            self.init(
+                "Unknown Session", "ompd does not list this session. Close the tab; Open Session… (⇧⌘O) can resume it from its file.",
+                "questionmark.circle", .secondary, actions: [.closeTab])
             return
         }
         guard !session.isLive else { return nil }
@@ -113,12 +115,15 @@ struct SessionNotice {
             if entry.canLocateFolder {
                 // Resume would fail the same way; the session resumes in the folder the user points at.
                 self.init(
-                    "omp Could Not Be Resumed", daemonMessage ?? "Its folder \(entry.workspace) no longer exists.",
+                    "omp Could Not Be Resumed",
+                    (daemonMessage ?? "Its folder \(entry.workspace) no longer exists.") + " Locate Folder… resumes it where the folder is now.",
                     "exclamationmark.octagon", .red, actions: [.locateFolder, .forget])
                 return
             }
             self.init(
-                "omp Could Not Be Resumed", daemonMessage ?? "It stopped again right after every restart.",
+                "omp Could Not Be Resumed",
+                (daemonMessage ?? "It stopped again right after every restart.")
+                    + (entry.isResumable ? " Resume tries once more." : " Remove it from the list; its file stays on disk."),
                 "exclamationmark.octagon", .red, actions: entry.isResumable ? [.resume, .forget] : [.forget])
         case .resuming:
             self.init("Resuming…", "ompd is starting omp again with this conversation.", "arrow.clockwise", .secondary, inProgress: true)
@@ -247,7 +252,7 @@ private struct UpgradeBar: View {
     var body: some View {
         NoticeBar(
             systemImage: "arrow.up.circle", tint: .secondary, title: "omp \(installed) is installed",
-            message: "This session runs \(entry.launch.ompVersion).", inProgress: restarting, rule: .top
+            message: "This session runs \(entry.launch.ompVersion); Restart Session moves it to the new one.", inProgress: restarting, rule: .top
         ) {
             Button("Restart Session") {
                 restarting = true
