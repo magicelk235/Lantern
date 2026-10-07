@@ -46,6 +46,8 @@ struct SessionPicker: View {
             .padding(16)
         }
         .frame(width: 560, height: 460)
+        // The bars on the window's surface around the list on the canvas, as in the window; never the sheet's white.
+        .background(Chrome.surface)
         .task(id: project) { await load() }
         .onChange(of: query) { keepSelection(in: sessions?.filter { $0.matches(query) } ?? []) }
         .onAppear { searchFocused = true }

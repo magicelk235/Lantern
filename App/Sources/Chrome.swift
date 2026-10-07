@@ -29,14 +29,10 @@ enum Chrome {
     static let yellow = Color(nsColor: dynamic(light: 0xA88603, dark: .systemYellow))
     static let orange = Color(nsColor: dynamic(light: 0xD36E00, dark: .systemOrange))
 
-    /// Git marks in the Files pane: a file (or a folder holding one) new to the repository, or changed.
-    /// The system green and yellow in dark mode; darker in light mode, where those two fail against white.
-    static let gitAdded = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .systemGreen : NSColor(red: 0.12, green: 0.5, blue: 0.2, alpha: 1)
-    })
-    static let gitModified = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .systemYellow : NSColor(red: 0.62, green: 0.45, blue: 0, alpha: 1)
-    })
+    /// Git marks in the Files pane: a file (or a folder holding one) new to the repository, or changed. The system
+    /// green and yellow in dark mode; darker in light mode, where text in those two needs 4.5:1 on the surface.
+    static let gitAdded = Color(nsColor: dynamic(light: 0x1F8033, dark: .systemGreen))
+    static let gitModified = Color(nsColor: dynamic(light: 0x906901, dark: .systemYellow))
 
     /// One sRGB color (`0xRRGGBB`) for light mode and one for dark mode.
     private static func dynamic(light: Int, dark: Int) -> NSColor {
