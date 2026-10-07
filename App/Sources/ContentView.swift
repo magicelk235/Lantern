@@ -178,9 +178,15 @@ extension AppState.CloseRequest {
         return sessions.count == 1 ? " You can resume it later from Open Session…" : " You can resume them later from Open Session…"
     }
 
-    /// A session's title in quotes, cut short: an untitled session goes by its whole first prompt line.
-    private static func quoted(_ title: String) -> String {
-        "“\(title.count > 60 ? title.prefix(59).trimmingCharacters(in: .whitespaces) + "…" : title)”"
+    /// A session's title in quotes, cut short at a word near 40 characters so that "Close “…”?" keeps to two lines in
+    /// the alert: an untitled session goes by its whole first prompt line.
+    static func quoted(_ title: String, limit: Int = 40) -> String {
+        guard title.count > limit else { return "“\(title)”" }
+        var cut = title.prefix(limit - 1)
+        if let space = cut.lastIndex(where: \.isWhitespace), cut.distance(from: cut.startIndex, to: space) >= limit * 2 / 3 {
+            cut = cut[..<space]
+        }
+        return "“\(cut.trimmingCharacters(in: .whitespaces.union(.punctuationCharacters)))…”"
     }
 }
 
