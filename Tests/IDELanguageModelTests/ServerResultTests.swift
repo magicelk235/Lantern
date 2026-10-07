@@ -15,6 +15,17 @@ import Testing
         ])
     }
 
+    @Test func headingsLoseTheirMarks() {
+        let hover = Hover(
+            contents: .optionC(MarkupContent(
+                kind: .markdown,
+                value: "## Multiple results\n\n```swift\nstruct Greeter\n```\n# Title ##\n#hashtag\n####### seven\n")),
+            range: nil)
+        #expect(HoverBlock.blocks(of: hover) == [
+            .heading("Multiple results"), .code("struct Greeter"), .heading("Title"), .markdown("#hashtag\n####### seven"),
+        ])
+    }
+
     @Test func plainTextAndMarkedStringsKeepTheirKinds() {
         #expect(HoverBlock.blocks(of: Hover(contents: .optionC(MarkupContent(kind: .plaintext, value: "a *b*\n")), range: nil)) == [.plain("a *b*")])
         let marked = Hover(

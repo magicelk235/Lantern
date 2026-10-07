@@ -128,8 +128,8 @@ final class LanguageHover: NSResponder {
 }
 
 /// The hover popover's content: the diagnostics at the character (severity icon and message), a hairline, then the
-/// server's text — code in the editor's font, documentation as inline markdown, rules as hairlines. Taller content
-/// scrolls.
+/// server's text — code in the editor's font, documentation as inline markdown, headings in bold, rules as hairlines.
+/// Taller content scrolls.
 struct LanguageHoverView: View {
     let diagnostics: [EditorDiagnostic]
     let blocks: [HoverBlock]
@@ -162,6 +162,8 @@ struct LanguageHoverView: View {
                         Text(code).font(Font(codeFont))
                     case .markdown(let markdown):
                         Text(Self.inline(markdown))
+                    case .heading(let heading):
+                        Text(Self.inline(heading)).font(.system(size: 13, weight: .semibold))
                     case .plain(let text):
                         Text(text)
                     case .rule:

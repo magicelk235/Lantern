@@ -5,8 +5,10 @@ import LanguageServerProtocol
 
 /// A piece of what a server shows on hover (`textDocument/hover`), as the editor's popover lays it out.
 public enum HoverBlock: Sendable, Hashable {
-    /// Markdown text (inline formatting only; the popover does not lay out lists or headings).
+    /// Markdown text (inline formatting only; the popover does not lay out lists).
     case markdown(String)
+    /// A heading (`## Multiple results`), its text as inline markdown without the marks.
+    case heading(String)
     /// Text shown as is.
     case plain(String)
     /// Code, in the editor's font.
@@ -14,8 +16,8 @@ public enum HoverBlock: Sendable, Hashable {
     /// A horizontal rule (`---`), which servers put between a declaration and its documentation.
     case rule
 
-    /// The hover's contents split into blocks: fenced code blocks and rules out of markdown, the language/value pairs
-    /// of the older `MarkedString` form as code. Whitespace-only blocks are dropped.
+    /// The hover's contents split into blocks: fenced code blocks, headings and rules out of markdown, the
+    /// language/value pairs of the older `MarkedString` form as code. Whitespace-only blocks are dropped.
     public static func blocks(of hover: Hover) -> [HoverBlock] {
         switch hover.contents {
         case .optionA(let marked):
@@ -44,7 +46,7 @@ public enum HoverBlock: Sendable, Hashable {
         return text.trimmingCharacters(in: .whitespaces).isEmpty ? [] : [.code(text)]
     }
 
-    /// Splits markdown at fenced code blocks (``` or ~~~) and at rule lines.
+    /// Splits markdown at fenced code blocks (``` or ~~~), at headings and at rule lines.
     private static func markdownBlocks(_ markdown: String) -> [HoverBlock] {
         var blocks: [HoverBlock] = []
         var text: [Substring] = []
@@ -70,6 +72,9 @@ public enum HoverBlock: Sendable, Hashable {
             } else if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
                 flushText()
                 fence = trimmed.prefix { $0 == trimmed.first }
+            } else if let title = heading(trimmed) {
+                flushText()
+                if !title.isEmpty { blocks.append(.heading(title)) }
             } else if isRule(trimmed) {
                 flushText()
                 blocks.append(.rule)
@@ -80,6 +85,24 @@ public enum HoverBlock: Sendable, Hashable {
         if fence != nil { blocks += code(codeLines.joined(separator: "\n")) }
         flushText()
         return blocks
+    }
+
+    /// The text of an ATX heading line (one to six `#`, then a space or nothing), without its closing `#`s.
+    private static func heading(_ line: Substring) -> String? {
+        let marks = line.prefix { $0 == "#" }
+        guard (1...6).contains(marks.count) else { return nil }
+        let rest = line.dropFirst(marks.count)
+        guard rest.isEmpty || rest.first == " " || rest.first == "\t" else { return nil }
+        var title = rest.trimmingCharacters(in: .whitespaces)
+        // A closing sequence counts when spaces stand before it: `## Title ##`.
+        let closing = title.reversed().prefix { $0 == "#" }.count
+        if closing > 0 {
+            let before = title.dropLast(closing)
+            if before.isEmpty || before.last == " " || before.last == "\t" {
+                title = before.trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return title
     }
 
     /// Three or more of the same `-`, `*` or `_`, nothing else but spaces.
