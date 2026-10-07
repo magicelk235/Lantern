@@ -12,10 +12,11 @@ enum SidebarPane: String, CaseIterable {
 
     static let defaultsKey = "sidebarPane"
 
+    /// The rail's label under the symbol, its tooltip and its accessibility label.
     var title: String {
         switch self {
         case .files: "Files"
-        case .changes: "Source Control"
+        case .changes: "Changes"
         case .agents: "Agents"
         case .projects: "Projects"
         }
@@ -23,10 +24,10 @@ enum SidebarPane: String, CaseIterable {
 
     var symbol: String {
         switch self {
-        case .files: "list.bullet.indent"
-        case .changes: "point.3.connected.trianglepath.dotted"
+        case .files: "folder"
+        case .changes: "arrow.triangle.branch"
         case .agents: "person.2"
-        case .projects: "square.stack.3d.up"
+        case .projects: "rectangle.stack"
         }
     }
 

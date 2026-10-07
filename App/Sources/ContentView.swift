@@ -184,19 +184,18 @@ extension AppState.CloseRequest {
     }
 }
 
-/// The column of icons at the window's left edge: Files, Changes (badged with the count of changed files), Agents
+/// The column at the window's left edge: Files, Changes (badged in the accent with the count of changed files), Agents
 /// (badged in red with the approvals and questions waiting in the project's sessions) and Projects (badged in red with
-/// those waiting in the other projects). A click shows the pane; a click on the pane already showing hides the
-/// sidebar. Its own look, not an activity bar copied from elsewhere: 16pt outline symbols, the current one on a filled
-/// rounded square.
+/// those waiting in the other projects), each its symbol with its name under it, the current one in the accent. A
+/// click shows the pane; a click on the pane already showing hides the sidebar.
 struct ActivityBar: View {
     let app: AppState
     let project: String
 
-    static let width: CGFloat = 44
+    static let width: CGFloat = 60
 
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 2) {
             ForEach(SidebarPane.allCases, id: \.self) { pane in
                 ActivityButton(
                     pane: pane, isCurrent: app.sidebarVisible && app.pane == pane, badge: badge(of: pane),
@@ -241,28 +240,30 @@ private struct ActivityButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: pane.symbol)
-                .font(.system(size: 15, weight: .medium))
-                .frame(width: 32, height: 32)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(isCurrent ? Color.primary.opacity(0.12) : hovering ? Color.primary.opacity(0.06) : .clear))
-                .contentShape(Rectangle())
-                .overlay(alignment: .bottomTrailing) {
-                    if badge > 0 {
-                        Text(badge > 99 ? "99+" : String(badge))
-                            .font(.system(size: 9, weight: .semibold))
-                            .monospacedDigit()
-                            .padding(.horizontal, 4)
-                            .frame(minWidth: 15, minHeight: 15)
-                            .background(badgeTint, in: Capsule())
-                            .foregroundStyle(.white)
-                            .offset(x: 2, y: 2)
+            VStack(spacing: 3) {
+                Image(systemName: pane.symbol)
+                    .font(.system(size: 16))
+                    .frame(width: 28, height: 22)
+                    .overlay(alignment: .topTrailing) {
+                        if badge > 0 {
+                            CountBadge(count: badge, tint: badgeTint)
+                                .fixedSize()
+                                .offset(x: 9, y: -5)
+                        }
                     }
-                }
+                Text(pane.title)
+                    .font(.system(size: 10, weight: .medium))
+                    .lineLimit(1)
+            }
+            .frame(width: 54, height: 46)
+            // The current pane is told by its accent alone: a fill under its name would take its contrast below 4.5:1.
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(hovering && !isCurrent ? Color.primary.opacity(0.06) : .clear))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isCurrent ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+        .foregroundStyle(isCurrent ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
         .onHover { hovering = $0 }
         .help("\(pane.title) (\(pane.shortcut))")
         .accessibilityLabel(pane.title)
