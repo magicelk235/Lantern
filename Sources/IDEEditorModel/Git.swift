@@ -4,7 +4,8 @@ import Foundation
 /// through Foundation's handlers while the calling task is suspended. (A run that held a thread of Swift's cooperative
 /// pool until git was done starved the pool once a window restored more editor tabs than the Mac has cores, each tab
 /// reading HEAD, and every task in the app stalled with it, the connection to ompd among them.) Git never prompts
-/// (`GIT_TERMINAL_PROMPT=0`) and never takes the optional index lock a read would.
+/// (`GIT_TERMINAL_PROMPT=0`), never opens an editor (a rebase that continues keeps each commit's message), never takes
+/// the optional index lock a read would, and speaks English, which `GitProblem` reads.
 public enum Git {
     /// git exited with a nonzero status: `stderr` says why.
     public struct Failure: Error, CustomStringConvertible {
@@ -36,7 +37,11 @@ public enum Git {
         process.currentDirectoryURL = URL(filePath: directory, directoryHint: .isDirectory)
         var environment = ProcessInfo.processInfo.environment
         environment["GIT_TERMINAL_PROMPT"] = "0"
+        environment["GIT_EDITOR"] = "true"
         environment["GIT_OPTIONAL_LOCKS"] = "0"
+        environment["LC_ALL"] = nil
+        environment["LANGUAGE"] = nil
+        environment["LC_MESSAGES"] = "C"
         process.environment = environment
         let stdout = Pipe()
         let stderr = Pipe()
