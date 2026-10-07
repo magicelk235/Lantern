@@ -27,7 +27,7 @@ enum SidebarPane: String, CaseIterable {
         case .files: "folder"
         case .changes: "arrow.triangle.branch"
         case .agents: "person.2"
-        case .projects: "rectangle.stack"
+        case .projects: "square.stack.3d.up"
         }
     }
 
@@ -143,6 +143,8 @@ struct MenuChevron: View {
         Image(systemName: "chevron.down")
             .font(.system(size: 9, weight: .bold))
             .foregroundStyle(.secondary)
+            // The menu it marks says what it is.
+            .accessibilityHidden(true)
     }
 }
 
@@ -250,8 +252,8 @@ private struct MenuTargetRing: View {
     }
 }
 
-/// The projects, this window's marked, each with what its sessions do at a glance (`ProjectBadge`); a click brings a
-/// project's window forward.
+/// The projects, this window's marked, each with what its sessions do at a glance (`ProjectBadge`); a click focuses a
+/// project, bringing its window forward on Files.
 private struct ProjectsPane: View {
     let app: AppState
     let project: String
@@ -269,25 +271,32 @@ private struct ProjectsPane: View {
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .help("Add a project folder (⌘O)")
+            .accessibilityLabel("Add Project")
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 6)
         Divider()
-        List(selection: Binding(get: { project.isEmpty ? nil : project }, set: { if let chosen = $0 { app.showProject(chosen) } })) {
+        List(selection: Binding(get: { project.isEmpty ? nil : project }, set: { if let chosen = $0 { focus(chosen) } })) {
             ForEach(app.projects, id: \.self) { candidate in
+                let activity = ProjectActivity(app: app, project: candidate)
                 HStack(spacing: 8) {
                     Image(systemName: "folder")
                         .foregroundStyle(.secondary)
                     Text(AppState.projectName(candidate))
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .help(candidate)
                     Spacer(minLength: 4)
-                    ProjectBadge(app: app, project: candidate)
+                    ProjectBadge(activity: activity)
                 }
+                // One element for VoiceOver: the name, what its sessions do, and which they are.
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(AppState.projectName(candidate))
+                .accessibilityValue(activity.words ?? "")
+                .accessibilityHint(activity.help ?? candidate)
                 .tag(candidate)
                 .listRowSeparator(.hidden)
-                .help(candidate)
                 .contextMenu { ProjectMenu(app: app, project: candidate) }
             }
         }
@@ -302,29 +311,56 @@ private struct ProjectsPane: View {
             }
         }
     }
+
+    /// A click on a project: its window comes forward showing its files. The pane is every window's, so this
+    /// window's list goes too, and no row stays highlighted in it for a project it does not show.
+    private func focus(_ chosen: String) {
+        app.showPane(.files)
+        app.showProject(chosen)
+    }
 }
 
-/// What a project's running sessions do, in the sessions' vocabulary (`SessionIndicator`): a red count of the approvals
-/// and questions waiting in them, else the lit ember dot while one works, else nothing. The tooltip names those
-/// sessions and what each does ("Fix login — working, 2 subagents").
-private struct ProjectBadge: View {
-    let app: AppState
-    let project: String
+/// What a project's running sessions do, in the sessions' vocabulary (`SessionIndicator`): the approvals and questions
+/// waiting in them, else whether one works; and which sessions those are, with what each does ("Fix login — working,
+/// 2 subagents").
+@MainActor
+private struct ProjectActivity {
+    /// Approvals and questions waiting in the project's sessions.
+    let waiting: Int
+    /// One of its sessions works (and none waits on the user).
+    let isWorking: Bool
+    /// The sessions behind the badge, one per line; nil without a badge.
+    let help: String?
 
-    var body: some View {
+    init(app: AppState, project: String) {
         let sessions = app.runningSessions(in: project).map { (title: app.sessionTitle($0.id), indicator: app.indicator(of: $0.entry)) }
         let waiting = sessions.reduce(0) { $0 + $1.indicator.waitingCount }
         let shown = sessions.filter { waiting > 0 ? $0.indicator.waitingCount > 0 : $0.indicator.isWorking }
-        let help = shown.map { "\($0.title) — \($0.indicator.words)" }.joined(separator: "\n")
-        if waiting > 0 {
-            CountBadge(count: waiting)
-                .help(help)
-                .accessibilityLabel(waiting == 1 ? "1 waiting for you" : "\(waiting) waiting for you")
-        } else if !shown.isEmpty {
+        self.waiting = waiting
+        isWorking = waiting == 0 && !shown.isEmpty
+        help = shown.isEmpty ? nil : shown.map { "\($0.title) — \($0.indicator.words)" }.joined(separator: "\n")
+    }
+
+    /// The badge in words.
+    var words: String? {
+        if waiting > 0 { return waiting == 1 ? "1 waiting for you" : "\(waiting) waiting for you" }
+        return isWorking ? "working" : nil
+    }
+}
+
+/// A project's activity at a row's end: a red count of what waits on the user, else the lit ember dot while one of its
+/// sessions works, else nothing. The tooltip names those sessions and what each does.
+private struct ProjectBadge: View {
+    let activity: ProjectActivity
+
+    var body: some View {
+        if activity.waiting > 0 {
+            CountBadge(count: activity.waiting)
+                .help(activity.help ?? "")
+        } else if activity.isWorking {
             WorkingDot()
                 .padding(.horizontal, 4)
-                .help(help)
-                .accessibilityLabel("Working")
+                .help(activity.help ?? "")
         }
     }
 }
@@ -493,7 +529,17 @@ private struct FileRow: View {
         .background(FileRowMarker(path: path))
         .opacity(isIgnored ? 0.5 : 1)
         .help(path)
-        .accessibilityLabel(name + (isDirty ? ", edited" : ""))
+        // One element for VoiceOver: the name, then what git says and whether it has unsaved edits. A folder is a row
+        // of the outline, not a heading.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(name)
+        .accessibilityValue(accessibilityState)
+        .accessibilityRemoveTraits(.isHeader)
+    }
+
+    private var accessibilityState: String {
+        let git = mark.map { isDirectory ? "changes inside" : $0.word }
+        return [git, isDirty ? "edited" : nil].compactMap(\.self).joined(separator: ", ")
     }
 
     private var symbol: String { FileSymbol.name(for: name, isDirectory: isDirectory) }
@@ -534,6 +580,15 @@ struct GitMarks {
             case .untracked: "U"
             case .added: "A"
             case .modified: "M"
+            }
+        }
+
+        /// The letter in words, for VoiceOver.
+        var word: String {
+            switch self {
+            case .untracked: "untracked"
+            case .added: "added"
+            case .modified: "modified"
             }
         }
 
