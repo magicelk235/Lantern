@@ -331,10 +331,12 @@ final class EditorDocument {
     private func makeController(text: String, savedUI: EditorUIState?) {
         tearDownController()
         let length = (text as NSString).length
-        let selections = (savedUI?.selections ?? []).compactMap { selection -> CursorPosition? in
+        let restored = (savedUI?.selections ?? []).compactMap { selection -> CursorPosition? in
             let location = min(max(0, selection.location), length)
             return CursorPosition(range: NSRange(location: location, length: min(max(0, selection.length), length - location)))
         }
+        // A file opened for the first time starts with the caret at its top, as in Xcode.
+        let selections = restored.isEmpty ? [CursorPosition(range: NSRange(location: 0, length: 0))] : restored
         language = CodeLanguage.detectLanguageFrom(url: URL(filePath: path), prefixBuffer: String(text.prefix(512)))
         indent = EditorStyle.indent(of: text)
         let coordinator = Coordinator(document: self)
@@ -639,6 +641,12 @@ final class EditorDocument {
         // Its view loaded, and with it the controller's key monitor: the app's go ahead of it again.
         LocalEventMonitors.moveToFront()
         gitGutter?.attach(to: controller)
+        // The controller places the first selection before it listens for selection changes, so the status bar would
+        // show no line and column until the caret moves.
+        if caret == nil, let offset = controller.textView.selectionManager.textSelections.first?.range.location,
+           let line = controller.textView.layoutManager.textLineForOffset(offset) {
+            caret = CursorPosition.Position(line: line.index + 1, column: offset - line.range.location + 1)
+        }
         if resizeObserver == nil {
             resizeObserver = NotificationCenter.default.addObserver(
                 forName: NSView.frameDidChangeNotification, object: controller.scrollView.contentView, queue: .main
