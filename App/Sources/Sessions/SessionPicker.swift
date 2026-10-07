@@ -139,9 +139,9 @@ private struct SessionPickerRow: View {
             Spacer(minLength: 12)
             Group {
                 if isOpen {
-                    badge("Open", dot: .green)
+                    badge("Open") { StatusDot(color: Chrome.green) }
                 } else if let word = session.status.word {
-                    badge(word, dot: session.status.dotColor, hollow: session.status == .aborted)
+                    badge(word) { session.status.mark }
                 }
                 Text(session.modified, format: .relative(presentation: .named, unitsStyle: .abbreviated))
                     .frame(minWidth: 72, alignment: .trailing)
@@ -154,9 +154,9 @@ private struct SessionPickerRow: View {
         .help(session.firstMessage.map { "\($0.prefix(300))" } ?? session.displayTitle)
     }
 
-    private func badge(_ word: String, dot: Color, hollow: Bool = false) -> some View {
+    private func badge(_ word: String, @ViewBuilder mark: () -> some View) -> some View {
         HStack(spacing: 5) {
-            StatusDot(color: dot, hollow: hollow)
+            mark()
             Text(word)
         }
     }
@@ -174,11 +174,14 @@ extension SessionFileInfo.Status {
         }
     }
 
-    var dotColor: Color {
+    /// The status vocabulary's mark (`SessionIndicator`): the triangle for work left unfinished, red for an error, a
+    /// hollow ring for a stopped turn.
+    @ViewBuilder
+    var mark: some View {
         switch self {
-        case .interrupted, .pending: .orange
-        case .error: .red
-        case .aborted, .complete, .unknown: .secondary
+        case .interrupted, .pending: WarningMark()
+        case .error: StatusDot(color: .red)
+        case .aborted, .complete, .unknown: StatusDot(color: .secondary, hollow: true)
         }
     }
 }

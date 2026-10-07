@@ -36,6 +36,15 @@ extension SessionStatus {
     public var isInProgress: Bool { self == .busy || self == .starting || self == .resuming }
 }
 
+extension SessionManifestEntry {
+    /// omp died mid-work and runs again, and what it left unfinished waits for the user's Continue or Leave (restore
+    /// policy `ask`): it waits on the user, as an approval does. Not while omp works (the user carries on in its TUI) or
+    /// does not run.
+    public var awaitsContinuation: Bool {
+        pendingContinuation != nil && (status == .idle || status == .paused)
+    }
+}
+
 extension AttentionItem {
     /// What it waits on the user for, in a line: "Waiting for approval: bash", "Asking you".
     public var waitingLine: String {

@@ -22,6 +22,13 @@ enum Chrome {
     static let emberColor = dynamic(light: 0xAD581F, dark: 0xF0AC45)
     static let ember = Color(nsColor: emberColor)
 
+    /// The status colors: green idle or live, yellow paused, orange what wants a look or is out of reach (red, what
+    /// needs the user, is the system's). The system's colors in dark mode; darker in light mode, where the system's read
+    /// 1.4–2.2:1 on the canvas and the surface, so that a mark keeps 3:1 there.
+    static let green = Color(nsColor: dynamic(light: 0x069F3C, dark: .systemGreen))
+    static let yellow = Color(nsColor: dynamic(light: 0xA88603, dark: .systemYellow))
+    static let orange = Color(nsColor: dynamic(light: 0xD36E00, dark: .systemOrange))
+
     /// Git marks in the Files pane: a file (or a folder holding one) new to the repository, or changed.
     /// The system green and yellow in dark mode; darker in light mode, where those two fail against white.
     static let gitAdded = Color(nsColor: NSColor(name: nil) { appearance in
@@ -34,11 +41,21 @@ enum Chrome {
     /// One sRGB color (`0xRRGGBB`) for light mode and one for dark mode.
     private static func dynamic(light: Int, dark: Int) -> NSColor {
         NSColor(name: nil) { appearance in
-            let hex = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
-            return NSColor(
-                srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
-                blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+            srgb(appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light)
         }
+    }
+
+    /// An sRGB color (`0xRRGGBB`) for light mode, and a system color for dark mode.
+    private static func dynamic(light: Int, dark: NSColor) -> NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : srgb(light)
+        }
+    }
+
+    private static func srgb(_ hex: Int) -> NSColor {
+        NSColor(
+            srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255, blue: CGFloat(hex & 0xFF) / 255,
+            alpha: 1)
     }
 }
 
@@ -95,7 +112,10 @@ extension NoticeBar where Actions == EmptyView {
     }
 }
 
-/// A 7-point status dot; hollow for something that ended.
+/// A 7-point status dot. The states a mark shows tell apart by shape as well as color, as the ember of `WorkingDot`
+/// and the system's orange and yellow are close in dark mode: a dot is green idle or live, red needs attention, grey
+/// parked; a ring (hollow) has no live state, grey once it ended, orange while ompd is out of reach. Paused is
+/// `PausedMark`, what wants a look `WarningMark`.
 struct StatusDot: View {
     let color: Color
     var hollow = false
@@ -109,6 +129,36 @@ struct StatusDot: View {
             }
         }
         .frame(width: 7, height: 7)
+    }
+}
+
+/// Paused, as a pause sign the size of a status dot: two yellow bars. White on a selected row, whose highlight is the
+/// accent.
+struct PausedMark: View {
+    @Environment(\.backgroundProminence) private var prominence
+
+    var body: some View {
+        HStack(spacing: 2) {
+            RoundedRectangle(cornerRadius: 0.75).frame(width: 2.5)
+            RoundedRectangle(cornerRadius: 0.75).frame(width: 2.5)
+        }
+        .frame(width: 7, height: 8)
+        .foregroundStyle(prominence == .increased ? Color.white : Chrome.yellow)
+    }
+}
+
+/// What wants a look (work omp's death interrupted, a language server that stopped, a service nothing supervises): the
+/// system's warning triangle in orange, a little larger than a dot so that its shape reads. White on a selected row.
+struct WarningMark: View {
+    @Environment(\.backgroundProminence) private var prominence
+
+    var body: some View {
+        Image(systemName: "exclamationmark.triangle.fill")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(prominence == .increased ? Color.white : Chrome.orange)
+            .frame(width: 9, height: 9)
+            // The words beside it or the label of what it marks say it.
+            .accessibilityHidden(true)
     }
 }
 

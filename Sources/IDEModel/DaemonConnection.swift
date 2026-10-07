@@ -261,8 +261,15 @@ public final class DaemonConnection: TerminalBackend {
 
     // MARK: - Agent supervision
 
-    /// Every tool approval and `ask` waiting in a session TUI, over all sessions.
-    public var attentionCount: Int { runtimes.values.reduce(0) { $0 + $1.attention.count } }
+    /// What waits on the user over all sessions (`attentionCount(of:)`): the Dock's badge.
+    public var attentionCount: Int { sessions.reduce(0) { $0 + attentionCount(of: $1) } }
+
+    /// What waits on the user in a session: the tool approvals and `ask`s waiting in its TUI, else its interrupted work
+    /// waiting for Continue or Leave, as one.
+    public func attentionCount(of entry: SessionManifestEntry) -> Int {
+        let waiting = runtimes[entry.sessionKey]?.attention.count ?? 0
+        return waiting > 0 ? waiting : entry.awaitsContinuation ? 1 : 0
+    }
 
     /// Revives, parks or kills an agent of a running session; returns its row afterwards (nil once omp dropped it).
     @discardableResult

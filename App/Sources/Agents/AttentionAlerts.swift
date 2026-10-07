@@ -2,11 +2,11 @@ import AppKit
 import IDEModel
 import UserNotifications
 
-/// What waits for the user in the session TUIs (tool approvals, `ask`) outside the window: the Dock badge
-/// counts it, and each new one posts a notification while Lantern is in the background, titled by its session
-/// (permission is asked for with the first). A click on one brings the app forward on that session's tab; it is
-/// withdrawn once its approval or question is answered or its omp stopped, also when an earlier run of the app posted
-/// it.
+/// What waits for the user in the sessions outside the window: the Dock badge counts it (tool approvals and `ask`s in
+/// the session TUIs, and interrupted work waiting for Continue or Leave), and each new approval or ask posts a
+/// notification while Lantern is in the background, titled by its session (permission is asked for with the first). A
+/// click on one brings the app forward on that session's tab; it is withdrawn once its approval or question is
+/// answered or its omp stopped, also when an earlier run of the app posted it.
 @MainActor
 final class AttentionAlerts: NSObject, UNUserNotificationCenterDelegate {
     private let app: AppState
@@ -44,7 +44,9 @@ final class AttentionAlerts: NSObject, UNUserNotificationCenterDelegate {
 
     private func observe() {
         let runtimes = withObservationTracking {
-            app.connection.runtimes
+            // The sessions too: interrupted work waiting for Continue or Leave counts on the Dock's badge.
+            _ = app.connection.sessions
+            return app.connection.runtimes
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in self?.observe() }
         }

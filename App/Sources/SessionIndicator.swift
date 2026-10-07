@@ -3,13 +3,17 @@ import SwiftUI
 
 /// A session's state at a glance, one vocabulary for its tab, the status bar, the Agents pane and the Projects pane:
 /// red with a count while approvals or questions wait on the user; ember and lit while omp works, with how many
-/// subagents run; green idle, yellow paused, orange interrupted or out of ompd's reach, red when omp could not be
-/// resumed, hollow once closed; a spinner while omp starts or resumes.
+/// subagents run; green idle, paused yellow bars, an orange triangle while omp was interrupted (and its unfinished work
+/// waits for Continue or Leave), an orange ring out of ompd's reach, red when omp could not be resumed, a hollow ring
+/// once closed; a spinner while omp starts or resumes.
 enum SessionIndicator: Equatable {
     /// What waits on the user in the session's TUI, oldest first.
     case waiting([AttentionItem])
     /// The main agent works, or subagents do (`subagents` of them run).
     case working(subagents: Int)
+    /// omp died mid-work and runs again; what it left unfinished waits for the user's Continue or Leave (restore policy
+    /// `ask`, `pendingContinuation`): it counts as waiting on the user.
+    case unfinished
     case starting, resuming, idle, paused, interrupted, needsAttention, closed
     /// ompd is out of reach: what the session does is not known.
     case offline
@@ -21,6 +25,11 @@ enum SessionIndicator: Equatable {
         }
         if let attention = runtime?.attention, !attention.isEmpty {
             self = .waiting(attention)
+            return
+        }
+        // Until the user answers, the agents hold where omp's death left them, whatever ompd's status says since.
+        if entry.awaitsContinuation {
+            self = .unfinished
             return
         }
         let subagents = runtime?.runningSubagents ?? 0
@@ -46,7 +55,7 @@ enum SessionIndicator: Equatable {
         case .resuming: SessionStatus.resuming.label
         case .idle: SessionStatus.idle.label
         case .paused: SessionStatus.paused.label
-        case .interrupted: SessionStatus.interrupted.label
+        case .interrupted, .unfinished: SessionStatus.interrupted.label
         case .needsAttention: SessionStatus.needsAttention.label
         case .closed: SessionStatus.closed.label
         }
@@ -57,6 +66,8 @@ enum SessionIndicator: Equatable {
         switch self {
         case .working(let subagents) where subagents > 0:
             "working, " + (subagents == 1 ? "1 subagent" : "\(subagents) subagents")
+        case .unfinished:
+            "interrupted, waiting for you"
         default:
             label.prefix(1).lowercased() + label.dropFirst()
         }
@@ -74,6 +85,7 @@ enum SessionIndicator: Equatable {
         case .idle: SessionStatus.idle.explanation
         case .paused: SessionStatus.paused.explanation
         case .interrupted: SessionStatus.interrupted.explanation
+        case .unfinished: "omp stopped mid-work and runs again; the bar under the session asks whether its unfinished work carries on"
         case .needsAttention: SessionStatus.needsAttention.explanation
         case .closed: SessionStatus.closed.explanation
         }
@@ -84,10 +96,13 @@ enum SessionIndicator: Equatable {
         return false
     }
 
-    /// The approvals and questions waiting on the user.
+    /// What waits on the user: the approvals and questions, or the unfinished work to continue or leave.
     var waitingCount: Int {
-        if case .waiting(let items) = self { return items.count }
-        return 0
+        switch self {
+        case .waiting(let items): items.count
+        case .unfinished: 1
+        default: 0
+        }
     }
 }
 
@@ -106,7 +121,8 @@ extension AppState {
 }
 
 /// A session's state as a mark: what waits on the user as a red count, the lit ember dot and the count of subagents
-/// while omp works, a spinner while omp starts or resumes, else a status dot.
+/// while omp works, a spinner while omp starts or resumes, else the state's mark (`StatusDot`, `PausedMark`,
+/// `WarningMark`).
 struct SessionMark: View {
     let indicator: SessionIndicator
 
@@ -125,9 +141,10 @@ struct SessionMark: View {
                 }
             }
         case .starting, .resuming: ProgressView().controlSize(.mini)
-        case .idle: StatusDot(color: .green)
-        case .paused: StatusDot(color: .yellow)
-        case .interrupted, .offline: StatusDot(color: .orange)
+        case .idle: StatusDot(color: Chrome.green)
+        case .paused: PausedMark()
+        case .interrupted, .unfinished: WarningMark()
+        case .offline: StatusDot(color: Chrome.orange, hollow: true)
         case .needsAttention: StatusDot(color: .red)
         case .closed: StatusDot(color: .secondary, hollow: true)
         }

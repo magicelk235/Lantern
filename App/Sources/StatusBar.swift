@@ -94,13 +94,13 @@ private struct TerminalState: View {
         case .attached where hasExited:
             HStack(spacing: 5) { StatusDot(color: .secondary, hollow: true); Text("Exited") }
         case .attached:
-            HStack(spacing: 5) { StatusDot(color: .green); Text("Live") }
+            HStack(spacing: 5) { StatusDot(color: Chrome.green); Text("Live") }
         case .attaching:
             HStack(spacing: 5) { ProgressView().controlSize(.mini); Text("Attaching") }
         case .detached:
-            HStack(spacing: 5) { StatusDot(color: .orange); Text("Offline") }
+            HStack(spacing: 5) { StatusDot(color: Chrome.orange, hollow: true); Text("Offline") }
         case .failed(let message):
-            HStack(spacing: 5) { StatusDot(color: .orange); Text("Unavailable") }.help(message)
+            HStack(spacing: 5) { WarningMark(); Text("Unavailable") }.help(message)
         case .gone:
             HStack(spacing: 5) { StatusDot(color: .secondary, hollow: true); Text("Closed") }
         }
@@ -177,7 +177,7 @@ private struct LanguageServerState: View {
                 .help("Lantern looks for \(programs.joined(separator: " or ")) on your login shell’s PATH.")
         case .failed(let reason):
             HStack(spacing: 5) {
-                StatusDot(color: .orange)
+                WarningMark()
                 Text("Language Server Stopped")
             }
             .help(reason)
@@ -197,8 +197,8 @@ private struct LanguageServerState: View {
     }
 }
 
-/// A session's state in words beside its dot: "Working" in ember beside the lit dot, what waits on the user beside a
-/// red one, a spinner while omp starts or resumes.
+/// A session's state in words beside its mark: "Working" in ember beside the lit dot, what waits on the user (in
+/// primary) beside a red dot or the interruption's triangle, a spinner while omp starts or resumes.
 struct SessionStatusBadge: View {
     let indicator: SessionIndicator
 
@@ -218,7 +218,7 @@ struct SessionStatusBadge: View {
     private var word: AnyShapeStyle {
         switch indicator {
         case .working: AnyShapeStyle(Chrome.ember)
-        case .waiting: AnyShapeStyle(.primary)
+        case .waiting, .unfinished: AnyShapeStyle(.primary)
         default: AnyShapeStyle(.secondary)
         }
     }

@@ -200,9 +200,10 @@ extension AppState {
             .sorted { ($0.entry.createdAt, $0.id) < ($1.entry.createdAt, $1.id) }
     }
 
-    /// Tool approvals and `ask`s waiting in the project's session TUIs: the Agents pane's badge.
+    /// What waits on the user in the project's sessions (`DaemonConnection.attentionCount(of:)`): the Agents pane's
+    /// badge.
     func attentionCount(in project: String) -> Int {
-        runningSessions(in: project).reduce(0) { $0 + $1.runtime.attention.count }
+        connection.sessions.reduce(0) { $0 + ($1.workspace == project ? connection.attentionCount(of: $1) : 0) }
     }
 }
 
@@ -459,8 +460,8 @@ private struct AgentRow: View {
     }
 }
 
-/// An agent's state as a dot, in the sessions' vocabulary (`SessionIndicator`): red while it waits on the user, ember
-/// and lit while it works, green idle, yellow paused, orange interrupted, grey parked, hollow once it ended.
+/// An agent's state as a mark, in the sessions' vocabulary (`SessionIndicator`): red while it waits on the user, ember
+/// and lit while it works, green idle, paused bars, an orange triangle interrupted, grey parked, hollow once it ended.
 private struct AgentStatusMark: View {
     let status: AgentStatus
     let needsUser: Bool
@@ -471,9 +472,9 @@ private struct AgentStatusMark: View {
         } else {
             switch status {
             case .running: WorkingDot()
-            case .idle: StatusDot(color: .green)
-            case .paused: StatusDot(color: .yellow)
-            case .interrupted: StatusDot(color: .orange)
+            case .idle: StatusDot(color: Chrome.green)
+            case .paused: PausedMark()
+            case .interrupted: WarningMark()
             case .parked: StatusDot(color: .secondary)
             case .aborted, .unknown: StatusDot(color: .secondary, hollow: true)
             }
@@ -593,9 +594,9 @@ private struct ServiceRow: View {
                     ProgressView().controlSize(.mini)
                 } else {
                     switch service.state {
-                    case "running", "ready": StatusDot(color: .green)
+                    case "running", "ready": StatusDot(color: Chrome.green)
                     case "failed": StatusDot(color: .red)
-                    case "unsupervised": StatusDot(color: .orange)
+                    case "unsupervised": WarningMark()
                     default: StatusDot(color: .secondary, hollow: true)
                     }
                 }
