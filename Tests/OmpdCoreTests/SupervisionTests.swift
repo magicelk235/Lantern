@@ -87,6 +87,32 @@ private func at(milliseconds: Double) -> Date { Date(timeIntervalSince1970: mill
         #expect(statuses(.idle, held: ["Sleeper", "Busy"]) == ["Main": .idle, "Sleeper": .interrupted, "Left": .parked, "Busy": .running])
     }
 
+    @Test func agentsAResumedSessionBringsBackKeepTheOrderTheyWereMadeIn() throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "runtime-order-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        func transcript(_ id: String, madeAt seconds: Double) throws -> JSONValue {
+            let path = folder.appending(path: "\(id).jsonl").path(percentEncoded: false)
+            FileManager.default.createFile(atPath: path, contents: Data())
+            try FileManager.default.setAttributes([.creationDate: Date(timeIntervalSince1970: seconds)], ofItemAtPath: path)
+            return .string(path)
+        }
+        func resumed(_ id: String, createdAt: Double, file: JSONValue) -> JSONValue {
+            guard case .object(var fields) = row(id, parent: "Main", createdAt: createdAt) else { return .null }
+            fields["sessionFile"] = file
+            return .object(fields)
+        }
+        // omp stamped them as it brought them back: the second first.
+        var tracker = RuntimeTracker()
+        tracker.seed(agents: [
+            row("Main", kind: "main", createdAt: 9_000_000),
+            resumed("Subagent1", createdAt: 9_000_200, file: try transcript("Subagent1", madeAt: 1_000)),
+            resumed("Subagent2", createdAt: 9_000_100, file: try transcript("Subagent2", madeAt: 1_001)),
+            resumed("Subagent3", createdAt: 9_000_300, file: .null),
+        ])
+        #expect(tracker.runtime(sessionKey: "s", mainStatus: .idle, held: []).agents.map(\.id) == ["Main", "Subagent1", "Subagent2", "Subagent3"])
+    }
+
     @Test func jobsAndAttentionAreReplacedWhole() {
         var tracker = RuntimeTracker()
         tracker.replaceJobs([

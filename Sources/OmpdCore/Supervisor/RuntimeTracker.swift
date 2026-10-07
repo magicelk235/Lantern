@@ -107,15 +107,25 @@ struct RuntimeTracker: Sendable {
     // MARK: - Bridge JSON
 
     /// An ide-bridge registry row (`refJson`: id, displayName, kind, parentId, status, isStreaming, sessionFile, createdAt
-    /// and lastActivity in ms since the epoch, omp's activity, the bridge's currentTool); nil without id or status.
+    /// and lastActivity in ms since the epoch, omp's activity, the bridge's currentTool); nil without id or status. Its
+    /// creation is the earlier of omp's `createdAt` and its transcript's: omp stamps the agents a resumed session brings
+    /// back with the time it brought them back, in no particular order.
     static func agent(_ row: JSONValue) -> AgentInfo? {
         guard let id = row["id"]?.stringValue, let status = row["status"]?.stringValue else { return nil }
+        let sessionFile = row["sessionFile"]?.stringValue
+        let created = [date(row["createdAt"]), creation(of: sessionFile)].compactMap(\.self).min()
         return AgentInfo(
             id: id, displayName: row["displayName"]?.stringValue, kind: row["kind"]?.stringValue,
             parentId: row["parentId"]?.stringValue, status: AgentStatus(rawValue: status) ?? .unknown,
-            isStreaming: row["isStreaming"]?.boolValue == true, sessionFile: row["sessionFile"]?.stringValue,
-            createdAt: date(row["createdAt"]), lastActivity: date(row["lastActivity"]),
+            isStreaming: row["isStreaming"]?.boolValue == true, sessionFile: sessionFile,
+            createdAt: created, lastActivity: date(row["lastActivity"]),
             activity: activity(omp: row["activity"], currentTool: row["currentTool"]))
+    }
+
+    /// When the file at `path` was made; nil when there is none.
+    private static func creation(of path: String?) -> Date? {
+        guard let path else { return nil }
+        return (try? URL(filePath: path).resourceValues(forKeys: [.creationDateKey]))?.creationDate
     }
 
     /// A job of `getAsyncJobSnapshot` (id, type, status, label, startTime and endTime in ms since the epoch, agentId).

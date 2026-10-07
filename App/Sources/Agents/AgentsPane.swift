@@ -332,6 +332,19 @@ extension AgentStatus {
         case .unknown: "omp reports no state Lantern knows"
         }
     }
+
+    /// The state in a word, for VoiceOver.
+    var word: String {
+        switch self {
+        case .running: "working"
+        case .idle: "idle"
+        case .parked: "parked"
+        case .aborted: "aborted"
+        case .interrupted: "interrupted"
+        case .paused: "paused"
+        case .unknown: "state unknown"
+        }
+    }
 }
 
 private enum AgentAction: Hashable {
@@ -361,7 +374,8 @@ private enum AgentAction: Hashable {
 }
 
 /// One agent: its state, its name, what it is doing or waits on the user for, whether a reply streams; Revive or
-/// Park and Message on hover, everything it allows in the context menu.
+/// Park and Message on hover, over the row's end so they take no room from the activity, and everything it allows in
+/// the context menu.
 private struct AgentRow: View {
     let agent: AgentInfo
     let depth: Int
@@ -374,51 +388,51 @@ private struct AgentRow: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 4) {
-            Button(action: show) {
-                HStack(spacing: 6) {
-                    AgentStatusMark(status: agent.status, needsUser: waiting != nil)
-                        .frame(width: 12)
-                    Text(agent.name)
+        Button(action: show) {
+            HStack(spacing: 6) {
+                AgentStatusMark(status: agent.status, needsUser: waiting != nil)
+                    .frame(width: 12)
+                Text(agent.name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .layoutPriority(1)
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(waiting != nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                         .lineLimit(1)
-                        .truncationMode(.middle)
-                        .layoutPriority(1)
-                    if let detail {
-                        Text(detail)
-                            .font(.system(size: 11))
-                            .foregroundStyle(waiting != nil ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    Spacer(minLength: 4)
-                    if agent.isStreaming, waiting == nil {
-                        Image(systemName: "text.bubble")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .help("Streaming a reply")
-                    }
+                        .truncationMode(.tail)
                 }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            ForEach(quickActions, id: \.self) { action in
-                Button { perform(action) } label: {
-                    Image(systemName: action.symbol)
-                        .font(.system(size: 11, weight: .medium))
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
+                Spacer(minLength: 4)
+                if agent.isStreaming, waiting == nil {
+                    Image(systemName: "text.bubble")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .help("Streaming a reply")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .opacity(hovering ? 1 : 0)
-                .disabled(!connected)
-                .help(action.title)
-                .accessibilityLabel("\(action.title) \(agent.name)")
             }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .trailing) {
+            if hovering, connected, !quickActions.isEmpty { quickActionButtons }
         }
         .padding(.leading, CGFloat(depth) * 14)
         .onHover { hovering = $0 }
-        .help("\(agent.id)\(agent.typeName.map { " (\($0))" } ?? ""): \(waiting?.waitingLine ?? agent.status.explanation)")
+        .help(help)
+        // One element for VoiceOver: the name, then its state and what it does; the hover actions are its actions.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(agent.name)
+        .accessibilityValue(accessibilityState)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(.default, show)
+        .accessibilityActions {
+            if connected {
+                ForEach(quickActions, id: \.self) { action in
+                    Button(action.title) { perform(action) }
+                }
+            }
+        }
         .contextMenu {
             ForEach(Array(menuGroups.enumerated()), id: \.offset) { index, group in
                 if index > 0 { Divider() }
@@ -428,6 +442,42 @@ private struct AgentRow: View {
                 }
             }
         }
+    }
+
+    /// Revive or Park and Message, on the pane's surface with a short fade, over whatever the row's end shows.
+    private var quickActionButtons: some View {
+        HStack(spacing: 4) {
+            ForEach(quickActions, id: \.self) { action in
+                Button { perform(action) } label: {
+                    Image(systemName: action.symbol)
+                        .font(.system(size: 11, weight: .medium))
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(action.title)
+            }
+        }
+        .padding(.leading, 14)
+        .background {
+            LinearGradient(stops: [.init(color: Chrome.surface.opacity(0), location: 0), .init(color: Chrome.surface, location: 0.4)],
+                           startPoint: .leading, endPoint: .trailing)
+        }
+    }
+
+    /// The tooltip: the agent's id and type, then what it waits on the user for, else its state, and what it is doing in
+    /// full.
+    private var help: String {
+        let state = waiting?.waitingLine ?? agent.status.explanation
+        let doing = waiting == nil ? detail.map { "\n\($0)" } ?? "" : ""
+        return "\(agent.id)\(agent.typeName.map { " (\($0))" } ?? ""): \(state)\(doing)"
+    }
+
+    private var accessibilityState: String {
+        let state = waiting?.waitingLine ?? agent.status.word
+        let doing = waiting == nil ? detail : nil
+        return [state, doing, agent.isStreaming && waiting == nil ? "streaming a reply" : nil].compactMap(\.self).joined(separator: ", ")
     }
 
     /// What it waits on the user for, else what it is doing while it works (omp keeps the last intent, or a resumed
