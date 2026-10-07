@@ -26,9 +26,14 @@ final class LanguageCompletion: CodeSuggestionDelegate {
         let cursor = cursorPosition.range.location
         guard cursor <= text.length else { return nil }
         let wordStart = Self.wordStart(before: cursor, in: text)
+        // A number being typed (`1`, `0x1F`, `1.5`) is not a name: Xcode offers nothing there.
+        guard !Self.startsNumber(at: wordStart, before: cursor, in: text) else { return nil }
         // Right after a trigger character, say which: the server completes members, not words.
         let before = cursor > 0 && wordStart == cursor ? text.substring(with: NSRange(location: cursor - 1, length: 1)) : nil
         let trigger = before.flatMap { document.completionTriggers.contains($0) ? $0 : nil }
+        if trigger == ".", Self.startsNumber(at: Self.wordStart(before: cursor - 1, in: text), before: cursor - 1, in: text) {
+            return nil
+        }
         let candidates = await document.completions(at: cursor, trigger: trigger)
         guard !Task.isCancelled, !candidates.isEmpty else { return nil }
         self.candidates = candidates
@@ -67,6 +72,12 @@ final class LanguageCompletion: CodeSuggestionDelegate {
         var start = offset
         while start > 0, isIdentifier(text.character(at: start - 1)) { start -= 1 }
         return start
+    }
+
+    /// The word from `start` to `end` is a number: it starts with a digit.
+    private static func startsNumber(at start: Int, before end: Int, in text: NSString) -> Bool {
+        guard start < end, let scalar = Unicode.Scalar(text.character(at: start)) else { return false }
+        return CharacterSet.decimalDigits.contains(scalar)
     }
 
     private static func isIdentifier(_ unit: unichar) -> Bool {
