@@ -173,8 +173,10 @@ enum PTYSpawner {
             .filter { Int32($0.kp_proc.p_stat) != SZOMB && $0.kp_proc.p_pid != program }
             .sorted { started($0) < started($1) }
             .map { process in
-                var name = [CChar](repeating: 0, count: 2 * Int(MAXCOMLEN) + 1)
-                if proc_name(process.kp_proc.p_pid, &name, UInt32(name.count)) > 0 { return String(cString: name) }
+                var name = [UInt8](repeating: 0, count: 2 * Int(MAXCOMLEN) + 1)
+                if proc_name(process.kp_proc.p_pid, &name, UInt32(name.count)) > 0 {
+                    return String(decoding: name.prefix { $0 != 0 }, as: UTF8.self)
+                }
                 var command = process.kp_proc.p_comm
                 return withUnsafeBytes(of: &command) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
             }

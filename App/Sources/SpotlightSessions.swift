@@ -15,7 +15,6 @@ import os
 @MainActor
 final class SpotlightSessions {
     private let app: AppState
-    private let index = CSSearchableIndex.default()
     /// What the index was last built from.
     private var indexed: Signature?
     private var pending: Task<Void, Never>?
@@ -63,16 +62,17 @@ final class SpotlightSessions {
             }
             guard !Task.isCancelled else { return }
         }
-        let index = index
-        index.deleteSearchableItems(withDomainIdentifiers: [domain]) { error in
-            if let error {
-                appLog.error("Spotlight: removing the old session items failed: \(String(describing: error), privacy: .public)")
-            }
-            index.indexSearchableItems(items) { error in
-                if let error {
-                    appLog.error("Spotlight: indexing the sessions failed: \(String(describing: error), privacy: .public)")
-                }
-            }
+        // A handle of its own on the default index, which stays on this task.
+        let index = CSSearchableIndex.default()
+        do {
+            try await index.deleteSearchableItems(withDomainIdentifiers: [domain])
+        } catch {
+            appLog.error("Spotlight: removing the old session items failed: \(String(describing: error), privacy: .public)")
+        }
+        do {
+            try await index.indexSearchableItems(items)
+        } catch {
+            appLog.error("Spotlight: indexing the sessions failed: \(String(describing: error), privacy: .public)")
         }
     }
 
