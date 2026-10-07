@@ -82,6 +82,8 @@ final class EditorDocument {
     @ObservationIgnored private var configurationIsStale = false
     /// Take the keyboard focus when the view next appears (opened from the navigator).
     @ObservationIgnored var focusOnAppear = false
+    /// The hosts in windows, in the order they took the controller's view: the newest shows it.
+    @ObservationIgnored private var hosts: [WeakHost] = []
     @ObservationIgnored private var hotExitWrite: Task<Void, Never>?
     /// The pending autosave: the edits are written to the file once typing pauses.
     @ObservationIgnored private var autosave: Task<Void, Never>?
@@ -89,6 +91,10 @@ final class EditorDocument {
     @ObservationIgnored private var hotExitDueSince: ContinuousClock.Instant?
     /// `state.sqlite` holds a hot-exit copy for this path.
     @ObservationIgnored private var hotExitStored: Bool
+
+    private struct WeakHost {
+        weak var host: EditorHostingView?
+    }
 
     /// Opens `path` from disk, or from `restored` (its hot-exit copy), which wins: the unsaved text comes back even if
     /// the file changed meanwhile. `savedUI` puts the selection and scroll position back; `repository` is the
@@ -282,6 +288,7 @@ final class EditorDocument {
         isJumpingToLine = false
         pendingReveal = nil
         configurationIsStale = false
+        hosts = []
         controller = nil
         coordinator = nil
         caret = nil
@@ -561,6 +568,23 @@ final class EditorDocument {
         }
         focusOnAppear = false
         languageDocument?.render()
+    }
+
+    /// `host` went into a window: the text shows there.
+    func host(in host: EditorHostingView) {
+        guard let controller else { return }
+        hosts.removeAll { $0.host == nil || $0.host === host }
+        hosts.append(WeakHost(host: host))
+        host.embed(controller.view)
+    }
+
+    /// `host` left its window, or its window is closing: the text goes back to the host that had it before, while that
+    /// one is in a window. A duplicate window of a project (one SwiftUI opens and `AppState.attach` closes) took the
+    /// view from the project's window and must not leave it there without its text.
+    func unhost(_ host: EditorHostingView) {
+        hosts.removeAll { $0.host == nil || $0.host === host }
+        guard let controller, controller.view.superview === host, let previous = hosts.last?.host, previous.window != nil else { return }
+        previous.embed(controller.view)
     }
 
     /// Remembers the selection and scroll position (debounced by the store).

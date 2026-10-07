@@ -20,7 +20,7 @@ struct EditorView: View {
                         if document.find.isShown {
                             FindBar(find: document.find)
                         }
-                        SourceEditorHost(controller: controller)
+                        SourceEditorHost(document: document, controller: controller)
                             .id(ObjectIdentifier(controller))
                     }
                 }
@@ -44,17 +44,71 @@ struct EditorView: View {
     }
 }
 
-/// The document's `TextViewController`, the same one each time the tab shows. Clipped to its frame: the gutter floats
-/// in the scroll view as tall as the text and would draw its line numbers over the find bar above.
-private struct SourceEditorHost: NSViewControllerRepresentable {
+/// The document's `TextViewController`, the same one each time the tab shows (`EditorHostingView`). Clipped to its
+/// frame: the gutter floats in the scroll view as tall as the text and would draw its line numbers over the find bar
+/// above.
+private struct SourceEditorHost: NSViewRepresentable {
+    let document: EditorDocument
     let controller: TextViewController
 
-    func makeNSViewController(context: Context) -> TextViewController {
+    func makeNSView(context: Context) -> EditorHostingView {
         controller.view.clipsToBounds = true
-        return controller
+        return EditorHostingView(document: document)
     }
 
-    func updateNSViewController(_ controller: TextViewController, context: Context) {}
+    func updateNSView(_ nsView: EditorHostingView, context: Context) {}
+}
+
+/// Where the document's text shows while the host is in a window (`EditorDocument.host(in:)`): the controller has one
+/// view, and a second window SwiftUI opens for the same project gets a host of its own until it closes again.
+final class EditorHostingView: NSView {
+    private let document: EditorDocument
+    private var closeObserver: (any NSObjectProtocol)?
+
+    init(document: EditorDocument) {
+        self.document = document
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        stopWatchingWindow()
+        guard let window else {
+            document.unhost(self)
+            return
+        }
+        // A window that closes may keep its views: the text leaves with the window, not with the view.
+        closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) {
+            [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.stopWatchingWindow()
+                self.document.unhost(self)
+            }
+        }
+        document.host(in: self)
+    }
+
+    /// Shows the controller's view, filling the host.
+    func embed(_ view: NSView) {
+        view.removeFromSuperview()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            view.topAnchor.constraint(equalTo: topAnchor),
+            view.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    private func stopWatchingWindow() {
+        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
+        closeObserver = nil
+    }
 }
 
 /// Jump to Line (⌘L), from the status bar's caret position: a line, or line:column, for the caret; Return goes there,
