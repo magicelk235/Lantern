@@ -1,5 +1,6 @@
 import AppKit
 import CodeEditTextView
+import IDEEditorModel
 
 /// The find bar of one editor (Edit › Find, after Xcode's): what is looked for and how, the matches in the text, and
 /// which one is current. It stands in for CodeEditSourceEditor's own find panel, which the app cannot drive (no Find
@@ -54,6 +55,8 @@ final class EditorFind {
     /// The text whose matches are marked: the lines on screen when they were marked last.
     @ObservationIgnored private var markedRange: NSRange?
     @ObservationIgnored private var markingPending = false
+    /// The range the bar selected last: a selection still there is the bar's own, not text the user picked.
+    @ObservationIgnored private var selectedByFind: NSRange?
 
     private static let matchesGroup = "omp.find.matches"
     private static let currentGroup = "omp.find.current"
@@ -64,12 +67,12 @@ final class EditorFind {
 
     /// Find… (⌘F) and Find and Replace… (⌥⌘F): shows the bar in `mode` with the find field focused and its text
     /// selected; the replacement field instead for Find and Replace when there is something to look for. It looks for
-    /// the selected text when that is one line the user picked (not the match found last), else for what the system's
-    /// find pasteboard holds when nothing is looked for yet.
+    /// the selected text when that is one line the user picked (not a match the bar selected), else for what the
+    /// system's find pasteboard holds when nothing is looked for yet.
     func show(_ mode: Mode) {
         guard let textView else { return }
         let resizes = !isShown || self.mode != mode
-        if let selected = selectedText(in: textView), currentMatchIsSelected(in: textView) == false {
+        if let selected = selectedText(in: textView), textView.selectionManager.textSelections.first?.range != selectedByFind {
             query = selected
         } else if query.isEmpty, let shared = NSPasteboard(name: .find).string(forType: .string), !shared.contains("\n") {
             query = shared
@@ -161,7 +164,9 @@ final class EditorFind {
         }
         let replaced = expression.replacementString(for: match, in: text, offset: 0, template: template)
         textView.replaceCharacters(in: selection, with: replaced)
-        search(movingFrom: selection.location + (replaced as NSString).length)
+        // Past an empty match replaced by nothing too, or it would be found again where it was.
+        let after = selection.location + (replaced as NSString).length
+        search(movingFrom: selection.length == 0 && replaced.isEmpty ? after + 1 : after)
     }
 
     /// Replace All: every match gives way to the replacement, as one edit (one undo).
@@ -171,22 +176,11 @@ final class EditorFind {
             return
         }
         if isStale { search(movingFrom: nil) }
-        guard !matches.isEmpty else {
+        guard let result = TextSearch.replacingAll(of: expression, in: textView.textStorage.string, with: template) else {
             NSSound.beep()
             return
         }
-        let text = textView.textStorage.string
-        let source = textView.textStorage.mutableString
-        let result = NSMutableString(capacity: source.length)
-        var end = 0
-        for match in expression.matches(in: text, range: NSRange(location: 0, length: source.length))
-        where match.range.length > 0 {
-            result.append(source.substring(with: NSRange(location: end, length: match.range.location - end)))
-            result.append(expression.replacementString(for: match, in: text, offset: 0, template: template))
-            end = NSMaxRange(match.range)
-        }
-        result.append(source.substring(from: end))
-        document.replaceText(with: result as String)
+        document.replaceText(with: result)
         search(movingFrom: nil)
     }
 
@@ -229,19 +223,11 @@ final class EditorFind {
             return
         }
         if isStale { search(movingFrom: nil) }
-        guard !matches.isEmpty, let selection = textView.selectionManager.textSelections.first?.range else {
-            NSSound.beep()
-            return
-        }
-        let target: Int?
-        if forward {
-            let after = firstIndex(atOrAfter: NSMaxRange(selection))
-            target = after < matches.count ? after : (wrapsAround ? 0 : nil)
-        } else {
-            let before = firstIndex(atOrAfter: selection.location) - 1
-            target = before >= 0 ? before : (wrapsAround ? matches.count - 1 : nil)
-        }
-        guard let target else {
+        guard !matches.isEmpty, let selection = textView.selectionManager.textSelections.first?.range,
+              let target = forward
+                ? TextSearch.next(in: matches, from: selection, wrapsAround: wrapsAround)
+                : TextSearch.previous(in: matches, from: selection, wrapsAround: wrapsAround)
+        else {
             NSSound.beep()
             return
         }
@@ -260,8 +246,7 @@ final class EditorFind {
         guard let textView else { return }
         let expression = expression()
         isInvalid = expression == nil && !query.isEmpty
-        let found = expression?.matches(in: textView.textStorage.string, range: NSRange(location: 0, length: textView.textStorage.length))
-            .map(\.range).filter { $0.length > 0 } ?? []
+        let found = expression.map { TextSearch.matches(of: $0, in: textView.textStorage.string) } ?? []
         if found != matches { matches = found }
         if let location, !matches.isEmpty {
             let after = firstIndex(atOrAfter: location)
@@ -282,6 +267,7 @@ final class EditorFind {
     /// Makes match `index` the current one: selected, in sight and marked.
     private func select(_ index: Int) {
         current = index
+        selectedByFind = matches[index]
         document?.select(matches[index], focus: false)
         markCurrent()
         markMatches()
@@ -310,15 +296,8 @@ final class EditorFind {
         matching == .regularExpression ? replacement : NSRegularExpression.escapedTemplate(for: replacement)
     }
 
-    /// The index of the first match that starts at or after `location`; `matches.count` when none does.
     private func firstIndex(atOrAfter location: Int) -> Int {
-        var low = 0
-        var high = matches.count
-        while low < high {
-            let middle = (low + high) / 2
-            if matches[middle].location < location { low = middle + 1 } else { high = middle }
-        }
-        return low
+        TextSearch.firstIndex(in: matches, atOrAfter: location)
     }
 
     private func index(of range: NSRange) -> Int? {
@@ -333,11 +312,6 @@ final class EditorFind {
         else { return nil }
         let text = textView.textStorage.mutableString.substring(with: range)
         return text.contains(where: \.isNewline) ? nil : text
-    }
-
-    private func currentMatchIsSelected(in textView: TextView) -> Bool {
-        guard let current, current < matches.count else { return false }
-        return textView.selectionManager.textSelections.first?.range == matches[current]
     }
 
     /// Other apps' find fields (and the next ⌘F here) start from the query, as the system's find pasteboard does.
