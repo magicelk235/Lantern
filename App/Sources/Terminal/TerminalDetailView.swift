@@ -23,7 +23,8 @@ struct TerminalDetailView: View {
                 if let hosted = app.adoptedSession(on: ptyId) {
                     SessionReportBar(app: app, entry: hosted)
                 }
-                if model.hasExited {
+                // A transcript is done once drawn: its program ending is no news, and Restart would only draw it again.
+                if model.hasExited, app.purpose(ofTerminal: ptyId)?.isTranscript != true {
                     NoticeBar(systemImage: "stop.circle", tint: .secondary, title: "The program exited", rule: .top) {
                         Button("Restart") { app.restartTerminal(ptyId) }
                             .help("Start the program again in the same folder, in this tab")

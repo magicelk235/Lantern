@@ -75,7 +75,7 @@ private struct TabState: View {
             if let hosted = app.adoptedSession(on: ptyId) {
                 SessionStatusBadge(indicator: app.indicator(of: hosted))
             } else if let model = app.terminals.model(ptyId) {
-                TerminalState(phase: model.phase, hasExited: model.hasExited)
+                TerminalState(phase: model.phase, hasExited: model.hasExited, isTranscript: app.purpose(ofTerminal: ptyId)?.isTranscript == true)
             }
         case .editor(let path):
             if let document = app.editors.document(for: path) {
@@ -88,11 +88,13 @@ private struct TabState: View {
 private struct TerminalState: View {
     let phase: TerminalSessionModel.Phase
     let hasExited: Bool
+    /// Open Transcript's: drawn once, then done, which is no state to report.
+    let isTranscript: Bool
 
     var body: some View {
         switch phase {
         case .attached where hasExited:
-            HStack(spacing: 5) { StatusDot(color: .secondary, hollow: true); Text("Exited") }
+            if !isTranscript { HStack(spacing: 5) { StatusDot(color: .secondary, hollow: true); Text("Exited") } }
         case .attached:
             HStack(spacing: 5) { StatusDot(color: Chrome.green); Text("Live") }
         case .attaching:

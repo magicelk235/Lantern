@@ -112,6 +112,10 @@ extension AppState {
     enum TerminalPurpose: Equatable {
         case transcript(String)
         case logs(String)
+
+        var isTranscript: Bool {
+            if case .transcript = self { true } else { false }
+        }
     }
 
     func purpose(ofTerminal ptyId: PTYID) -> TerminalPurpose? {
