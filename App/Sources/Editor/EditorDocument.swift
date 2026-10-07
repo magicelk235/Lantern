@@ -247,9 +247,14 @@ final class EditorDocument {
         language = CodeLanguage.detectLanguageFrom(url: URL(filePath: path), prefixBuffer: String(text.prefix(512)))
         indent = EditorStyle.indent(of: text)
         let coordinator = Coordinator(document: self)
+        // Made empty and given the text after: the text view lays out the lines it is made with in its visible rect,
+        // which is unbounded outside a scroll view, so every line of the file would get a line view (a 50,000-line
+        // file took half a minute, and the views stayed in memory). `setText` only indexes the lines; they are laid
+        // out once the view is in its scroll view, as far as it shows them.
         let controller = TextViewController(
-            string: text, language: language, configuration: configuration(for: NSApplication.shared.effectiveAppearance),
+            string: "", language: language, configuration: configuration(for: NSApplication.shared.effectiveAppearance),
             cursorPositions: selections, highlightProviders: [TreeSitterClient()], coordinators: [coordinator])
+        controller.textView.setText(text)
         self.coordinator = coordinator
         self.controller = controller
         let storageObserver = StorageObserver { [weak self] _, _ in self?.scheduleTextDidChange() }
