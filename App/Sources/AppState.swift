@@ -73,6 +73,8 @@ final class AppState {
     @ObservationIgnored private var frontToReopen: String?
     /// The project windows as they were when quitting began: windows closing on the way out change nothing saved.
     @ObservationIgnored private var windowsAtQuit: (windows: [String], front: String?)?
+    /// Projects the user removed whose window is closing: what ran in them is ending, so no notice says it runs on.
+    @ObservationIgnored private var removedProjectWindows: Set<String> = []
 
     struct AlertMessage: Identifiable {
         let id = UUID()
@@ -88,6 +90,16 @@ final class AppState {
             case close([TabKind])
             /// Remove a stopped session from ompd's list.
             case forget(SessionKey)
+            /// Remove the project from the list (Remove Project): its tabs close, then its window.
+            case removeProject(String, tabs: [TabKind])
+
+            /// The tabs that close.
+            var closing: [TabKind] {
+                switch self {
+                case .close(let tabs), .removeProject(_, let tabs): tabs
+                case .forget: []
+                }
+            }
         }
 
         /// A session whose omp the close ends.
@@ -226,7 +238,7 @@ final class AppState {
     /// Cancel keeps every tab. Then they close one after another, and an unsaved editor the user keeps stops the rest.
     func closeTabs(_ closing: [TabKind]) {
         Task {
-            let request = await closeRequest(for: closing)
+            let request = await closeRequest(for: .close(closing))
             if request.endsSomething { confirm(request) } else { await close(closing) }
         }
     }
@@ -255,12 +267,14 @@ final class AppState {
         switch request.action {
         case .close(let closing): Task { await close(closing) }
         case .forget(let sessionKey): forgetSession(sessionKey)
+        case .removeProject(let project, let closing): Task { await remove(project, closing: closing) }
         }
     }
 
-    /// What closing `closing` ends: the sessions whose omp runs, what runs in the terminals besides their programs.
-    private func closeRequest(for closing: [TabKind]) async -> CloseRequest {
-        var request = CloseRequest(action: .close(closing), project: confirmationProject(for: closing))
+    /// What `action` ends: the sessions whose omp runs, what runs in the terminals besides their programs.
+    private func closeRequest(for action: CloseRequest.Action) async -> CloseRequest {
+        let closing = action.closing
+        var request = CloseRequest(action: action, project: confirmationProject(for: closing))
         guard connection.isConnected else { return request }
         for tab in closing {
             switch tab {
@@ -290,9 +304,10 @@ final class AppState {
         return keyProject ?? windowsByProject.keys.first ?? ""
     }
 
-    /// Closes `closing` one after another without asking about what ends with them; an unsaved editor the user keeps
-    /// stops the rest.
-    private func close(_ closing: [TabKind]) async {
+    /// Closes `closing` one after another without asking about what ends with them; false when an unsaved editor the
+    /// user keeps stopped the rest.
+    @discardableResult
+    private func close(_ closing: [TabKind]) async -> Bool {
         for tab in closing {
             switch tab {
             case .session(let sessionKey):
@@ -301,9 +316,10 @@ final class AppState {
                 closeTerminal(ptyId)
             case .editor(let path):
                 guard tabs.contains(tab) else { continue }
-                guard await closeEditorTab(path) else { return }
+                guard await closeEditorTab(path) else { return false }
             }
         }
+        return true
     }
 
     /// Closes an editor's tab, asking first about unsaved edits; false when the user kept it.
@@ -462,15 +478,24 @@ final class AppState {
         saveWindow()
     }
 
-    /// Whether the project can leave the list: nothing of it is open or running.
-    func canRemoveProject(_ workspace: String) -> Bool {
-        !connection.workspaces.contains { $0.path == workspace } && !tabs.strips.contains { $0.workspace == workspace }
+    /// Takes the project out of the list and closes its window; the folder stays on disk. Its tabs close first, the way
+    /// Close All Tabs closes them, asked about once in its window when that ends omp sessions or commands running in its
+    /// terminals. Its editors close before the rest: one with unsaved edits the user keeps keeps the project, and what
+    /// runs in it.
+    func removeProject(_ workspace: String) {
+        let open = strip(of: workspace)?.tabs ?? []
+        let closing = open.filter { $0.editorPath != nil } + open.filter { $0.editorPath == nil }
+        Task {
+            let request = await closeRequest(for: .removeProject(workspace, tabs: closing))
+            if request.endsSomething { confirm(request) } else { await remove(workspace, closing: closing) }
+        }
     }
 
-    func removeProject(_ workspace: String) {
-        guard canRemoveProject(workspace) else { return }
+    private func remove(_ workspace: String, closing: [TabKind]) async {
+        guard await close(closing) else { return }
         addedProjects.removeAll { $0 == workspace }
         saveWindow()
+        if window(of: workspace) != nil { removedProjectWindows.insert(workspace) }
         closeProjectWindow?(workspace)
     }
 
@@ -843,7 +868,7 @@ final class AppState {
 
     private func windowClosing(_ id: ObjectIdentifier, project: String) {
         flushState()
-        noteClosedProject(project)
+        if removedProjectWindows.remove(project) == nil { noteClosedProject(project) }
         windowsAttached.remove(id)
         if windowsByProject[project] == id { windowsByProject[project] = nil }
         for observer in windowObservers.removeValue(forKey: id) ?? [] { NotificationCenter.default.removeObserver(observer) }

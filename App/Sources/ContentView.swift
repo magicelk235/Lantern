@@ -115,11 +115,13 @@ struct ProjectWindow: View {
 }
 
 /// The words of a close's confirmation: Terminal's for the processes of a terminal, the session's title for one
-/// session, the count for several tabs, each saying what ends.
+/// session, the count for several tabs, the project's name for Remove Project, each saying what ends.
+@MainActor
 extension AppState.CloseRequest {
     var title: String {
         switch action {
         case .forget: "Remove this session from the list?"
+        case .removeProject(let project, _): "Remove “\(AppState.projectName(project))” from the projects?"
         case .close(let closing) where closing.count > 1: "Close \(closing.count) tabs?"
         case .close: sessions.first.map { "Close “\($0.title)”?" } ?? "Do you want to terminate running processes in this tab?"
         }
@@ -128,6 +130,7 @@ extension AppState.CloseRequest {
     var confirmation: String {
         switch action {
         case .forget: "Remove Session"
+        case .removeProject: "Remove Project"
         case .close(let closing) where closing.count > 1: "Close Tabs"
         case .close: sessions.isEmpty ? "Terminate" : "Close Session"
         }
@@ -137,6 +140,9 @@ extension AppState.CloseRequest {
         switch action {
         case .forget:
             return "ompd forgets the session and its tab closes. The conversation file on disk is kept."
+        case .removeProject(_, let closing):
+            let tabs = closing.count == 1 ? "Its tab closes" : "Its \(closing.count) tabs close"
+            return working + "\(tabs): \(ending)." + resume + " The folder on disk is kept."
         case .close(let closing) where closing.count == 1 && sessions.isEmpty:
             return "Closing this tab will terminate the running processes: \(processes.joined(separator: ", "))."
         case .close(let closing) where closing.count == 1:
@@ -144,23 +150,32 @@ extension AppState.CloseRequest {
             let resume = sessions.allSatisfy(\.resumable) ? "; you can resume it later from Open Session…" : "."
             return working + "The omp session ends" + resume
         case .close:
-            var ending: [String] = []
-            if !sessions.isEmpty {
-                let titles = ListFormatter.localizedString(byJoining: sessions.map { "“\($0.title)”" })
-                ending.append(sessions.count == 1 ? "the omp session \(titles) ends" : "the omp sessions \(titles) end")
-            }
-            if !processes.isEmpty {
-                let names = processes.joined(separator: ", ")
-                ending.append(processes.count == 1 ? "the running process \(names) is terminated" : "the running processes \(names) are terminated")
-            }
-            let sentence = ending.joined(separator: ", and ")
-            let working = sessions.contains(where: \.working) ? "An agent is working. " : ""
-            var message = working + sentence.prefix(1).uppercased() + sentence.dropFirst() + "."
-            if !sessions.isEmpty, sessions.allSatisfy(\.resumable) {
-                message += sessions.count == 1 ? " You can resume it later from Open Session…" : " You can resume them later from Open Session…"
-            }
-            return message
+            return working + ending.prefix(1).uppercased() + ending.dropFirst() + "." + resume
         }
+    }
+
+    /// What ends, as one clause: "the omp session “X” ends, and the running process vim is terminated".
+    private var ending: String {
+        var ending: [String] = []
+        if !sessions.isEmpty {
+            let titles = ListFormatter.localizedString(byJoining: sessions.map { "“\($0.title)”" })
+            ending.append(sessions.count == 1 ? "the omp session \(titles) ends" : "the omp sessions \(titles) end")
+        }
+        if !processes.isEmpty {
+            let names = processes.joined(separator: ", ")
+            ending.append(processes.count == 1 ? "the running process \(names) is terminated" : "the running processes \(names) are terminated")
+        }
+        return ending.joined(separator: ", and ")
+    }
+
+    private var working: String {
+        sessions.contains(where: \.working) ? "An agent is working. " : ""
+    }
+
+    /// How the ending sessions come back, when they all can.
+    private var resume: String {
+        guard !sessions.isEmpty, sessions.allSatisfy(\.resumable) else { return "" }
+        return sessions.count == 1 ? " You can resume it later from Open Session…" : " You can resume them later from Open Session…"
     }
 }
 
@@ -314,8 +329,8 @@ private struct EmptyDetail: View {
     }
 }
 
-/// What the project in focus offers: New Session, New Terminal, Open Session…, Finder, and Remove once nothing of it is
-/// open.
+/// What the project in focus offers: New Session, New Terminal, Open Session…, Finder, and Remove Project, which closes
+/// its tabs first (asking when that ends sessions or running commands).
 struct ProjectMenu: View {
     let app: AppState
     let project: String
@@ -331,7 +346,6 @@ struct ProjectMenu: View {
             NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: project, directoryHint: .isDirectory)])
         }
         Button("Remove Project") { app.removeProject(project) }
-            .disabled(!app.canRemoveProject(project))
     }
 }
 
