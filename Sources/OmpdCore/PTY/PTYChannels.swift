@@ -126,12 +126,18 @@ final class MasterChannel {
 /// Reaps one child with a dispatch process source (no zombies), independent of the pool's lifetime: the source
 /// keeps itself alive until the child is reaped. Signals are only sent while the child is unreaped, so a
 /// recycled pid is never hit.
+///
+/// The process source alone loses about one in 150 children that exit at once: when the exit lands between
+/// the registration handler's `waitpid` (not waitable yet) and the kqueue registration (refused, the process is
+/// already exiting), no event ever comes. SIGCHLD reaches ompd once the child is waitable, so every unreaped child
+/// is checked again then.
 final class ChildReaper: Sendable {
     let pid: pid_t
     private let reaped = OSAllocatedUnfairLock(initialState: false)
     private let source: any DispatchSourceProcess
     /// `suspend`: nothing is reaped until `resume`.
     private let suspended = OSAllocatedUnfairLock(initialState: false)
+    private let reap: @Sendable () -> Void
 
     /// `onExit` runs on the main queue with the `waitpid` status (0 if someone else reaped the child).
     init(pid: pid_t, onExit: @escaping @Sendable (Int32) -> Void) {
@@ -139,7 +145,7 @@ final class ChildReaper: Sendable {
         let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
         self.source = source
         let reaped = reaped
-        let reap = {
+        let reap: @Sendable () -> Void = {
             let status: Int32? = reaped.withLock { done in
                 guard !done else { return nil }
                 var status: Int32 = 0
@@ -150,15 +156,24 @@ final class ChildReaper: Sendable {
             }
             guard let status else { return }
             source.cancel()
+            ChildExits.forget(pid)
             onExit(status)
         }
+        self.reap = reap
         source.setEventHandler(handler: reap)
         // An exit that happened before the kqueue registration produces no event: check once registered.
         source.setRegistrationHandler(handler: reap)
+        ChildExits.watch(self)
         source.resume()
     }
 
     var isReaped: Bool { reaped.withLock { $0 } }
+
+    /// After a SIGCHLD, on the main queue: reaps the child unless it is suspended.
+    fileprivate func childMayHaveExited() {
+        guard !suspended.withLock({ $0 }) else { return }
+        reap()
+    }
 
     /// Leaves an exit unreaped (a zombie the next image of the process reaps, after an in-place upgrade) until `resume`.
     func suspend() {
@@ -169,6 +184,8 @@ final class ChildReaper: Sendable {
     func resume() {
         guard suspended.withLock({ s in defer { s = false }; return s }) else { return }
         source.resume()
+        // A SIGCHLD that came while suspended was ignored.
+        DispatchQueue.main.async { [self] in childMayHaveExited() }
     }
 
     /// Sends `signal` to the child's process group (it is a session leader) unless it has been reaped.
@@ -177,5 +194,28 @@ final class ChildReaper: Sendable {
         reaped.withLock { done in
             if !done { _ = kill(-pid, signal) }
         }
+    }
+}
+
+/// The unreaped children and the SIGCHLD source that checks them. SIGCHLD keeps its default disposition (ignored as a
+/// signal, still reported to the source); `SIG_IGN` would make the kernel reap children before `waitpid` sees them.
+private enum ChildExits {
+    private static let reapers = OSAllocatedUnfairLock<[pid_t: ChildReaper]>(initialState: [:])
+    private static let source: any DispatchSourceSignal = {
+        let source = DispatchSource.makeSignalSource(signal: SIGCHLD, queue: .main)
+        source.setEventHandler {
+            for reaper in reapers.withLock({ Array($0.values) }) { reaper.childMayHaveExited() }
+        }
+        source.resume()
+        return source
+    }()
+
+    static func watch(_ reaper: ChildReaper) {
+        _ = source
+        reapers.withLock { $0[reaper.pid] = reaper }
+    }
+
+    static func forget(_ pid: pid_t) {
+        _ = reapers.withLock { $0.removeValue(forKey: pid) }
     }
 }
