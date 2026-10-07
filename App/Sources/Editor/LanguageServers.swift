@@ -6,7 +6,7 @@ import os
 /// started for the first editor of a file it takes and shut down (`shutdown`, then `exit`) when the last of those
 /// editors closes and when the app quits. Servers run in the login shell's environment, captured once, and are found on
 /// its `PATH`; a kind whose program is not installed has no server, which the status bar says quietly. A server that
-/// fails to start or ends by itself stays that way until its editors close.
+/// fails to start or ends by itself stays that way until the user restarts it from the status bar, or its editors close.
 @MainActor @Observable
 final class LanguageServers {
     struct Key: Hashable {
@@ -61,6 +61,14 @@ final class LanguageServers {
         entries[document.key] = nil
         statuses[document.key] = nil
         if let server = entry.server { stop(server) }
+    }
+
+    /// Starts the server of `key` again after it failed to start or ended by itself (the status bar's Restart): its
+    /// editors give it their text as it is now.
+    func restart(_ key: Key) {
+        guard let entry = entries[key], entry.server == nil, case .failed = statuses[key] else { return }
+        statuses[key] = .starting
+        Task { await start(key, entry) }
     }
 
     /// Shuts every server down (quitting), waiting at most `limit`: a server still running after that is left to the

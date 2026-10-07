@@ -56,6 +56,17 @@ public enum LanguageServerKind: String, Sendable, Hashable, CaseIterable {
         return nil
     }
 
+    /// Whether the server must not be asked for completions at `offset` of `text` (UTF-16). sourcekit-lsp (Xcode 27's)
+    /// traps with "String index is out of bounds" on a completion at the very end of the text in a call's argument list
+    /// that has nothing in it yet (`print(`, `print( `), whether a trigger character or the user asked. The editor closes
+    /// a parenthesis only once the next character is typed, so typing a call on the last line of a file gets there.
+    public func skipsCompletion(at offset: Int, in text: NSString) -> Bool {
+        guard self == .swift, offset == text.length else { return false }
+        var before = offset
+        while before > 0, [0x20, 0x09].contains(text.character(at: before - 1)) { before -= 1 }
+        return before > 0 && text.character(at: before - 1) == 0x28
+    }
+
     private static let trampolines: Set<String> = ["/usr/bin/sourcekit-lsp", "/usr/bin/clangd"]
 }
 

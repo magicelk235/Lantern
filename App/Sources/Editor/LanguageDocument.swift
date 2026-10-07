@@ -236,9 +236,11 @@ final class LanguageDocument {
         return (try? await server.definitions(sync.uri, at: position)) ?? []
     }
 
-    /// The completions at `offset`, asked for after typing `trigger` or as the user types a word (nil).
+    /// The completions at `offset`, asked for after typing `trigger` or as the user types a word (nil); none where the
+    /// server is known to fail on the request (`LanguageServerKind.skipsCompletion`).
     func completions(at offset: Int, trigger: String?) async -> [CompletionCandidate] {
-        guard let server, features?.completionTriggers != nil else { return [] }
+        guard let server, features?.completionTriggers != nil, let textView,
+              !key.kind.skipsCompletion(at: offset, in: textView.textStorage.mutableString) else { return [] }
         let position = sync.lines.position(at: offset)
         return (try? await server.completions(sync.uri, at: position, trigger: trigger)) ?? []
     }

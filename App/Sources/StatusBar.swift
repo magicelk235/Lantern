@@ -116,7 +116,7 @@ private struct EditorState: View {
     var body: some View {
         HStack(spacing: 14) {
             if let language = document.languageDocument {
-                LanguageServerState(language: language, status: servers.statuses[language.key])
+                LanguageServerState(language: language, status: servers.statuses[language.key]) { servers.restart(language.key) }
             }
             if let caret = document.caret {
                 Text("Ln \(caret.line), Col \(caret.column)")
@@ -148,10 +148,11 @@ private struct JumpToLineAnchor: ViewModifier {
 }
 
 /// The editor's errors and warnings from its language server, after Xcode's issue icons (nothing when there are none);
-/// a quiet note when no server for the language is installed, and when the server stopped.
+/// a quiet note when no server for the language is installed, and when the server stopped, with Restart beside it.
 private struct LanguageServerState: View {
     let language: LanguageDocument
     let status: LanguageServers.Status?
+    let restart: () -> Void
 
     var body: some View {
         switch status {
@@ -181,8 +182,12 @@ private struct LanguageServerState: View {
             HStack(spacing: 5) {
                 WarningMark()
                 Text("Language Server Stopped")
+                    .help(reason)
+                Button("Restart", action: restart)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+                    .help("Start the language server again")
             }
-            .help(reason)
         case .starting, nil:
             EmptyView()
         }

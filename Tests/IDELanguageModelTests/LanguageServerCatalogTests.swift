@@ -1,3 +1,4 @@
+import Foundation
 import IDELanguageModel
 import Testing
 
@@ -71,5 +72,22 @@ import Testing
         #expect(
             resolve(.clang, path: "/usr/bin", executables: ["/usr/bin/clangd"], xcrun: xcode)
                 == LanguageServerCommand(executable: xcode["clangd"]!, arguments: []))
+    }
+
+    @Test func sourceKitLSPIsNotAskedForCompletionsInAnEmptyArgumentListAtTheEndOfTheText() {
+        let skips = { (kind: LanguageServerKind, text: String, offset: Int?) in
+            kind.skipsCompletion(at: offset ?? (text as NSString).length, in: text as NSString)
+        }
+        #expect(skips(.swift, "let a = 1\nprint(", nil))
+        #expect(skips(.swift, "print( ", nil))
+        #expect(skips(.swift, "add(\t ", nil))
+        // Not at the end, an argument typed, or another server: asked as usual.
+        #expect(!skips(.swift, "print(\n", 6))
+        #expect(!skips(.swift, "print()", 6))
+        #expect(!skips(.swift, "print(w", nil))
+        #expect(!skips(.swift, "print(1, ", nil))
+        #expect(!skips(.swift, "(", 0))
+        #expect(!skips(.swift, "", nil))
+        #expect(!skips(.typescript, "console.log(", nil))
     }
 }
