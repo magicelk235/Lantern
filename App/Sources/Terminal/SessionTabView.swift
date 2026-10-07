@@ -1,5 +1,6 @@
 import IDEModel
 import IDEState
+import RegexBuilder
 import SwiftUI
 
 /// A session tab: omp's own TUI in a terminal emulator, following omp from PTY to PTY. While the TUI is not
@@ -33,6 +34,7 @@ struct SessionTabView: View {
                             Button(action.title) { perform(action) }
                         }
                     }
+                    .help(notice.detail ?? "")
                 } else if notice == nil, let entry = session.entry {
                     if let interruption = entry.pendingContinuation {
                         ContinuationBar(app: app, sessionKey: sessionKey, interruption: interruption)
@@ -79,6 +81,8 @@ struct SessionNotice {
 
     var title: String
     var message: String
+    /// The tooltip: the paths `message` names by their last part, in full.
+    var detail: String?
     var systemImage: String
     var tint: Color
     /// Something is under way that ends it by itself: a spinner instead of the icon.
@@ -95,7 +99,7 @@ struct SessionNotice {
         }
         guard let entry = session.entry else {
             self.init(
-                "Unknown Session", "ompd does not list this session. Close the tab; Open Session… (⇧⌘O) can resume it from its file.",
+                "Unknown session", "ompd does not list this session. Close the tab; Open Session… (⇧⌘O) can resume it from its file.",
                 "questionmark.circle", .secondary, actions: [.closeTab])
             return
         }
@@ -103,29 +107,33 @@ struct SessionNotice {
         switch entry.status {
         case .closed:
             self.init(
-                entry.closedByUser ? "Session Closed" : "omp Exited",
+                entry.closedByUser ? "Session closed" : "omp exited",
                 entry.isResumable
                     ? "Resume starts omp again with this conversation."
                     : entry.sessionFileIsGone ? "Its session file is gone; it cannot be resumed." : "ompd has no session file to resume it from.",
                 "stop.circle", .secondary, actions: entry.isResumable ? [.resume, .closeTab] : [.forget, .closeTab])
         case .interrupted:
             self.init(
-                "omp Stopped Unexpectedly", "ompd is starting it again with this conversation.", "exclamationmark.triangle",
+                "omp stopped unexpectedly", "ompd is starting it again with this conversation.", "exclamationmark.triangle",
                 .orange, inProgress: true)
         case .needsAttention:
+            let reason = daemonMessage.map { Self.withoutPaths($0, of: entry) }
             if entry.canLocateFolder {
                 // Resume would fail the same way; the session resumes in the folder the user points at.
                 self.init(
-                    "omp Could Not Be Resumed",
-                    (daemonMessage ?? "Its folder \(entry.workspace) no longer exists.") + " Locate Folder… resumes it where the folder is now.",
+                    "omp could not be resumed",
+                    (reason ?? "Its folder “\(AppState.projectName(entry.workspace))” no longer exists.")
+                        + " Locate Folder… resumes it where the folder is now.",
                     "exclamationmark.octagon", .red, actions: [.locateFolder, .forget])
+                detail = daemonMessage ?? entry.workspace
                 return
             }
             self.init(
-                "omp Could Not Be Resumed",
-                (daemonMessage ?? "It stopped again right after every restart.")
+                "omp could not be resumed",
+                (reason ?? "It stopped again right after every restart.")
                     + (entry.isResumable ? " Resume tries once more." : " Remove it from the list; its file stays on disk."),
                 "exclamationmark.octagon", .red, actions: entry.isResumable ? [.resume, .forget] : [.forget])
+            if reason != daemonMessage { detail = daemonMessage }
         case .resuming:
             self.init("Resuming…", "ompd is starting omp again with this conversation.", "arrow.clockwise", .secondary, inProgress: true)
         case .starting:
@@ -134,18 +142,18 @@ struct SessionNotice {
             if entry.adopted {
                 // omp runs in a terminal tab; this tab has nothing of it to show.
                 self.init(
-                    "Running in a Terminal", "omp was started in a terminal of this window; its tab shows the session.",
+                    "Running in a terminal", "omp was started in a terminal of this window; its tab shows the session.",
                     "terminal", .secondary, actions: [.showTerminal, .closeTab])
                 return
             }
             // omp runs; its TUI is not on screen (yet).
             switch session.terminal?.phase {
             case .failed(let message):
-                self.init("Could Not Show omp", message, "exclamationmark.triangle", .orange, actions: [.closeTab])
+                self.init("Could not show omp", message, "exclamationmark.triangle", .orange, actions: [.closeTab])
             case .gone:
-                self.init("omp's Terminal Ended", "Waiting for ompd…", "terminal", .secondary, inProgress: true)
+                self.init("omp’s terminal ended", "Waiting for ompd…", "terminal", .secondary, inProgress: true)
             case .attached where session.terminal?.hasExited == true:
-                self.init("omp Exited", "Waiting for ompd…", "terminal", .secondary, inProgress: true)
+                self.init("omp exited", "Waiting for ompd…", "terminal", .secondary, inProgress: true)
             case .attached, .attaching, .detached, nil:
                 self.init("Connecting to omp…", "", "terminal", .secondary, inProgress: true)
             }
@@ -162,6 +170,33 @@ struct SessionNotice {
         self.tint = tint
         self.inProgress = inProgress
         self.actions = actions
+    }
+
+    /// ompd's words about a session without the paths in them, which wrap the bar and say little: the session's file
+    /// goes ("The omp session file is missing"), any other path is its last part in quotes ("The workspace folder
+    /// “api” does not exist"). The tooltip keeps them (`detail`).
+    @MainActor
+    static func withoutPaths(_ message: String, of entry: SessionManifestEntry) -> String {
+        var text = message
+        // The entry's own paths first: they may hold spaces.
+        if let file = entry.sessionFile, !file.isEmpty {
+            text = text.replacingOccurrences(of: "session file \(file)", with: "session file")
+            text = text.replacingOccurrences(of: file, with: "“\(URL(filePath: file).lastPathComponent)”")
+        }
+        if !entry.workspace.isEmpty {
+            // The folder itself; a path inside it is left to the pattern below.
+            let folder = Regex { entry.workspace; NegativeLookahead { "/" } }
+            text = text.replacing(folder, with: "“\(AppState.projectName(entry.workspace))”")
+        }
+        // Any other absolute path, after a space, a parenthesis or the start, up to a space or the punctuation around it.
+        let path = /(^|[\s(])((?:~|\/(?:Users|private|tmp|var|opt|usr|Applications|Volumes|home|Library|System))\/[^\s,;:()“”"']+)/
+        text = text.replacing(path) { match in
+            var path = String(match.output.2)
+            var trailing = ""
+            while let last = path.last, last == "." { trailing.insert(path.removeLast(), at: trailing.startIndex) }
+            return String(match.output.1) + "“\(URL(filePath: path).lastPathComponent)”" + trailing
+        }
+        return text
     }
 }
 
@@ -280,12 +315,14 @@ struct SessionReportBar: View {
     var body: some View {
         let since = entry.spawnedAt ?? .distantPast
         if let report = app.connection.notices.last(where: { $0.sessionKey == entry.sessionKey && $0.level != "info" && $0.at >= since }) {
+            let message = SessionNotice.withoutPaths(report.message, of: entry)
             NoticeBar(
                 systemImage: report.level == "error" ? "exclamationmark.octagon" : "exclamationmark.triangle",
-                tint: report.level == "error" ? .red : .orange, title: "", message: report.message, rule: .top
+                tint: report.level == "error" ? .red : .orange, title: "", message: message, rule: .top
             ) {
                 Button("Dismiss") { app.connection.dismissNotices(about: entry.sessionKey) }
             }
+            .help(message == report.message ? "" : report.message)
         }
     }
 }
@@ -311,6 +348,7 @@ private struct SessionPlaceholder: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .help(notice.detail ?? "")
         .background(Chrome.canvas)
     }
 }
