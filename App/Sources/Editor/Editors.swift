@@ -66,10 +66,15 @@ final class Editors {
     @discardableResult
     func open(_ path: String, in workspace: String) -> EditorDocument {
         if let document = documents[path] { return document }
-        let document = EditorDocument(
-            path: path, workspace: workspace, restored: restoredBuffers.removeValue(forKey: path),
-            savedUI: persistence.editorUI[path], persistence: persistence, repository: repositories.repository(for: workspace),
-            languageServers: languageServers)
+        // In an autorelease pool of its own: the previous run's tabs open before the app's run loop starts, where
+        // nothing drains what AppKit autoreleases, and the text view controller's child list (autoreleased when it is
+        // made, and holding its find view and with it the whole editor) kept a restored tab's editor after it closed.
+        let document = autoreleasepool {
+            EditorDocument(
+                path: path, workspace: workspace, restored: restoredBuffers.removeValue(forKey: path),
+                savedUI: persistence.editorUI[path], persistence: persistence, repository: repositories.repository(for: workspace),
+                languageServers: languageServers)
+        }
         documents[path] = document
         watch(Self.watchRoot(for: path, in: workspace))
         return document
