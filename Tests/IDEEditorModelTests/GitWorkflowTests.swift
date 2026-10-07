@@ -210,6 +210,9 @@ struct GitWorkflowTests {
         let (mine, _) = try await scratch.diverged(
             theirs: ["conflict.txt": "line 1\ntheirs\n"], mine: ["conflict.txt": "line 1\nmine\n"])
         try await git(["config", "pull.rebase", "true"], in: mine)
+        // A local branch at the same commit as the upstream: the bar still names the upstream.
+        try await git(["fetch", "-q"], in: mine)
+        try await git(["branch", "topic", "origin/main"], in: mine)
         _ = await failure(await GitPull.arguments(branch: "main", in: mine), in: mine)
         let rebase = try #require(try await operation(mine))
         #expect(rebase == GitOperation(kind: .rebase, incoming: "origin/main", branch: "main"))

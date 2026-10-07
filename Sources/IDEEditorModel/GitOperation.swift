@@ -34,8 +34,9 @@ public struct GitOperation: Equatable, Sendable {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
         if let head = contents("MERGE_HEAD")?.split(separator: "\n").first.map(String.init), !head.isEmpty {
+            let branch = contents("HEAD").flatMap { $0.hasPrefix("ref: refs/heads/") ? String($0.dropFirst(16)) : nil }
             return GitOperation(
-                kind: .merge, incoming: await name(of: head, in: directory),
+                kind: .merge, incoming: await name(of: head, upstreamOf: branch, in: directory),
                 message: contents("MERGE_MSG").map(withoutComments).flatMap { $0.isEmpty ? nil : $0 })
         }
         // `rebase-apply` without `applying` is a rebase by the apply backend; with it, `git am`, which is no rebase.
@@ -43,24 +44,34 @@ public struct GitOperation: Equatable, Sendable {
             && !files.fileExists(atPath: gitDirectory + "/" + folder + "/applying")
         {
             let onto = contents(folder + "/onto") ?? ""
-            let branch = contents(folder + "/head-name").map { $0.hasPrefix("refs/heads/") ? String($0.dropFirst(11)) : $0 }
+            let head = contents(folder + "/head-name")
+            let branch = head.flatMap { $0.hasPrefix("refs/heads/") ? String($0.dropFirst(11)) : nil }
             return GitOperation(
-                kind: .rebase, incoming: onto.isEmpty ? "the upstream" : await name(of: onto, in: directory),
-                branch: branch == "detached HEAD" ? nil : branch)
+                kind: .rebase, incoming: onto.isEmpty ? "the upstream" : await name(of: onto, upstreamOf: branch, in: directory),
+                branch: branch)
         }
         return nil
     }
 
-    /// A local branch at `commit`, else a remote-tracking one (not a remote's `HEAD`), else the short commit id.
-    private static func name(of commit: String, in directory: String) async -> String {
+    /// `branch`'s upstream when it is at `commit` (what a pull merges or rebases onto), else a local branch there, else
+    /// a remote-tracking one (not a remote's `HEAD`), else the short commit id.
+    private static func name(of commit: String, upstreamOf branch: String?, in directory: String) async -> String {
         let refs = (try? await Git.text(
             ["for-each-ref", "--points-at=\(commit)", "--format=%(refname)", "refs/heads/", "refs/remotes/"], in: directory))?
             .split(separator: "\n").map(String.init) ?? []
-        if let local = refs.first(where: { $0.hasPrefix("refs/heads/") }) { return String(local.dropFirst(11)) }
-        if let remote = refs.first(where: { $0.hasPrefix("refs/remotes/") && !$0.hasSuffix("/HEAD") }) {
-            return String(remote.dropFirst(13))
+        if let branch, let upstream = try? await Git.text(["for-each-ref", "--format=%(upstream)", "refs/heads/" + branch], in: directory),
+           refs.contains(upstream)
+        {
+            return shortName(upstream)
         }
+        if let local = refs.first(where: { $0.hasPrefix("refs/heads/") }) { return shortName(local) }
+        if let remote = refs.first(where: { $0.hasPrefix("refs/remotes/") && !$0.hasSuffix("/HEAD") }) { return shortName(remote) }
         return String(commit.prefix(7))
+    }
+
+    private static func shortName(_ ref: String) -> String {
+        for prefix in ["refs/heads/", "refs/remotes/"] where ref.hasPrefix(prefix) { return String(ref.dropFirst(prefix.count)) }
+        return ref
     }
 
     /// The message without the lines git comments out (`# Conflicts:` and the files under it) and the blank lines at
