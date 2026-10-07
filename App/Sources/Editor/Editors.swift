@@ -126,8 +126,8 @@ final class Editors {
                     try document.save()
                 } catch {
                     let failure = NSAlert()
-                    failure.messageText = "“\(document.name)” could not be saved."
-                    failure.informativeText = String(describing: error)
+                    failure.messageText = (error as? EditorDocument.SaveFailure)?.message ?? error.localizedDescription
+                    failure.informativeText = "The tab stays open with your changes. Use Save As… in its notice to save them in another location."
                     _ = if let window { await failure.beginSheetModal(for: window) } else { failure.runModal() }
                     return false
                 }

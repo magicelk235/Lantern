@@ -135,13 +135,20 @@ struct JumpToLine: View {
     }
 }
 
-/// What happened to the file on disk under this tab.
+/// What happened to the file on disk under this tab, and a save that failed.
 private struct DiskNotices: View {
     let app: AppState
     let document: EditorDocument
 
     var body: some View {
-        if document.conflict != nil {
+        if let failure = document.saveFailure {
+            NoticeBar(systemImage: "exclamationmark.triangle", tint: .red, title: "", message: failure.message) {
+                Button("Save As…") { Task { await app.saveAs(document) } }
+                Button("Reveal in Finder") { app.revealInFinder(document.path) }
+                Button("Try Again") { try? document.save() }
+            }
+            .help("Your changes are kept in Lantern until they can be saved.")
+        } else if document.conflict != nil {
             NoticeBar(
                 systemImage: "exclamationmark.triangle", tint: .orange, title: "Changed on disk",
                 message: "Another program changed “\(document.name)” while you had unsaved edits."

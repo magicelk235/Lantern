@@ -29,6 +29,35 @@ final class EditorDocument {
         let hunks: [LineDiff.Hunk]
     }
 
+    /// Why the text could not be written, in one sentence the way Finder puts it.
+    struct SaveFailure: Error, Equatable {
+        let message: String
+
+        init(_ error: any Error, name: String) {
+            let nsError = error as NSError
+            let code: Int32 = if let write = error as? TextFile.WriteError {
+                write.errno
+            } else if nsError.domain == NSPOSIXErrorDomain {
+                Int32(nsError.code)
+            } else {
+                0
+            }
+            let reason: String? = switch code {
+            case EACCES, EPERM: "you don’t have permission"
+            case EROFS: "the disk is read-only"
+            case ENOSPC, EDQUOT: "the disk is full"
+            case ENOENT, ENOTDIR: "its folder no longer exists"
+            case ENAMETOOLONG: "the name is too long"
+            default: nil
+            }
+            message = if let reason {
+                "“\(name)” can’t be saved because \(reason)."
+            } else {
+                "“\(name)” can’t be saved. \(code != 0 ? String(cString: strerror(code)) : error.localizedDescription)."
+            }
+        }
+    }
+
     private(set) var path: String
     let workspace: String
     private(set) var content: Content
@@ -36,6 +65,9 @@ final class EditorDocument {
     /// A version of the file written on disk under unsaved edits, until the user reloads it or keeps theirs.
     private(set) var conflict: TextSnapshot? = nil
     private(set) var gone: EditorBuffer.Gone? = nil
+    /// The last save failed; autosave waits until the user saves again (Save, Try Again, Save As). Cleared once
+    /// nothing is left to save.
+    private(set) var saveFailure: SaveFailure? = nil
     private(set) var language = CodeLanguage.default
     /// Line and column (1-based) of the first caret.
     private(set) var caret: CursorPosition.Position? = nil
@@ -119,13 +151,36 @@ final class EditorDocument {
 
     // MARK: - Commands
 
-    /// Writes the text to the file (⌘S). On failure the edits stay unsaved, and in hot-exit.
+    /// Writes the text to the file (⌘S, Try Again). On failure the edits stay unsaved, and in hot-exit, and
+    /// `saveFailure` says why: the error thrown is that `SaveFailure`.
     func save() throws {
-        guard var buffer, let textView = controller?.textView else { return }
-        let saved = try TextFile.write(textView.string, to: path)
+        guard controller != nil else { return }
+        do {
+            didSave(try writeText(to: path, name: name))
+        } catch let failure as SaveFailure {
+            saveFailure = failure
+            throw failure
+        }
+    }
+
+    /// Writes the text to `newPath` (Save As), for the document to follow it there (`relocate`, then `didSave`). The
+    /// error thrown is a `SaveFailure`.
+    func writeText(to newPath: String, name: String) throws -> TextSnapshot {
+        guard let textView = controller?.textView else { throw SaveFailure(CocoaError(.fileWriteUnknown), name: name) }
+        do {
+            return try TextFile.write(textView.string, to: newPath)
+        } catch {
+            throw SaveFailure(error, name: name)
+        }
+    }
+
+    /// The text was written to the document's path as `saved`.
+    func didSave(_ saved: TextSnapshot) {
+        guard var buffer else { return }
         stamp = FileStamp(path: path)
         buffer.didSave(saved)
         self.buffer = buffer
+        saveFailure = nil
         publish()
         clearHotExit()
         gitGutter?.textDidSave()
@@ -149,14 +204,16 @@ final class EditorDocument {
         }
     }
 
-    /// Keeps the edits over the version in `conflict`: they now count against it, and saving overwrites it.
+    /// Keeps the edits over the version in `conflict` and writes them over it. A failed write leaves them unsaved over
+    /// the new baseline, and the save failure notice says why.
     func keepMine() {
         guard var buffer, let textView = controller?.textView else { return }
         buffer.keepMine(utf16Count: textView.textStorage.length) { textView.string }
         self.buffer = buffer
         publish()
-        // The copy records the new baseline, so the conflict does not come back after a relaunch.
-        if isDirty { writeHotExit() } else { clearHotExit() }
+        guard isDirty else { return clearHotExit() }
+        // On failure the copy records the new baseline, so the conflict does not come back after a relaunch.
+        do { try save() } catch { writeHotExit() }
     }
 
     /// Diffs the file on disk against the unsaved text, off the main thread, then shows it in a sheet.
@@ -179,6 +236,9 @@ final class EditorDocument {
         buffer?.move(to: newPath)
         stamp = FileStamp(path: newPath)
         if isDirty { writeHotExit() }
+        // The new place may take the text: autosave tries again.
+        saveFailure = nil
+        if isDirty { scheduleAutosave() }
         guard let controller else { return }
         let text = controller.textView.textStorage.mutableString
         let detected = CodeLanguage.detectLanguageFrom(
@@ -263,6 +323,7 @@ final class EditorDocument {
         if isDirty != dirty { isDirty = dirty }
         if conflict != buffer?.conflict { conflict = buffer?.conflict }
         if gone != buffer?.gone { gone = buffer?.gone }
+        if saveFailure != nil, !dirty, gone == nil { saveFailure = nil }
     }
 
     // MARK: - Text view
@@ -556,8 +617,9 @@ final class EditorDocument {
     func autosaveNow() {
         autosave?.cancel()
         autosave = nil
-        guard isDirty, conflict == nil, gone == nil, content == .text else { return }
-        // A failed write keeps the edits (and their hot-exit copy); ⌘S reports the reason.
+        guard isDirty, conflict == nil, gone == nil, saveFailure == nil, content == .text else { return }
+        // A failed write keeps the edits (and their hot-exit copy) and shows the save failure notice, and autosave
+        // waits for the user: retrying on every pause would fail the same way.
         try? save()
     }
 

@@ -13,14 +13,67 @@ extension AppState {
         selectedEditor.flatMap { $0.content == .text ? $0.find : nil }
     }
 
-    /// File › Save (⌘S). A failure leaves the edits unsaved (and in hot-exit) and says why.
+    /// File › Save (⌘S). A failure leaves the edits unsaved (and in hot-exit) and says why in a sheet that offers Save
+    /// As…; the editor's save failure notice stays until a save works.
     func saveSelectedEditor() {
         guard let document = selectedEditor, document.canSave else { return }
         do {
             try document.save()
         } catch {
-            alert = AlertMessage(title: "“\(document.name)” could not be saved", message: String(describing: error))
+            Task { await reportSaveFailure(error, of: document) }
         }
+    }
+
+    private func reportSaveFailure(_ error: any Error, of document: EditorDocument) async {
+        let alert = NSAlert()
+        alert.messageText = (error as? EditorDocument.SaveFailure)?.message ?? error.localizedDescription
+        alert.informativeText = "Your changes are kept in Lantern. Use Save As… to save them in another location."
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Save As…")
+        let response = if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+            await alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+        if response == .alertSecondButtonReturn { await saveAs(document) }
+    }
+
+    /// Save As…: the text goes to a file the user picks, and the editor tab follows it there; the original file stays
+    /// as it was. An editor already open on the picked file closes first, asking about its unsaved edits.
+    func saveAs(_ document: EditorDocument) async {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = document.name
+        panel.directoryURL = URL(filePath: (document.path as NSString).deletingLastPathComponent, directoryHint: .isDirectory)
+        panel.canCreateDirectories = true
+        let response = if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+            await panel.beginSheetModal(for: window)
+        } else {
+            panel.runModal()
+        }
+        guard response == .OK, let url = panel.url else { return }
+        let destination = url.standardizedFileURL.path(percentEncoded: false)
+        let oldPath = document.path
+        guard destination != oldPath else {
+            do { try document.save() } catch { await reportSaveFailure(error, of: document) }
+            return
+        }
+        guard await closeEditors(under: destination) else { return }
+        do {
+            let saved = try document.writeText(to: destination, name: url.lastPathComponent)
+            moveEditors(from: oldPath, to: destination)
+            document.didSave(saved)
+        } catch {
+            await reportSaveFailure(error, of: document)
+        }
+    }
+
+    /// Shows `path` selected in Finder, or the nearest folder above it that still exists.
+    func revealInFinder(_ path: String) {
+        var target = path
+        while !FileManager.default.fileExists(atPath: target), target != "/" {
+            target = (target as NSString).deletingLastPathComponent
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: target)])
     }
 
     /// File › Revert to Saved: after a confirmation, the edits give way to the file on disk (undoable with ⌘Z).
