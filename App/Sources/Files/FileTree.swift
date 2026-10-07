@@ -38,6 +38,20 @@ final class FileTree {
         }
     }
 
+    /// `path` was renamed to `destination`: the folder, and the folders under it, stay expanded under their new names.
+    /// Their old listings go, the new ones are read now, and so is the parent's.
+    func itemMoved(from path: String, to destination: String) {
+        let inside = { (folder: String) in folder == path || folder.hasPrefix(path + "/") }
+        let moved = expanded.filter(inside)
+        for folder in children.keys where inside(folder) { children[folder] = nil }
+        expanded.subtract(moved)
+        for folder in moved { expanded.insert(destination + folder.dropFirst(path.count)) }
+        for folder in [(path as NSString).deletingLastPathComponent] + moved.map({ destination + $0.dropFirst(path.count) })
+        where children[folder] != nil || expanded.contains(folder) {
+            list(folder)
+        }
+    }
+
     func isIgnored(_ path: String) -> Bool {
         ignored.contains(path, under: root)
     }

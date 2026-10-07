@@ -61,7 +61,7 @@ public struct EditorBuffer: Equatable, Sendable {
     }
 
     /// Absolute path of the file.
-    public let path: String
+    public private(set) var path: String
     public private(set) var baseline: Baseline
     public private(set) var isDirty: Bool
     /// A version of the file that appeared on disk while the buffer had edits.
@@ -117,6 +117,11 @@ public struct EditorBuffer: Equatable, Sendable {
     /// The text was written to disk as `saved`.
     public mutating func didSave(_ saved: TextSnapshot) {
         reload(from: saved)
+    }
+
+    /// The file is at `newPath` now (renamed, or saved under another name); its versions and the edits stay.
+    public mutating func move(to newPath: String) {
+        path = newPath
     }
 
     /// The buffer now shows `snapshot`, the file as read from disk (revert, or reloading a conflicting version):

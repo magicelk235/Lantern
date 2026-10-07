@@ -29,7 +29,7 @@ final class EditorDocument {
         let hunks: [LineDiff.Hunk]
     }
 
-    let path: String
+    private(set) var path: String
     let workspace: String
     private(set) var content: Content
     private(set) var isDirty = false
@@ -168,6 +168,36 @@ final class EditorDocument {
             let hunks = await Task.detached(priority: .userInitiated) { LineDiff.hunks(from: diskText, to: mine) }.value
             comparison = Comparison(diskText: diskText, hunks: hunks)
         }
+    }
+
+    /// The file is at `newPath` now (renamed, or saved under another name): the text keeps its undo history, selection
+    /// and scroll position, while the hot-exit copy, the language server, the gutter marks and the highlighting follow.
+    func relocate(to newPath: String) {
+        guard newPath != path else { return }
+        clearHotExit()
+        path = newPath
+        buffer?.move(to: newPath)
+        stamp = FileStamp(path: newPath)
+        if isDirty { writeHotExit() }
+        guard let controller else { return }
+        let text = controller.textView.textStorage.mutableString
+        let detected = CodeLanguage.detectLanguageFrom(
+            url: URL(filePath: newPath), prefixBuffer: text.substring(to: min(512, text.length)))
+        if detected.id != language.id {
+            language = detected
+            controller.language = detected
+        }
+        // The new one first: with the same server, closing the old one last keeps the server running.
+        let previous = languageDocument
+        languageDocument = LanguageDocument(path: newPath, workspace: workspace, controller: controller, servers: languageServers)
+        previous?.close()
+        controller.configuration.peripherals.codeSuggestionTriggerCharacters = languageDocument?.completionTriggers ?? []
+        gitGutter?.detach()
+        let gitGutter = GitGutterView(path: newPath, textView: controller.textView, repository: repository)
+        gitGutter.refresh()
+        gitGutter.attach(to: controller)
+        self.gitGutter = gitGutter
+        saveUI()
     }
 
     // MARK: - Disk

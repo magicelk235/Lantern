@@ -80,25 +80,19 @@ final class Editors {
         return document
     }
 
-    /// The file of `path` was renamed to `newPath` (or a folder holding it was): its document reopens there with its
-    /// unsaved text, selection and scroll position. Nothing is written to the old path.
+    /// The file of `path` was renamed to `newPath` (or a folder holding it was): its document follows it with its text,
+    /// undo history, selection and scroll position. Nothing is written to the old path.
     func move(_ path: String, to newPath: String) {
         guard let document = documents.removeValue(forKey: path) else { return }
-        let unsaved = document.unsavedCopy()
-        // Closing remembers the selection and scroll position under the old path.
-        document.close()
-        document.clearHotExit()
-        if var unsaved {
-            unsaved.path = newPath
-            persistence.saveDirtyBuffer(unsaved)
-            restoredBuffers[newPath] = unsaved
-        }
-        if var ui = persistence.editorUI[path] {
-            ui.path = newPath
-            persistence.updateEditorUI(ui)
-        }
-        open(newPath, in: document.workspace)
+        document.relocate(to: newPath)
+        documents[newPath] = document
+        watch(Self.watchRoot(for: newPath, in: document.workspace))
         if highlight?.path == path { highlight?.path = newPath }
+    }
+
+    /// `path` was renamed to `destination`: the navigators showing it keep its folders expanded under the new name.
+    func itemMoved(from path: String, to destination: String) {
+        for tree in trees.values where path.hasPrefix(tree.root + "/") { tree.itemMoved(from: path, to: destination) }
     }
 
     /// Unsaved buffers of the previous run whose tab did not come back (a lost window layout, say), with the folder

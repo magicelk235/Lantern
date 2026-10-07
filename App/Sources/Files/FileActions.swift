@@ -88,6 +88,7 @@ extension AppState {
             alert = AlertMessage(title: "“\(current)” couldn’t be renamed.", message: FileNamePrompt.explanation(of: error, name: name))
             return
         }
+        editors.itemMoved(from: path, to: destination)
         moveEditors(from: path, to: destination)
     }
 
