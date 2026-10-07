@@ -263,11 +263,23 @@ private struct ActivityButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isCurrent ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+        .foregroundStyle(isCurrent ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.chromeSecondary))
         .onHover { hovering = $0 }
         .help("\(pane.title) (\(pane.shortcut))")
         .accessibilityLabel(pane.title)
+        .accessibilityValue(badgeWords)
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
+    }
+
+    /// The badge in words, VoiceOver's value for the item: "Changes, 3 changed files", "Agents, 2 waiting for you".
+    private var badgeWords: String {
+        guard badge > 0 else { return "" }
+        switch pane {
+        case .changes: return badge == 1 ? "1 changed file" : "\(badge) changed files"
+        case .agents: return "\(badge) waiting for you"
+        case .projects: return "\(badge) waiting for you in other projects"
+        case .files: return ""
+        }
     }
 }
 
