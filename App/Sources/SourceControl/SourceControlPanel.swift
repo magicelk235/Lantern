@@ -1,10 +1,13 @@
 import AppKit
+import IDEEditorModel
 import SwiftUI
 
 /// The Changes side of the trailing panel: the branch and its menu, the commit message, and the project's changes in
-/// two lists, Staged and Changes (untracked files among the latter with a `U`). A click on a change shows its diff
-/// against HEAD; Return or a double-click opens the file in the project's strip; hovering a row shows Stage (+) or
-/// Unstage (−).
+/// lists: Conflicts (what a merge, a rebase or a restored stash left unmerged), Staged and Changes (untracked files
+/// among the latter with a `U`). A merge or rebase under way is a bar over the lists with Abort, as are Lantern's
+/// stash on the branch (Restore) and a failed git command, in plain words with the next step. A click on a change
+/// shows its diff against HEAD; Return or a double-click opens the file in the project's strip; hovering a row shows
+/// Stage (+) or Unstage (−).
 struct SourceControlPanel: View {
     let app: AppState
     @Bindable var repository: GitRepository
@@ -58,11 +61,32 @@ struct SourceControlPanel: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
             Divider()
+            if let operation = repository.operation {
+                operationBar(operation)
+            }
+            if repository.stash != nil {
+                NoticeBar(
+                    systemImage: "tray.full", tint: .secondary, title: "", message: "Your changes from this branch are stashed.",
+                    stacksWhenNarrow: true
+                ) {
+                    Button("Restore") { repository.restoreStash() }
+                        .disabled(repository.isBusy)
+                        .help("Put back the changes stashed to switch branches")
+                }
+            }
             if let failure = repository.lastError {
-                NoticeBar(systemImage: "exclamationmark.triangle", tint: .red, title: failure.title, message: failure.message) {
+                NoticeBar(
+                    systemImage: "exclamationmark.triangle", tint: .red, title: failure.title, message: failure.message,
+                    stacksWhenNarrow: true
+                ) {
+                    if let remedy = failure.remedy {
+                        Button(remedy.title) { repository.perform(remedy) }
+                            .disabled(repository.isBusy)
+                    }
                     Button("Dismiss") { repository.lastError = nil }
                 }
-                .help(failure.message)
+                // What git said, in full.
+                .help(failure.details.isEmpty ? failure.message : failure.details)
             }
             if repository.changes.isEmpty {
                 ContentUnavailableView {
@@ -85,15 +109,18 @@ struct SourceControlPanel: View {
                 Section("Branches") {
                     ForEach(repository.branches, id: \.self) { name in
                         Toggle(name, isOn: Binding(get: { name == repository.branch }, set: { if $0 { repository.switchBranch(name) } }))
+                            .disabled(!repository.canSwitchBranch)
                     }
                 }
                 Button("New Branch…") { repository.beginNamingBranch() }
+                    .disabled(!repository.canSwitchBranch)
                 Divider()
                 Button("Fetch") { repository.fetch() }
+                    .disabled(!repository.canFetch)
                 Button("Pull") { repository.pull() }
-                    .disabled(repository.branch == nil)
+                    .disabled(!repository.canPull)
                 Button("Push") { repository.push() }
-                    .disabled(repository.branch == nil)
+                    .disabled(!repository.canPush)
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.triangle.branch")
@@ -125,17 +152,53 @@ struct SourceControlPanel: View {
                 .font(.system(size: 11))
                 .monospacedDigit()
                 .foregroundStyle(.chromeSecondary)
-                .help("\(repository.ahead) to push, \(repository.behind) to pull")
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(
-                    [repository.ahead > 0 ? "\(repository.ahead) to push" : nil, repository.behind > 0 ? "\(repository.behind) to pull" : nil]
-                        .compactMap(\.self).joined(separator: ", "))
+                // One text for VoiceOver, which read the bare numbers: the arrows are images.
+                .accessibilityRepresentation { Text(aheadBehind) }
+                .help(aheadBehind)
             }
         }
     }
 
+    /// "1 commit to push", "2 commits to pull", "1 commit to push, 2 to pull": the side with nothing is left out.
+    private var aheadBehind: String {
+        let ahead = repository.ahead
+        let behind = repository.behind
+        let commits = { (count: Int) in count == 1 ? "1 commit" : "\(count) commits" }
+        switch (ahead > 0, behind > 0) {
+        case (true, true): return "\(commits(ahead)) to push, \(behind) to pull"
+        case (true, false): return "\(commits(ahead)) to push"
+        case (false, true): return "\(commits(behind)) to pull"
+        case (false, false): return ""
+        }
+    }
+
+    /// "Merging origin/main" · "1 conflict", with Abort Merge…; a rebase also has Continue once nothing conflicts.
+    private func operationBar(_ operation: GitOperation) -> some View {
+        let conflicts = repository.conflictedChanges.count
+        let merge = operation.kind == .merge
+        let status = switch conflicts {
+        case 0: merge ? "Ready to commit" : "Ready to continue"
+        case 1: "1 conflict"
+        default: "\(conflicts) conflicts"
+        }
+        return NoticeBar(
+            systemImage: "arrow.triangle.merge", tint: .orange,
+            title: merge ? "Merging \(operation.incoming)" : "Rebasing onto \(operation.incoming)", message: status,
+            stacksWhenNarrow: true
+        ) {
+            if !merge {
+                Button("Continue") { repository.continueRebase() }
+                    .disabled(conflicts > 0 || repository.isBusy)
+                    .help("Commit the resolved files and replay the next commit")
+            }
+            Button(merge ? "Abort Merge…" : "Abort Rebase…") { repository.abortAfterAsking() }
+                .disabled(repository.isBusy)
+        }
+    }
+
     private var headTitle: String {
-        if let branch = repository.branch { return branch }
+        // A rebase detaches HEAD from the branch it rewrites.
+        if let branch = repository.branch ?? repository.operation?.branch { return branch }
         return repository.headCommit.map { "detached at \($0)" } ?? "No commits"
     }
 
@@ -156,11 +219,11 @@ struct SourceControlPanel: View {
                 }
             HStack(spacing: 6) {
                 Spacer()
-                Button("Commit") { repository.commit() }
+                Button(repository.isMerging ? "Commit Merge" : "Commit") { repository.commit() }
                     .buttonStyle(ProminentWhileEnabled())
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(!repository.canCommit)
-                    .help("Commit what is staged (⌘↩)")
+                    .help(commitHelp)
                 Menu {
                     Button("Stage All and Commit") { repository.commit(stagingAll: true) }
                         .disabled(!repository.canStageAllAndCommit)
@@ -177,36 +240,33 @@ struct SourceControlPanel: View {
         }
     }
 
+    private var commitHelp: String {
+        if !repository.conflictedChanges.isEmpty { return "Resolve the conflicts first" }
+        return repository.isMerging ? "Commit the merge (⌘↩)" : "Commit what is staged (⌘↩)"
+    }
+
     private var list: some View {
+        let conflicts = repository.conflictedChanges
         let staged = repository.stagedChanges
         let unstaged = repository.unstagedChanges
         return List(selection: $selection) {
+            if !conflicts.isEmpty {
+                Section {
+                    rows(conflicts, staged: false)
+                } header: {
+                    sectionHeader("Conflicts", count: conflicts.count)
+                }
+            }
             if !staged.isEmpty {
                 Section {
-                    ForEach(staged) { change in
-                        ChangeRow(change: change, letter: change.staged ?? ".", staged: true, folder: folder(of: change)) {
-                            pendingCompare?.cancel()
-                            repository.unstage([change])
-                        }
-                        .simultaneousGesture(TapGesture().onEnded { clicked(change) })
-                        .tag(ChangeSelection(path: change.path, staged: true))
-                        .listRowSeparator(.hidden)
-                    }
+                    rows(staged, staged: true)
                 } header: {
                     sectionHeader("Staged", count: staged.count)
                 }
             }
             if !unstaged.isEmpty {
                 Section {
-                    ForEach(unstaged) { change in
-                        ChangeRow(change: change, letter: change.unstaged ?? ".", staged: false, folder: folder(of: change)) {
-                            pendingCompare?.cancel()
-                            repository.stage([change])
-                        }
-                        .simultaneousGesture(TapGesture().onEnded { clicked(change) })
-                        .tag(ChangeSelection(path: change.path, staged: false))
-                        .listRowSeparator(.hidden)
-                    }
+                    rows(unstaged, staged: false)
                 } header: {
                     sectionHeader("Changes", count: unstaged.count)
                 }
@@ -220,6 +280,19 @@ struct SourceControlPanel: View {
         } primaryAction: { items in
             pendingCompare?.cancel()
             open(items)
+        }
+    }
+
+    /// A row per change; its hover button unstages what is staged and stages the rest.
+    private func rows(_ changes: [GitRepository.Change], staged: Bool) -> some View {
+        ForEach(changes) { change in
+            ChangeRow(change: change, letter: (staged ? change.staged : change.unstaged) ?? ".", staged: staged, folder: folder(of: change)) {
+                pendingCompare?.cancel()
+                if staged { repository.unstage([change]) } else { repository.stage([change]) }
+            }
+            .simultaneousGesture(TapGesture().onEnded { clicked(change) })
+            .tag(ChangeSelection(path: change.path, staged: staged))
+            .listRowSeparator(.hidden)
         }
     }
 
@@ -255,10 +328,18 @@ struct SourceControlPanel: View {
         return (shown as NSString).deletingLastPathComponent
     }
 
+    /// Open, Reveal in Finder, Compare with HEAD…; Take Mine and Take Theirs for conflicts; Stage, Unstage, and Discard
+    /// Changes… for the selected rows that have work tree changes, conflicts aside.
     @ViewBuilder
     private func contextMenu(for items: Set<ChangeSelection>) -> some View {
         let changes = changes(for: items)
         if !changes.isEmpty {
+            let unstagedRows = Set(items.filter { !$0.staged }.map(\.path))
+            let stagedRows = Set(items.filter(\.staged).map(\.path))
+            let toStage = changes.filter { unstagedRows.contains($0.path) && $0.unstaged != nil }
+            let toUnstage = changes.filter { stagedRows.contains($0.path) && $0.staged != nil }
+            let conflicted = toStage.filter(\.isConflicted)
+            let toDiscard = toStage.filter { !$0.isConflicted }
             Button("Open") { open(items) }
             Button("Reveal in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting(changes.map { URL(filePath: $0.path) })
@@ -267,16 +348,23 @@ struct SourceControlPanel: View {
                 Button("Compare with HEAD…") { repository.compare(change) }
             }
             Divider()
-            if items.contains(where: { !$0.staged }) {
-                Button("Stage") { repository.stage(changes.filter { $0.unstaged != nil }) }
+            if !conflicted.isEmpty {
+                Button("Take Mine") { repository.take(.mine, conflicted) }
+                    .disabled(repository.isBusy)
+                Button("Take Theirs") { repository.take(.theirs, conflicted) }
+                    .disabled(repository.isBusy)
+                Divider()
+            }
+            if !toStage.isEmpty {
+                Button("Stage") { repository.stage(toStage) }
                     .disabled(repository.isBusy)
             }
-            if items.contains(where: \.staged) {
-                Button("Unstage") { repository.unstage(changes.filter { $0.staged != nil }) }
+            if !toUnstage.isEmpty {
+                Button("Unstage") { repository.unstage(toUnstage) }
                     .disabled(repository.isBusy)
             }
-            if changes.count == 1, let change = changes.first, items.contains(where: { !$0.staged }), change.unstaged != nil {
-                Button("Discard Changes…") { confirmDiscard(change) }
+            if !toDiscard.isEmpty {
+                Button("Discard Changes…") { repository.discardAfterAsking(toDiscard) }
                     .disabled(repository.isBusy)
             }
         }
@@ -291,30 +379,6 @@ struct SourceControlPanel: View {
     private func open(_ items: Set<ChangeSelection>) {
         for change in changes(for: items) where FileManager.default.fileExists(atPath: change.path) {
             app.openEditor(change.path, in: repository.workspace)
-        }
-    }
-
-    /// Discard asks first, in a sheet on the window: the work tree copy cannot be brought back.
-    private func confirmDiscard(_ change: GitRepository.Change) {
-        let confirmation = NSAlert()
-        if change.isUntracked {
-            confirmation.messageText = "Move “\(change.name)” to the Trash?"
-            confirmation.informativeText = "Git does not track the file, so discarding it moves it to the Trash."
-            confirmation.addButton(withTitle: "Move to Trash")
-        } else {
-            confirmation.messageText = "Discard the changes to “\(change.name)”?"
-            confirmation.informativeText = "The file goes back to its last staged version. This cannot be undone."
-            confirmation.addButton(withTitle: "Discard")
-        }
-        confirmation.buttons[0].hasDestructiveAction = true
-        confirmation.addButton(withTitle: "Cancel")
-        Task {
-            let response = if let window = NSApp.keyWindow ?? NSApp.mainWindow {
-                await confirmation.beginSheetModal(for: window)
-            } else {
-                confirmation.runModal()
-            }
-            if response == .alertFirstButtonReturn { repository.discard(change) }
         }
     }
 }
@@ -436,7 +500,9 @@ private struct ChangeDiffSheet: View {
     }
 }
 
-/// New Branch…: a name, made from HEAD and checked out. A name git refuses keeps the sheet up with git's reason.
+/// New Branch…: a name, made from HEAD and checked out. What git would refuse in the name (`GitBranchName`) shows under
+/// the field in Finder's words as it is typed, and Create stays off until the name is fine; a name git refuses anyway
+/// keeps the sheet up with the reason.
 private struct NewBranchSheet: View {
     let repository: GitRepository
     @State private var name = ""
@@ -446,18 +512,22 @@ private struct NewBranchSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("New Branch")
                 .font(.headline)
-            TextField("Branch name", text: $name)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(create)
+            VStack(alignment: .leading, spacing: 4) {
+                TextField("Branch name", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(create)
+                    .onChange(of: name) { repository.lastError = nil }
+                if let reason = problem ?? repository.lastError?.message {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             Text("Made from \(repository.branch ?? "the current commit") and checked out.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if let failure = repository.lastError {
-                Text(failure.message)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .lineLimit(3)
-            }
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -471,8 +541,13 @@ private struct NewBranchSheet: View {
         .frame(width: 340)
     }
 
+    /// Why the name cannot be a branch; nil while it is empty or fine.
+    private var problem: String? {
+        name.isEmpty ? nil : GitBranchName.problem(name, existing: repository.branches)
+    }
+
     private var isValid: Bool {
-        !name.isEmpty && !name.contains(where: \.isWhitespace)
+        !name.isEmpty && problem == nil
     }
 
     private func create() {
@@ -490,9 +565,10 @@ extension AppState {
     }
 }
 
-/// The Source Control menu, for the project on screen: Commit… (⌥⌘C), Stage All, Fetch, Pull (⌥⌘X), Push, Switch
-/// Branch, New Branch…, and Show Changes (View › Changes, ⌃⌘G, which carries the key). All but Show Changes need the
-/// project to be a repository.
+/// The Source Control menu, for the project on screen: Commit… (⌥⌘C), Stage All, Discard All Changes…, Fetch, Pull
+/// (⌥⌘X), Push, Switch Branch, New Branch…, and Show Changes (View › Changes, ⌃⌘G, which carries the key). All but
+/// Show Changes need the project to be a repository; Fetch, Pull and Push need a remote, and Pull and the branch
+/// commands wait for a merge or rebase under way.
 struct SourceControlCommands: Commands {
     let app: AppState
 
@@ -506,14 +582,18 @@ struct SourceControlCommands: Commands {
                 .disabled(!isRepository)
             Button("Stage All") { repository?.stageAll() }
                 .disabled(!ready || repository?.changes.isEmpty != false)
+            Button("Discard All Changes…") {
+                if let repository { repository.discardAfterAsking(repository.unstagedChanges) }
+            }
+            .disabled(!ready || repository?.unstagedChanges.isEmpty != false)
             Divider()
             Button("Fetch") { repository?.fetch() }
-                .disabled(!ready)
+                .disabled(repository?.canFetch != true)
             Button("Pull") { repository?.pull() }
                 .keyboardShortcut("x", modifiers: [.command, .option])
-                .disabled(!ready || repository?.branch == nil)
+                .disabled(repository?.canPull != true)
             Button("Push") { repository?.push() }
-                .disabled(!ready || repository?.branch == nil)
+                .disabled(repository?.canPush != true)
             Divider()
             Menu("Switch Branch") {
                 if let repository {
@@ -522,12 +602,12 @@ struct SourceControlCommands: Commands {
                     }
                 }
             }
-            .disabled(!ready || repository?.branches.isEmpty != false)
+            .disabled(repository?.canSwitchBranch != true || repository?.branches.isEmpty != false)
             Button("New Branch…") {
                 app.showChanges()
                 repository?.beginNamingBranch()
             }
-            .disabled(!ready)
+            .disabled(repository?.canSwitchBranch != true)
             Divider()
             Button("Show Changes") { app.showChanges() }
         }

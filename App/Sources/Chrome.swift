@@ -85,22 +85,21 @@ struct NoticeBar<Actions: View>: View {
     var inProgress = false
     /// Where the hairline goes: `.bottom` over the content, `.top` under it.
     var rule: Alignment = .bottom
+    /// Where the line does not fit (a side pane), the text takes the full width on as many lines as it needs and the
+    /// actions get a row of their own under it, rather than the message being cut after a few words.
+    var stacksWhenNarrow = false
     @ViewBuilder let actions: Actions
 
     var body: some View {
-        HStack(spacing: 8) {
-            if inProgress {
-                ProgressView().controlSize(.small)
+        Group {
+            if stacksWhenNarrow {
+                ViewThatFits(in: .horizontal) {
+                    line
+                    stacked
+                }
             } else {
-                Image(systemName: systemImage)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(tint)
-                    .frame(width: 16)
+                line
             }
-            text.lineLimit(2)
-            Spacer(minLength: 12)
-            HStack(spacing: 6) { actions }
-                .controlSize(.small)
         }
         .font(.callout)
         .padding(.horizontal, 12)
@@ -108,6 +107,43 @@ struct NoticeBar<Actions: View>: View {
         .frame(maxWidth: .infinity, minHeight: 32)
         .background(tint.opacity(0.1))
         .overlay(alignment: rule) { Divider() }
+    }
+
+    private var line: some View {
+        HStack(spacing: 8) {
+            icon
+            text.lineLimit(2)
+            Spacer(minLength: 12)
+            HStack(spacing: 6) { actions }
+                .controlSize(.small)
+        }
+    }
+
+    private var stacked: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                icon
+                text.fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 6) {
+                Spacer(minLength: 0)
+                actions
+            }
+            .controlSize(.small)
+        }
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        if inProgress {
+            ProgressView().controlSize(.small)
+        } else {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(tint)
+                .frame(width: 16)
+        }
     }
 
     private var text: Text {
