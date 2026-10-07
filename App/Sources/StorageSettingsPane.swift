@@ -28,7 +28,7 @@ struct StorageSettingsPane: View {
             if let report {
                 ForEach(report.omp, id: \.agentDir) { omp in
                     Section {
-                        LabeledContent("Unreferenced blobs", value: Self.files(omp.blobs, bytes: omp.blobBytes))
+                        LabeledContent("Unused files", value: Self.files(omp.blobs, bytes: omp.blobBytes))
                         LabeledContent("Database logs", value: omp.walBytes == 0 ? "None" : Self.size(omp.walBytes))
                     } header: {
                         Text(report.omp.count > 1 ? "omp in \(omp.agentDir)" : "omp")
@@ -52,18 +52,18 @@ struct StorageSettingsPane: View {
                 Section {
                     HStack(spacing: 8) {
                         Button("Clean Up", action: cleanUp)
-                            .disabled(cleaning || loading || !connection.isConnected)
+                            .disabled(cleaning || loading || !connection.isConnected || isClean(report))
                         if cleaning { ProgressView().controlSize(.small) }
                         Spacer()
                     }
                     if let outcome {
-                        Text(outcome).foregroundStyle(.secondary)
+                        Text(outcome).foregroundStyle(.chromeSecondary)
                     }
                 } footer: {
                     Text(footer(report))
                 }
             } else if let failure {
-                Text(failure).foregroundStyle(.secondary)
+                Text(failure).foregroundStyle(.chromeSecondary)
             } else if connection.isConnected {
                 HStack {
                     Spacer()
@@ -71,11 +71,17 @@ struct StorageSettingsPane: View {
                     Spacer()
                 }
             } else {
-                Text("Available while ompd is running.").foregroundStyle(.secondary)
+                Text("Available while ompd is running.").foregroundStyle(.chromeSecondary)
             }
         }
         .formStyle(.grouped)
         .task(id: connection.isConnected) { await load() }
+    }
+
+    /// Every row reads None: Clean Up has nothing to do.
+    private func isClean(_ report: StorageReport) -> Bool {
+        report.omp.allSatisfy { $0.blobs == 0 && $0.walBytes == 0 }
+            && report.ide.unreferencedSnapshots == 0 && mirrorLeftovers.count == 0
     }
 
     private func footer(_ report: StorageReport) -> String {
@@ -150,7 +156,8 @@ struct StorageSettingsPane: View {
         return "\(count) \(noun)\(count == 1 ? "" : "s") (\(size(bytes)))"
     }
 
+    /// "1.1 MB", the number and its unit held together on one line.
     private static func size(_ bytes: Int64) -> String {
-        bytes.formatted(.byteCount(style: .file))
+        bytes.formatted(.byteCount(style: .file)).replacingOccurrences(of: " ", with: "\u{00A0}")
     }
 }
