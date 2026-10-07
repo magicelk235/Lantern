@@ -77,6 +77,9 @@ final class EditorDocument {
     @ObservationIgnored private var pendingReveal: NSRange?
     /// Indentation the file uses, detected when it opened.
     @ObservationIgnored private var indent = IndentOption.spaces(count: 4)
+    /// The appearance or the font size changed before the controller's view loaded: it gets the new configuration once
+    /// it appears (`appearanceDidChange`).
+    @ObservationIgnored private var configurationIsStale = false
     /// Take the keyboard focus when the view next appears (opened from the navigator).
     @ObservationIgnored var focusOnAppear = false
     @ObservationIgnored private var hotExitWrite: Task<Void, Never>?
@@ -239,8 +242,7 @@ final class EditorDocument {
         indent = EditorStyle.indent(of: text)
         let coordinator = Coordinator(document: self)
         let controller = TextViewController(
-            string: text, language: language,
-            configuration: EditorStyle.configuration(indent: indent, appearance: NSApplication.shared.effectiveAppearance),
+            string: text, language: language, configuration: configuration(for: NSApplication.shared.effectiveAppearance),
             cursorPositions: selections, highlightProviders: [TreeSitterClient()], coordinators: [coordinator])
         self.coordinator = coordinator
         self.controller = controller
@@ -279,18 +281,32 @@ final class EditorDocument {
         find.reset()
         isJumpingToLine = false
         pendingReveal = nil
+        configurationIsStale = false
         controller = nil
         coordinator = nil
         caret = nil
     }
 
-    /// The system appearance changed: the theme's colors are concrete, so the editor needs new ones (and keeps the
-    /// characters its language server completes after).
+    /// The system appearance or the font size changed: the theme's colors are concrete, so the editor needs new ones.
+    /// CodeEditSourceEditor applies a new configuration to the views its controller makes in `loadView` (gutter,
+    /// minimap), so a controller whose tab has not shown yet waits: `loadView` applies the configuration it has, and
+    /// the new one follows when the view appears.
     func appearanceDidChange(_ appearance: NSAppearance) {
+        guard let controller else { return }
+        guard controller.isViewLoaded else {
+            configurationIsStale = true
+            return
+        }
+        controller.configuration = configuration(for: appearance)
+        languageDocument?.render()
+    }
+
+    /// The editor's configuration for `appearance` and the current font size, keeping the characters its language
+    /// server completes after.
+    private func configuration(for appearance: NSAppearance) -> SourceEditorConfiguration {
         var configuration = EditorStyle.configuration(indent: indent, appearance: appearance)
         configuration.peripherals.codeSuggestionTriggerCharacters = languageDocument?.completionTriggers ?? []
-        controller?.configuration = configuration
-        languageDocument?.render()
+        return configuration
     }
 
     /// Selects `target` (a definition jumped to) and scrolls it into the middle of the view if it is out of sight; when
@@ -512,6 +528,10 @@ final class EditorDocument {
 
     fileprivate func controllerDidAppear() {
         guard let controller else { return }
+        if configurationIsStale {
+            configurationIsStale = false
+            controller.configuration = configuration(for: NSApplication.shared.effectiveAppearance)
+        }
         // Its view loaded, and with it the controller's key monitor: the app's go ahead of it again.
         LocalEventMonitors.moveToFront()
         gitGutter?.attach(to: controller)
