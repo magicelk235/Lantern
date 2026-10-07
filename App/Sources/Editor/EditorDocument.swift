@@ -346,7 +346,7 @@ final class EditorDocument {
         // out once the view is in its scroll view, as far as it shows them.
         let controller = TextViewController(
             string: "", language: language, configuration: configuration(for: NSApplication.shared.effectiveAppearance),
-            cursorPositions: selections, highlightProviders: [TreeSitterClient()], coordinators: [coordinator])
+            cursorPositions: selections, highlightProviders: [EditorHighlighting()], coordinators: [coordinator])
         controller.textView.setText(text)
         self.coordinator = coordinator
         self.controller = controller
