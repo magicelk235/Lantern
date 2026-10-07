@@ -3,58 +3,46 @@ import SwiftUI
 
 /// The editor's find bar (`EditorFind`), above the text, after Xcode's: Find or Replace, the field, how many matches
 /// and which one is selected, the options, previous and next, Done; in Replace, a second row with the replacement,
-/// Replace and Replace All. Return finds the next match, ⇧Return the previous one, Esc closes the bar.
+/// Replace and Replace All. Return finds the next match, ⇧Return the previous one, Esc closes the bar. As the bar
+/// narrows only the fields give way, down to `minimumFieldWidth`: Done stays at the trailing edge, and in Replace the
+/// rows line up, field under field and the buttons where the match count starts.
 struct FindBar: View {
     @Bindable var find: EditorFind
 
+    /// Narrow enough for the bar to fit in the narrowest editor (`ProjectWindow.minimumContentWidth`).
+    private static let minimumFieldWidth = 40.0
+
     var body: some View {
-        Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
-            GridRow {
-                Picker("Mode", selection: Binding(get: { find.mode }, set: { find.setMode($0) })) {
-                    Text("Find").tag(EditorFind.Mode.find)
-                    Text("Replace").tag(EditorFind.Mode.replace)
-                }
-                .labelsHidden()
-                .fixedSize()
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                mode
                 FindField(
                     placeholder: "Find", text: Binding(get: { find.query }, set: { find.setQuery($0) }),
                     takesFocus: find.pendingFocus == .query, focusTaken: find.focusTaken, cancel: find.hide
                 ) { backwards in
                     if backwards { find.previous() } else { find.next() }
                 }
-                HStack(spacing: 8) {
-                    Text(status)
-                        .font(.system(size: 11))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(minWidth: 72, alignment: .trailing)
-                    options
-                    ControlGroup {
-                        Button { find.previous() } label: { Image(systemName: "chevron.left") }
-                            .help("Find Previous (⇧⌘G)")
-                        Button { find.next() } label: { Image(systemName: "chevron.right") }
-                            .help("Find Next (⌘G)")
-                    }
-                    .fixedSize()
-                    .disabled(find.matches.isEmpty)
-                    Button("Done") { find.hide() }
+                .frame(minWidth: Self.minimumFieldWidth, maxWidth: .infinity)
+                // As wide as the Replace buttons below when they are the wider: the fields stay the same width.
+                ZStack(alignment: .trailing) {
+                    if find.mode == .replace { replaceActions.hidden() }
+                    navigation
                 }
             }
             if find.mode == .replace {
-                GridRow {
-                    Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                HStack(spacing: 8) {
+                    mode.hidden()
                     FindField(
                         placeholder: "Replace", text: $find.replacement,
                         takesFocus: find.pendingFocus == .replacement, focusTaken: find.focusTaken, cancel: find.hide
                     ) { _ in
                         find.replace()
                     }
-                    HStack(spacing: 8) {
-                        Button("Replace") { find.replace() }
-                        Button("Replace All") { find.replaceAll() }
+                    .frame(minWidth: Self.minimumFieldWidth, maxWidth: .infinity)
+                    ZStack(alignment: .leading) {
+                        navigation.hidden()
+                        replaceActions
                     }
-                    .disabled(find.matches.isEmpty)
                 }
             }
         }
@@ -65,6 +53,47 @@ struct FindBar: View {
         .background(Chrome.surface)
         .overlay(alignment: .bottom) { Divider() }
         .onExitCommand { find.hide() }
+    }
+
+    private var mode: some View {
+        Picker("Mode", selection: Binding(get: { find.mode }, set: { find.setMode($0) })) {
+            Text("Find").tag(EditorFind.Mode.find)
+            Text("Replace").tag(EditorFind.Mode.replace)
+        }
+        .labelsHidden()
+        .fixedSize()
+    }
+
+    /// The match count, the options, previous and next, Done.
+    private var navigation: some View {
+        HStack(spacing: 8) {
+            Text(status)
+                .font(.system(size: 11))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(minWidth: 72, alignment: .trailing)
+            options
+            ControlGroup {
+                Button { find.previous() } label: { Image(systemName: "chevron.left") }
+                    .help("Find Previous (⇧⌘G)")
+                Button { find.next() } label: { Image(systemName: "chevron.right") }
+                    .help("Find Next (⌘G)")
+            }
+            .fixedSize()
+            .disabled(find.matches.isEmpty)
+            Button("Done") { find.hide() }
+        }
+        .fixedSize()
+    }
+
+    private var replaceActions: some View {
+        HStack(spacing: 8) {
+            Button("Replace") { find.replace() }
+            Button("Replace All") { find.replaceAll() }
+        }
+        .fixedSize()
+        .disabled(find.matches.isEmpty)
     }
 
     /// How the query, as typed, fares in the text.
