@@ -15,7 +15,6 @@ Every session in Lantern is omp's own TUI, running in a tab. The sessions don't 
 - Tool approvals and `ask` prompts badge the Dock and post a notification while Lantern is in the background.
 - The editor has syntax highlighting, git change marks in the gutter, find and replace, and language servers (sourcekit-lsp, typescript-language-server, pyright or pylsp, rust-analyzer, gopls, clangd) when they're installed. Unsaved edits survive quitting.
 - Terminal tabs are owned by ompd too. Running `omp` in one turns it into a regular Lantern session.
-- A menu bar extra shows how many agents are working and what's waiting for you, even with every window closed.
 - Quick Look works in the Files pane, Finder's Services menu gets "Open in Lantern" and "New omp Session", and Open Session… (⇧⌘O) lists a project's saved sessions.
 
 ## Requirements
@@ -68,7 +67,7 @@ open -n --env OMPD_HOME=/tmp/oi \
 .build/debug/ompd status
 ```
 
-With `OMPD_HOME` set, Lantern doesn't register the production LaunchAgent or the menu bar extra's login item, and ompd doesn't install its bridge extension into `~/.omp/agent/extensions`. Spotlight items go into a separate domain, so they never replace the installed app's.
+With `OMPD_HOME` set, Lantern doesn't register the production LaunchAgent, and ompd doesn't install its bridge extension into `~/.omp/agent/extensions`. Spotlight items go into a separate domain, so they never replace the installed app's.
 
 `scripts/dev-launchagent.sh` installs a development ompd as its own LaunchAgent (`com.magicelklabs.lantern.ompd.dev`) when you want launchd to keep it running.
 
@@ -85,7 +84,7 @@ With `OMPD_HOME` set, Lantern doesn't register the production LaunchAgent or the
 
 | Path | Contents |
 |---|---|
-| `App/` | The SwiftUI/AppKit app, the menu bar extra (`App/MenuBar`) and the XcodeGen spec |
+| `App/` | The SwiftUI/AppKit app and the XcodeGen spec |
 | `Sources/ompd` | The `ompd` executable: `ompd run`, `ompd status [--json]`, `ompd --version` |
 | `Sources/OmpdCore` | The daemon: session supervisors, PTY pool with screen mirrors, crash recovery, agent supervision, in-place upgrades |
 | `Sources/IDEProtocol` | The wire contract between ompd and the app, and the on-disk layout |

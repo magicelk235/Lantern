@@ -10,18 +10,6 @@
 	<!-- Sparkle downloads an update in the background and installs it when the app quits. -->
 	<key>SUAutomaticallyUpdate</key>
 	<true/>
-	<!-- com.magicelklabs.lantern://session/<key>: the menu-bar extra opens a session's tab (SessionLink, LanternApp.swift). -->
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleURLName</key>
-			<string>com.magicelklabs.lantern.session</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>com.magicelklabs.lantern</string>
-			</array>
-		</dict>
-	</array>
 	<!-- Services for folders (FinderServices.swift). NSRequiredContext makes them on by default. -->
 	<key>NSServices</key>
 	<array>

@@ -21,7 +21,7 @@ struct SettingsView: View {
     /// The window takes the height of the pane showing, as macOS settings windows do (`settingsPane()`).
     var body: some View {
         TabView(selection: $tab) {
-            GeneralSettings(connection: app.connection, menuBar: app.menuBar)
+            GeneralSettings(connection: app.connection)
                 .settingsPane()
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(SettingsTab.general)
@@ -48,7 +48,6 @@ extension View {
 
 private struct GeneralSettings: View {
     let connection: DaemonConnection
-    let menuBar: MenuBarAgent
     @AppStorage(AppSettings.defaultApprovalModeKey) private var approvalMode = ""
 
     var body: some View {
@@ -65,7 +64,6 @@ private struct GeneralSettings: View {
                 Text(explanation)
             }
             RestorePolicySection(connection: connection)
-            MenuBarSection(menuBar: menuBar)
         }
         .formStyle(.grouped)
     }
@@ -76,38 +74,6 @@ private struct GeneralSettings: View {
             return "omp decides, from tools.approvalMode in your omp config (default: never ask). \(applies)"
         }
         return "\(mode.explanation) \(applies)"
-    }
-}
-
-/// The menu-bar extra. The setting is Lantern's (`MenuBarHelper.shownKey`); the extra's Hide from Menu Bar
-/// turns it off too.
-private struct MenuBarSection: View {
-    let menuBar: MenuBarAgent
-    @AppStorage(MenuBarHelper.shownKey) private var shown = true
-
-    var body: some View {
-        Section {
-            Toggle("Show agents in the menu bar", isOn: $shown)
-            if menuBar.state == .requiresApproval {
-                Button("Open Login Items Settings…", action: menuBar.openLoginItemsSettings)
-            }
-        } footer: {
-            Text(footer)
-        }
-        .onChange(of: shown) { menuBar.sync() }
-    }
-
-    private var footer: String {
-        switch menuBar.state {
-        case .external(let home):
-            "OMPD_HOME is \(home): Lantern leaves the menu bar alone. Open Lantern Menu Bar.app, in Lantern's Contents/Library/LoginItems, with the same OMPD_HOME."
-        case .requiresApproval:
-            "macOS waits for you to allow Lantern in System Settings › General › Login Items."
-        case .failed(let message):
-            "Could not add it to the login items: \(message)"
-        case .unknown, .shown, .hidden:
-            "How many agents work, and a dot while something waits for you, from login on and also while Lantern is closed."
-        }
     }
 }
 

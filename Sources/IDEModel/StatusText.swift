@@ -1,7 +1,7 @@
 import IDEProtocol
 
-// What Lantern and its menu-bar extra call a session's status and what waits for the user: one set of
-// words for the status bar, the Agents pane and the menu bar.
+// What Lantern calls a session's status and what waits for the user: one set of words for the status bar, the tabs
+// and the Agents pane.
 
 extension SessionStatus {
     /// One word for badges.

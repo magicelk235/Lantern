@@ -4,7 +4,7 @@ import Foundation
 import IDETransport
 import Observation
 
-/// The app's link to ompd, also the menu-bar extra's (`ClientKind.cli`): connects over
+/// The app's link to ompd: connects over
 /// `run/ompd.sock` with the token in `run/token`, retrying with exponential backoff while the daemon is starting or
 /// restarting, keeps the session manifest and the PTY list current from ompd's pushes, and routes PTY output to the
 /// terminals and session TUIs on screen. After each (re)connect every shown terminal and session attaches again;
@@ -40,9 +40,6 @@ public final class DaemonConnection: TerminalBackend {
 
     public nonisolated let paths: AppSupportPaths
     public nonisolated let clientVersion: String
-    /// What says hello: Lantern (`app`), whose windows keep the sessions running, or a client that is no window
-    /// (`cli`, the menu-bar extra), which neither keeps them running nor resumes them.
-    public nonisolated let clientKind: ClientKind
     public nonisolated let backoff: Backoff
 
     public private(set) var status: Status = .connecting
@@ -73,11 +70,10 @@ public final class DaemonConnection: TerminalBackend {
     @ObservationIgnored private var presenceReport: Task<Void, Never>?
 
     public init(
-        paths: AppSupportPaths = .standard, clientVersion: String, clientKind: ClientKind = .app, backoff: Backoff = Backoff()
+        paths: AppSupportPaths = .standard, clientVersion: String, backoff: Backoff = Backoff()
     ) {
         self.paths = paths
         self.clientVersion = clientVersion
-        self.clientKind = clientKind
         self.backoff = backoff
         terminals.backend = self
     }
@@ -111,9 +107,9 @@ public final class DaemonConnection: TerminalBackend {
     }
 
     /// A window of this app opened (`true`) or its last one closed. ompd hears of it now if connected, otherwise in
-    /// the next hello. Only an `app` has windows: a `cli` connection never says it has one.
+    /// the next hello.
     public func setHasWindow(_ hasWindow: Bool) {
-        guard clientKind == .app, hasWindow != self.hasWindow else { return }
+        guard hasWindow != self.hasWindow else { return }
         self.hasWindow = hasWindow
         queuePresenceReport()
     }
@@ -325,7 +321,7 @@ public final class DaemonConnection: TerminalBackend {
                 let token = try readToken()
                 client = IDEClient(
                     socketPath: paths.socket.path(percentEncoded: false), token: token, clientVersion: clientVersion,
-                    clientKind: clientKind, hasWindow: hasWindow)
+                    hasWindow: hasWindow)
                 welcome = try await client.connect()
             } catch {
                 if Task.isCancelled { return }

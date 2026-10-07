@@ -21,8 +21,7 @@ public actor IDEClient {
 
     private enum Phase { case idle, connecting, connected, closed }
 
-    /// `clientKind`: a Lantern window (`app`, keeps the sessions running) or a client that is none (`cli`: `ompd status`,
-    /// the menu-bar extra).
+    /// `clientKind`: a Lantern window (`app`, keeps the sessions running) or a client that is none (`cli`, `ompd status`).
     /// `hasWindow`: an `app` with a window open when it says hello (`ClientPresence` reports changes).
     public init(socketPath: String, token: String, clientVersion: String, clientKind: ClientKind = .app, hasWindow: Bool = true) {
         let (pushes, sink) = AsyncStream.makeStream(of: ServerFrame.self)

@@ -77,8 +77,8 @@ public struct Hello: Sendable, Equatable, Codable {
 public enum ClientKind: String, Sendable, Codable {
     /// A Lantern window (the app). A hello without `clientKind` is one.
     case app
-    /// A client that is no Lantern window, such as `ompd status` or the menu-bar extra: it neither keeps the
-    /// sessions running nor resumes them.
+    /// A client that is no Lantern window, such as `ompd status`: it neither keeps the sessions running nor resumes
+    /// them.
     case cli
 }
 

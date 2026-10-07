@@ -89,29 +89,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Gives a window's focus back once an alert or sheet is gone.
     private let focusKeeper = FocusKeeper()
 
-    /// `com.magicelklabs.lantern://` links (`SessionLink`) arrive as Apple events, handled here instead of by SwiftUI, which would open
-    /// a window of no project for each one. The tab keys are watched before any editor or emulator watches keys.
+    /// The tab keys are watched before any editor or emulator watches keys.
     func applicationWillFinishLaunching(_ notification: Notification) {
-        NSAppleEventManager.shared().setEventHandler(
-            self, andSelector: #selector(handleURLEvent(_:reply:)),
-            forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
         app.installTabKeys()
-    }
-
-    /// The menu-bar extra's session row: that session's tab comes forward once ompd lists the session (the app may
-    /// just have launched; 10 s at most).
-    @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
-        guard let text = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
-              let url = URL(string: text), let sessionKey = SessionLink.sessionKey(in: url)
-        else { return }
-        Task {
-            await app.waitUntilConnected()
-            let deadline = ContinuousClock.now + .seconds(10)
-            while app.entry(for: sessionKey) == nil, ContinuousClock.now < deadline {
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            app.showSession(sessionKey)
-        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
