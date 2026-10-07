@@ -455,7 +455,7 @@ struct StatusBanners: View {
     private func unreachable(_ reason: String) -> String {
         switch agent.state {
         case .enabled: "\(reason) Lantern keeps trying and your agents keep running; Restart ompd if this lasts."
-        case .external(let home): "\(reason) Start ompd for OMPD_HOME=\(home) (`ompd run`) to reconnect."
+        case .external(let home): "\(reason) Run “OMPD_HOME=\(home) ompd run” to reconnect."
         default: "\(reason) Lantern keeps trying, and your agents keep running."
         }
     }

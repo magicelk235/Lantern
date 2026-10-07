@@ -176,7 +176,7 @@ private struct ContinuationBar: View {
 
     var body: some View {
         NoticeBar(
-            systemImage: "exclamationmark.triangle", tint: .orange, title: "omp Was Interrupted",
+            systemImage: "exclamationmark.triangle", tint: .orange, title: "omp was interrupted",
             message: Self.unfinished(interruption), inProgress: answering, rule: .top
         ) {
             if parties > 1 {
