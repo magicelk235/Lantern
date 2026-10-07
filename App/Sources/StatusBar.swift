@@ -1,3 +1,4 @@
+import IDEEditorModel
 import IDELanguageModel
 import IDEModel
 import IDEState
@@ -127,7 +128,7 @@ private struct EditorState: View {
             }
             // A file not shown as text (binary, too large, gone) has no language to speak of.
             if document.content == .text {
-                Text(document.language.id == .plainText ? "Plain Text" : document.language.tsName.capitalized)
+                Text(LanguageName.display(id: document.language.id.rawValue))
                     .modifier(JumpToLineAnchor(document: document, isAnchor: document.caret == nil))
             }
         }
