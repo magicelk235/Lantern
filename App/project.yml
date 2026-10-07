@@ -29,10 +29,10 @@ settings:
 packages:
   Lantern:
     path: ..
-  # Same package and requirement as the Lantern package's own dependency, so both resolve to one SwiftTerm.
+  # The Lantern package's own SwiftTerm, so both resolve to one: 1.20.0 with a renderer fix, until a release has it
+  # (Vendor/SwiftTerm/README.md).
   SwiftTerm:
-    url: https://github.com/migueldeicaza/SwiftTerm
-    from: 1.2.0
+    path: ../Vendor/SwiftTerm
   # The editor: CodeEditSourceEditor with tree-sitter grammars from CodeEditLanguages. The two packages it
   # builds on are listed for the modules the app imports, pinned where it pins them.
   CodeEditSourceEditor:

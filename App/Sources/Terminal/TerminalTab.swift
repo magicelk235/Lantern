@@ -45,6 +45,11 @@ final class TerminalTab {
     /// Lines kept above the screen, as many as ompd keeps (`TerminalMirror.scrollbackLines`), so a reattach shows
     /// what the view showed.
     static let scrollbackLines = 5_000
+    /// Rows keep a left-to-right base, as in Terminal: a right-to-left run reads right to left where it stands, and a
+    /// row whose first letter is Hebrew or Arabic still starts at the left edge (SwiftTerm's default detects each
+    /// row's direction and lays such a row out from the right). A program can still ask for another direction
+    /// (`CSI ? 2501 h`, `CSI 2 SP k`).
+    private static let bidiState = BidiPresentationState(autodetectDirection: false)
 
     let endpoint: any TerminalEndpoint
     let view: OmpTerminalView
@@ -60,7 +65,9 @@ final class TerminalTab {
     init(endpoint: any TerminalEndpoint, font: NSFont, optionAsMeta: Bool, onSize: @escaping (TerminalSize) -> Void) {
         self.endpoint = endpoint
         self.onSize = onSize
-        view = OmpTerminalView(frame: .zero, font: font, options: TerminalOptions(scrollback: Self.scrollbackLines))
+        view = OmpTerminalView(
+            frame: .zero, font: font,
+            options: TerminalOptions(scrollback: Self.scrollbackLines, initialBidiState: Self.bidiState))
         view.applyColors()
         view.optionAsMetaKey = optionAsMeta
         view.terminalDelegate = self

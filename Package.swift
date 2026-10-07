@@ -18,7 +18,8 @@ let package = Package(
         .executable(name: "ompd", targets: ["ompd"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.2.0"),
+        // SwiftTerm 1.20.0 with a renderer fix, until a release has it (Vendor/SwiftTerm/README.md).
+        .package(path: "Vendor/SwiftTerm"),
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
         // The editor's language servers: ChimeHQ's LSP client, the protocol types and JSON-RPC it is
         // built on. Exact: the client's few releases change API between minor versions.
