@@ -2,7 +2,7 @@ import AppKit
 import IDEModel
 import SwiftTerm
 
-/// SwiftTerm's AppKit terminal in the system text colors, following light and dark mode.
+/// SwiftTerm's AppKit terminal in the system text color on Lantern's canvas, following light and dark mode.
 final class OmpTerminalView: TerminalView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -12,7 +12,7 @@ final class OmpTerminalView: TerminalView {
     func applyColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             nativeForegroundColor = .textColor
-            nativeBackgroundColor = .textBackgroundColor
+            nativeBackgroundColor = Chrome.canvasColor
         }
     }
 

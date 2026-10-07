@@ -56,6 +56,8 @@ targets:
       - path: Sources
       # The app icon (Icon Composer). README.md shows App/AppIcon.png, exported from it with Icon Composer's ictool.
       - path: AppIcon.icon
+      # Only the accent color (`AccentColor`, the icon's ember): the icon stays in AppIcon.icon.
+      - path: Resources/Assets.xcassets
       - path: Resources/LaunchAgents/com.magicelklabs.lantern.ompd.plist
         buildPhase:
           copyFiles:
@@ -135,6 +137,8 @@ targets:
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         COMBINE_HIDPI_IMAGES: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Written into Info.plist as NSAccentColorName. A user who picked an accent in System Settings sees theirs.
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         # Under the hardened runtime, library validation rejects the ad-hoc signed Debug `*.debug.dylib` split
         # (no Team ID); link Debug as one executable like Release.
         ENABLE_DEBUG_DYLIB: NO

@@ -14,10 +14,10 @@ enum EditorSettings {
     }
 }
 
-/// How editors look and indent: the system monospaced font and a theme after Xcode's default colors.
+/// How editors look and indent: the system monospaced font and a theme after Xcode's default colors, on Lantern's canvas.
 ///
-/// CodeEditSourceEditor reads components of the theme's colors (brightness, `CGColor`), which dynamic system colors do
-/// not have, so every theme is made of concrete sRGB colors for one appearance; editors get a new one when the system
+/// CodeEditSourceEditor reads components of the theme's colors (brightness, `CGColor`), which dynamic colors do not
+/// have, so every theme is made of concrete sRGB colors for one appearance; editors get a new one when the system
 /// appearance changes (`Editors`).
 @MainActor
 enum EditorStyle {
@@ -52,7 +52,7 @@ enum EditorStyle {
         var system: (text: NSColor, invisibles: NSColor, background: NSColor, selection: NSColor, accent: NSColor)!
         appearance.performAsCurrentDrawingAppearance {
             system = (
-                concrete(.textColor), concrete(.tertiaryLabelColor), concrete(.textBackgroundColor),
+                concrete(.textColor), concrete(.tertiaryLabelColor), concrete(Chrome.canvasColor),
                 concrete(.selectedTextBackgroundColor), concrete(.controlAccentColor))
         }
         return EditorTheme(
