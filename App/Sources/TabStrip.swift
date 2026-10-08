@@ -7,7 +7,7 @@ import SwiftUI
 /// to the content by sharing its canvas. A press shows a tab at once and a drag moves it along the strip, the others
 /// making room (held at a faded edge, the row scrolls); a middle click closes it as its × does. Closing one ends its omp
 /// session or terminal, and closing an editor with unsaved edits asks first. The strip's empty end moves the window,
-/// and a double click there opens a terminal.
+/// and a double click there opens a terminal. Files dropped on the strip (from Files, from Finder) open in tabs.
 struct TabStrip: View {
     let app: AppState
     let strip: TabLayout.Strip
@@ -26,7 +26,8 @@ struct TabStrip: View {
                     TabScroller(
                         metrics: metrics, tabs: strip.tabs, selected: strip.preferredTab.flatMap(strip.tabs.firstIndex(of:)),
                         interaction: interaction, isDragging: interaction.isDragging, close: { app.closeTab($0) },
-                        select: { app.selectTab($0) }, describe: { [strip] tab in TabRow.accessibilityLabel(of: tab, in: strip, app: app) }
+                        select: { app.selectTab($0) }, describe: { [strip] tab in TabRow.accessibilityLabel(of: tab, in: strip, app: app) },
+                        openFiles: openDropped
                     ) {
                         TabRow(app: app, strip: strip, titles: app.tabTitles(in: strip), width: metrics.width, interaction: interaction)
                     }
@@ -39,10 +40,16 @@ struct TabStrip: View {
                     Spacer(minLength: 0)
                 }
             }
-            .background(StripBackground(doubleClick: newTerminal))
+            .background(StripBackground(doubleClick: newTerminal, openFiles: openDropped))
         }
         .frame(height: Chrome.tabStripHeight)
         .background(Chrome.surface)
+    }
+
+    /// Each file dropped opens in its tab of the strip's project, the last shown.
+    private func openDropped(_ files: [String]) -> Bool {
+        for file in files { app.openEditor(file, in: strip.workspace) }
+        return !files.isEmpty
     }
 
     private var newTabMenu: some View {
@@ -353,12 +360,14 @@ private struct TabScroller<Content: View>: NSViewRepresentable {
     /// For VoiceOver, which hears the row as a tab group (`SidewaysScrollView`): showing a tab, and what a tab says.
     let select: (TabKind) -> Void
     let describe: (TabKind) -> String
+    /// Files dropped on the tabs.
+    let openFiles: ([String]) -> Bool
     let content: Content
 
     init(
         metrics: TabMetrics, tabs: [TabKind], selected: Int?, interaction: TabInteraction, isDragging: Bool,
         close: @escaping (TabKind) -> Void, select: @escaping (TabKind) -> Void, describe: @escaping (TabKind) -> String,
-        @ViewBuilder content: () -> Content
+        openFiles: @escaping ([String]) -> Bool, @ViewBuilder content: () -> Content
     ) {
         self.metrics = metrics
         self.tabs = tabs
@@ -368,6 +377,7 @@ private struct TabScroller<Content: View>: NSViewRepresentable {
         self.close = close
         self.select = select
         self.describe = describe
+        self.openFiles = openFiles
         self.content = content()
     }
 
@@ -395,6 +405,7 @@ private struct TabScroller<Content: View>: NSViewRepresentable {
         // Sized here, by the tabs' count and width.
         hosting.sizingOptions = []
         scrollView.documentView = hosting
+        scrollView.registerForDraggedTypes([.fileURL])
         return scrollView
     }
 
@@ -406,6 +417,7 @@ private struct TabScroller<Content: View>: NSViewRepresentable {
             describe: describe)
         hosting.setFrameSize(CGSize(width: metrics.width * CGFloat(tabs.count), height: Chrome.tabStripHeight))
         scrollView.isDragging = isDragging
+        scrollView.openFiles = openFiles
         let reveal = Reveal(selected: selected, tabCount: tabs.count, metrics: metrics)
         guard !isDragging, reveal != context.coordinator.revealed else { return }
         // Scrolling there shows the way when only the selection moved; a new layout is simply in place.
@@ -439,6 +451,8 @@ private final class SidewaysScrollView: NSScrollView {
     private var close: ((TabKind) -> Void)?
     private var select: ((TabKind) -> Void)?
     private var describe: ((TabKind) -> String)?
+    /// Opens files dropped on the tabs.
+    var openFiles: (([String]) -> Bool)?
     private var selected: Int?
     /// The tabs as VoiceOver hears them, kept while their tab is open so that it keeps its place.
     private var elements: [TabKind: TabElement] = [:]
@@ -480,6 +494,14 @@ private final class SidewaysScrollView: NSScrollView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        StripDrop.files(sender).isEmpty ? [] : .copy
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        openFiles?(StripDrop.files(sender)) ?? false
     }
 
     /// The strip laid the row out again. At a new tab width the same tab stays first in view.
@@ -844,19 +866,26 @@ private final class TabCloseElement: NSAccessibilityElement {
 }
 
 /// The strip's empty end. Dragging it moves the window, as dragging a title bar does; a double click runs
-/// `doubleClick`.
+/// `doubleClick`. Files dropped there open, as on the tabs.
 private struct StripBackground: NSViewRepresentable {
     let doubleClick: () -> Void
+    let openFiles: ([String]) -> Bool
 
-    func makeNSView(context: Context) -> StripBackgroundView { StripBackgroundView() }
+    func makeNSView(context: Context) -> StripBackgroundView {
+        let view = StripBackgroundView()
+        view.registerForDraggedTypes([.fileURL])
+        return view
+    }
 
     func updateNSView(_ view: StripBackgroundView, context: Context) {
         view.doubleClick = doubleClick
+        view.openFiles = openFiles
     }
 }
 
 private final class StripBackgroundView: NSView {
     var doubleClick: () -> Void = {}
+    var openFiles: ([String]) -> Bool = { _ in false }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -866,6 +895,22 @@ private final class StripBackgroundView: NSView {
         case 2: doubleClick()
         default: break
         }
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        StripDrop.files(sender).isEmpty ? [] : .copy
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        openFiles(StripDrop.files(sender))
+    }
+}
+
+/// Files dragged over the tab strip (from Files, from Finder) open in tabs there; folders are left out.
+@MainActor
+private enum StripDrop {
+    static func files(_ info: any NSDraggingInfo) -> [String] {
+        AppState.pasteboardFiles(info.draggingPasteboard).filter { !AppState.isFolder($0) }
     }
 }
 

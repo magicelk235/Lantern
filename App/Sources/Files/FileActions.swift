@@ -28,48 +28,126 @@ extension AppState {
         }
     }
 
-    func newFolder(in folder: String) {
-        guard let name = FileNamePrompt.ask(
-            "New Folder", message: "Name of the folder in “\(Self.projectName(folder))”:", button: "Create",
-            placeholder: "untitled folder", problem: { FileNamePrompt.problem(naming: $0, in: folder) })
-        else { return }
+    /// New Folder (⇧⌘N): an "untitled folder" in `folder` ("untitled folder 2" where that name is taken), as Finder
+    /// makes it, for the Files outline to rename in place. Undo moves it to the Trash and Redo makes it again. Returns
+    /// its path; nil when it couldn't be made (an alert says why).
+    func createFolder(in folder: String, undoManager: UndoManager?) -> String? {
+        let isTaken = { (name: String) in FileManager.default.fileExists(atPath: (folder as NSString).appendingPathComponent(name)) }
+        let untitled = "untitled folder"
+        let name = isTaken(untitled) ? FinderNaming.name(for: untitled, isDirectory: true, style: .keepBoth, isTaken: isTaken) : untitled
+        let path = (folder as NSString).appendingPathComponent(name)
         do {
-            try FileManager.default.createDirectory(atPath: (folder as NSString).appendingPathComponent(name), withIntermediateDirectories: false)
+            try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: false)
         } catch {
             alert = AlertMessage(title: "“\(name)” couldn’t be created.", message: FileNamePrompt.explanation(of: error, name: name))
+            return nil
+        }
+        editors.relist(folder)
+        registerUndoOfNewFolder(path, undoManager: undoManager)
+        return path
+    }
+
+    private func registerUndoOfNewFolder(_ path: String, undoManager: UndoManager?) {
+        guard let undoManager else { return }
+        let folder = (path as NSString).deletingLastPathComponent
+        registerFileUndo(undoManager, "New Folder") { app in
+            guard app.trashNow([path]).count == 1 else { return }
+            app.registerFileUndo(undoManager, "New Folder") { app in
+                do {
+                    try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: false)
+                } catch {
+                    let name = (path as NSString).lastPathComponent
+                    app.alert = AlertMessage(title: "“\(name)” couldn’t be created.", message: FileNamePrompt.explanation(of: error, name: name))
+                    return
+                }
+                app.editors.relist(folder)
+                app.registerUndoOfNewFolder(path, undoManager: undoManager)
+            }
         }
     }
 
-    /// Renames the file or folder in place. Its editor tab (or those of the files under the folder) follows it to the
-    /// new name, unsaved edits and all; a rename that fails leaves everything as it was.
-    func renameItem(_ path: String, project: String) {
-        let current = (path as NSString).lastPathComponent
-        let folder = (path as NSString).deletingLastPathComponent
-        guard let name = FileNamePrompt.ask(
-            "Rename “\(current)”", message: "Enter a new name:", button: "Rename", placeholder: current, initial: current,
-            selectingBaseName: !Self.isFolder(path), problem: { FileNamePrompt.problem(naming: $0, in: folder, renaming: path) }),
-            name != current
-        else { return }
-        let destination = (folder as NSString).appendingPathComponent(name)
+    /// Renames the file or folder to `name` in its folder: its editor tabs (or those of the files under the folder)
+    /// follow it, unsaved edits and all, and Undo puts the old name back. Returns the new path; nil when the rename
+    /// failed (an alert says why), leaving everything as it was.
+    @discardableResult
+    func renameItem(_ path: String, to name: String, undoManager: UndoManager?) -> String? {
+        let destination = ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(name)
         do {
             try FileManager.default.moveItem(atPath: path, toPath: destination)
         } catch {
+            let current = (path as NSString).lastPathComponent
             alert = AlertMessage(title: "“\(current)” couldn’t be renamed.", message: FileNamePrompt.explanation(of: error, name: name))
-            return
+            return nil
         }
-        editors.itemMoved(from: path, to: destination)
-        moveEditors(from: path, to: destination)
+        itemMoved(from: path, to: destination)
+        registerUndoOfMoves([(path, destination)], undoManager: undoManager, actionName: "Rename")
+        return destination
     }
 
-    /// Moves the file or folder to the Trash; its editor tabs close first, asking about unsaved edits.
-    func trashItem(_ path: String, project: String) {
-        Task {
+    /// Move to Trash (⌘⌫): the items go to the Trash the way Finder puts them there, off the main thread, after their
+    /// editor tabs close (asking about unsaved edits; one kept stops it all). Undo puts them back where they were.
+    func trashItems(_ paths: [String], undoManager: UndoManager?) async {
+        let items = Self.outermost(paths)
+        for path in items {
             guard await closeEditors(under: path) else { return }
-            let name = (path as NSString).lastPathComponent
+        }
+        guard !items.isEmpty else { return }
+        let urls = items.map { URL(filePath: $0) }
+        let (trashed, failure) = await withCheckedContinuation { continuation in
+            NSWorkspace.shared.recycle(urls) { trashed, error in continuation.resume(returning: (trashed, error)) }
+        }
+        var done: [(original: String, trash: URL)] = []
+        for (path, url) in zip(items, urls) {
+            guard let trash = trashed[url] else {
+                let name = (path as NSString).lastPathComponent
+                let reason = failure.map { FileNamePrompt.explanation(of: $0, name: name) } ?? "The item is no longer there."
+                alert = AlertMessage(title: "“\(name)” couldn’t be moved to the Trash.", message: reason)
+                continue
+            }
+            done.append((path, trash))
+            editors.relist((path as NSString).deletingLastPathComponent)
+        }
+        registerUndoOfTrash(done, undoManager: undoManager)
+    }
+
+    /// Moves `paths` to the Trash at once; says which could not go. Returns where each went.
+    private func trashNow(_ paths: [String]) -> [(original: String, trash: URL)] {
+        var trashed: [(original: String, trash: URL)] = []
+        for path in paths {
+            var trash: NSURL?
             do {
-                try FileManager.default.trashItem(at: URL(filePath: path), resultingItemURL: nil)
+                try FileManager.default.trashItem(at: URL(filePath: path), resultingItemURL: &trash)
             } catch {
+                let name = (path as NSString).lastPathComponent
                 alert = AlertMessage(title: "“\(name)” couldn’t be moved to the Trash.", message: FileNamePrompt.explanation(of: error, name: name))
+                continue
+            }
+            if let trash { trashed.append((path, trash as URL)) }
+            editors.relist((path as NSString).deletingLastPathComponent)
+        }
+        return trashed
+    }
+
+    /// Undo puts the items back from the Trash; Redo trashes them again at once, so that its own Undo is registered
+    /// within the Redo and the other steps waiting to be redone stay.
+    private func registerUndoOfTrash(_ trashed: [(original: String, trash: URL)], undoManager: UndoManager?) {
+        guard !trashed.isEmpty, let undoManager else { return }
+        registerFileUndo(undoManager, "Move to Trash") { app in
+            var restored: [String] = []
+            for item in trashed {
+                do {
+                    try FileManager.default.moveItem(at: item.trash, to: URL(filePath: item.original))
+                } catch {
+                    let name = (item.original as NSString).lastPathComponent
+                    app.alert = AlertMessage(title: "“\(name)” couldn’t be put back.", message: FileNamePrompt.explanation(of: error, name: name))
+                    continue
+                }
+                restored.append(item.original)
+                app.editors.relist((item.original as NSString).deletingLastPathComponent)
+            }
+            guard !restored.isEmpty else { return }
+            app.registerFileUndo(undoManager, "Move to Trash") { app in
+                app.registerUndoOfTrash(app.trashNow(restored), undoManager: undoManager)
             }
         }
     }
@@ -276,10 +354,9 @@ extension AppState {
 /// closes the prompt. Leading and trailing spaces are dropped.
 @MainActor
 enum FileNamePrompt {
-    /// `selectingBaseName`: the field starts with the name selected up to its extension, as Finder renames.
     static func ask(
         _ title: String, message: String, button: String, placeholder: String, initial: String = "",
-        selectingBaseName: Bool = false, problem: @escaping (String) -> String?
+        problem: @escaping (String) -> String?
     ) -> String? {
         let alert = NSAlert()
         alert.messageText = title
@@ -310,17 +387,6 @@ enum FileNamePrompt {
         }
         validator.check()
         field.delegate = validator
-
-        if selectingBaseName {
-            let base = (initial as NSString).deletingPathExtension
-            // Once the alert is up and the field has selected all of it.
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    field.window?.makeFirstResponder(field)
-                    field.currentEditor()?.selectedRange = NSRange(location: 0, length: (base as NSString).length)
-                }
-            }
-        }
         let response = withExtendedLifetime(validator) { alert.runModal() }
         guard response == .alertFirstButtonReturn else { return nil }
         let name = trimmed(field.stringValue)
@@ -328,7 +394,7 @@ enum FileNamePrompt {
     }
 
     /// The name without leading and trailing spaces.
-    private static func trimmed(_ name: String) -> String {
+    static func trimmed(_ name: String) -> String {
         name.trimmingCharacters(in: .whitespaces)
     }
 
@@ -343,33 +409,6 @@ enum FileNamePrompt {
 
         func controlTextDidChange(_ notification: Notification) {
             check()
-        }
-    }
-
-    /// A text field that takes a file name as typed: no smart quotes or dashes, text replacements or spelling
-    /// corrections, which would turn `"a--b"` into `“a–b”`.
-    private final class NameField: NSTextField {
-        override class var cellClass: AnyClass? {
-            get { NameFieldCell.self }
-            set {}
-        }
-    }
-
-    private final class NameFieldCell: NSTextFieldCell {
-        private var editor: NSTextView?
-
-        override func fieldEditor(for controlView: NSView) -> NSTextView? {
-            if let editor { return editor }
-            let editor = NSTextView()
-            editor.isFieldEditor = true
-            editor.isAutomaticQuoteSubstitutionEnabled = false
-            editor.isAutomaticDashSubstitutionEnabled = false
-            editor.isAutomaticTextReplacementEnabled = false
-            editor.isAutomaticSpellingCorrectionEnabled = false
-            editor.isContinuousSpellCheckingEnabled = false
-            editor.isAutomaticTextCompletionEnabled = false
-            self.editor = editor
-            return editor
         }
     }
 
@@ -409,5 +448,32 @@ enum FileNamePrompt {
         case .fileNoSuchFile, .fileReadNoSuchFile: return "The item is no longer there."
         default: return fallback
         }
+    }
+}
+
+/// A text field that takes a file name as typed: no smart quotes or dashes, text replacements or spelling corrections,
+/// which would turn `"a--b"` into `“a–b”`. The name prompts' field, and the Files rows' names, renamed in place.
+final class NameField: NSTextField {
+    override class var cellClass: AnyClass? {
+        get { NameFieldCell.self }
+        set {}
+    }
+}
+
+private final class NameFieldCell: NSTextFieldCell {
+    private var editor: NSTextView?
+
+    override func fieldEditor(for controlView: NSView) -> NSTextView? {
+        if let editor { return editor }
+        let editor = NSTextView()
+        editor.isFieldEditor = true
+        editor.isAutomaticQuoteSubstitutionEnabled = false
+        editor.isAutomaticDashSubstitutionEnabled = false
+        editor.isAutomaticTextReplacementEnabled = false
+        editor.isAutomaticSpellingCorrectionEnabled = false
+        editor.isContinuousSpellCheckingEnabled = false
+        editor.isAutomaticTextCompletionEnabled = false
+        self.editor = editor
+        return editor
     }
 }

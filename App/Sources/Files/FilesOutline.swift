@@ -2,14 +2,16 @@ import AppKit
 import IDEEditorModel
 import IDEProtocol
 import IDEState
+import QuickLookUI
 import SwiftUI
 
 /// The project's folder as an outline (`NSOutlineView`): each folder is listed when first expanded and kept current as
 /// FSEvents reports changes, a change to one folder updating its rows alone, and only the rows on screen are views. A
-/// click selects (⌘ and ⇧ add to the selection); Return or a double-click opens the files selected in the project's
-/// tab strip, or expands a folder; Space shows the file in Quick Look; → and ← expand and collapse. The rows a context
-/// menu is for are ringed, as in Finder. A click on a row of a window in the background acts on it at once. The outline
-/// outlives the pane (`FilesOutlines`): showing Files again shows it as it was, scrolled and selected, at once.
+/// click selects (⌘ and ⇧ add to the selection); a double-click opens a file in the project's tab strip or expands a
+/// folder. The keys are Finder's (`FilesOutlineView`), and so are drags: rows dragged onto a folder move there, files
+/// from Finder are copied in, and rows dragged out are their files. The rows a context menu is for are ringed, as in
+/// Finder. A click on a row of a window in the background acts on it at once. The outline outlives the pane
+/// (`FilesOutlines`): showing Files again shows it as it was, scrolled and selected, at once.
 struct FilesOutline: NSViewRepresentable {
     let app: AppState
     let project: String
@@ -47,6 +49,12 @@ final class FilesOutlines {
 
     var cut: Cut?
     private var outlines: [String: FilesOutlineController] = [:]
+
+    /// New Folder from the pane header's + menu: Files shows, and the folder's name edits in place once its row does.
+    func newFolder(in folder: String, of project: String, app: AppState) {
+        app.showPane(.files)
+        (outlines[project] ?? outline(of: project, app: app)).newFolder(in: folder)
+    }
 
     /// `project`'s outline. One a window of the project still shows (a second window SwiftUI opens for the project, on
     /// its way to close) is left there, and this window gets an outline of its own.
@@ -105,7 +113,7 @@ final class FileNode: NSObject {
 /// Data source and delegate of one Files outline. The listings, the expanded folders and what git ignores come from the
 /// project's `FileTree`; git's marks from its repository; the unsaved dot from the open documents.
 @MainActor
-final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
+final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate, NSTextFieldDelegate {
     let app: AppState
     let project: String
     let scrollView = NSScrollView()
@@ -122,6 +130,21 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
     /// Expanding and collapsing rows to match the tree: the outline's notifications of it are not the user's.
     private var syncing = false
     private var stopped = false
+    /// The row whose name edits in place (Return, Rename, New Folder).
+    private var renaming: FileNode?
+    private weak var renamingCell: FileCell?
+    /// Esc ended the edit: nothing is renamed.
+    private var renameCancelled = false
+    /// A rename asked for before its row could edit (Files not on screen yet), with the name to start from.
+    private var pendingRename: (path: String, name: String?)?
+    /// The items Quick Look shows while this outline controls its panel: the selection when it last changed.
+    private var previewItems: [URL] = []
+    /// Space or Quick Look opened the panel for this outline, until it closes.
+    private var ownsQuickLook = false
+    /// The outline closed the panel, which is still zooming back into the row.
+    private var quickLookClosing = false
+    /// Space came again while the panel was zooming back: it opens once it is gone.
+    private var reopenQuickLook = false
 
     init(app: AppState, project: String) {
         self.app = app
@@ -165,6 +188,11 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
         menu.delegate = self
         outline.menu = menu
         outline.setAccessibilityLabel("Files")
+        // Rows dragged within the app move or copy; dragged out (to Finder, Mail) they are copied, as from Xcode's
+        // navigator, never taken out of the project.
+        outline.registerForDraggedTypes([.fileURL])
+        outline.setDraggingSourceOperationMask([.move, .copy, .generic], forLocal: true)
+        outline.setDraggingSourceOperationMask(.copy, forLocal: false)
 
         scrollView.documentView = outline
         scrollView.drawsBackground = false
@@ -224,6 +252,9 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
         }
         outline.endUpdates()
         syncExpansion()
+        // The item being renamed left under the edit: the edit goes with it.
+        if let renaming, outline.row(forItem: renaming) < 0 { endRename(cancelled: true) }
+        startPendingRename()
     }
 
     private func update(_ folder: String) {
@@ -369,6 +400,12 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
         outline.selectedRowIndexes.compactMap { outline.item(atRow: $0) as? FileNode }.filter { $0.failure == nil }
     }
 
+    var hasSelection: Bool { !selectedNodes.isEmpty }
+
+    func outlineViewSelectionDidChange(_ notification: Notification) {
+        followQuickLook()
+    }
+
     /// The tab on screen is an editor's: its file's row is selected, when it shows.
     private func observeSelectedTab() {
         let tab = withObservationTracking {
@@ -394,12 +431,12 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
 
     // MARK: - Actions
 
-    /// Return: the selected files open in the project's tab strip; a selected folder alone expands or collapses.
+    /// ⌘↓, ⌘O, Open: the selected files open in the project's tab strip; selected folders alone expand.
     func openSelection() {
         let selected = selectedNodes
         let files = selected.filter { !$0.isDirectory }
-        if files.isEmpty, selected.count == 1, let folder = selected.first {
-            toggle(folder)
+        guard !files.isEmpty else {
+            for folder in selected { outline.expandItem(folder) }
             return
         }
         for file in files.sorted(by: { $0.path < $1.path }) { app.openEditor(file.path, in: project) }
@@ -419,10 +456,218 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
         if outline.isItemExpanded(folder) { outline.collapseItem(folder) } else { outline.expandItem(folder) }
     }
 
-    /// Space: Quick Look shows the selected file, or closes.
+    /// ⌘⌫, Move to Trash: the selected items go to the Trash.
+    func trashSelection() {
+        trash(selectedNodes.map(\.path))
+    }
+
+    private func trash(_ paths: [String]) {
+        let undoManager = outline.undoManager
+        Task {
+            await app.trashItems(paths, undoManager: undoManager)
+        }
+    }
+
+    /// ⇧⌘R, Reveal in Finder: the selected items, or the project's folder when nothing is selected.
+    func revealSelection() {
+        let paths = selectedNodes.map(\.path)
+        revealInFinder(paths.isEmpty ? [project] : paths)
+    }
+
+    private func revealInFinder(_ paths: [String]) {
+        NSWorkspace.shared.activateFileViewerSelecting(paths.map { URL(filePath: $0) })
+    }
+
+    /// ⇧⌘N, New Folder: an "untitled folder" where Paste would put items, its name edited in place at once.
+    func newFolder() {
+        newFolder(in: pasteFolder)
+    }
+
+    func newFolder(in folder: String) {
+        guard let path = app.createFolder(in: folder, undoManager: outline.undoManager) else { return }
+        reveal([path])
+        beginRename(path)
+    }
+
+    // MARK: - Rename in place
+
+    /// Return, Rename: the selected item's name edits in its row.
+    func renameSelection() {
+        guard selectedNodes.count == 1, let node = selectedNodes.first else { return NSSound.beep() }
+        beginRename(node.path)
+    }
+
+    /// The name of `path` edits in its row, selected up to its extension (a folder's whole name), as in Finder; `name`
+    /// is what the field starts with, the item's name by default. A row not on screen yet (Files about to show)
+    /// starts editing once it is.
+    func beginRename(_ path: String, name: String? = nil) {
+        endRename(cancelled: true)
+        guard let node = nodes[path], node.failure == nil, outline.window != nil, outline.row(forItem: node) >= 0 else {
+            pendingRename = (path, name)
+            return
+        }
+        pendingRename = nil
+        let row = outline.row(forItem: node)
+        outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        outline.scrollRowToVisible(row)
+        guard let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? FileCell else { return }
+        renaming = node
+        renamingCell = cell
+        renameCancelled = false
+        cell.beginEditing(name ?? node.name, delegate: self, selectingBaseName: !node.isDirectory)
+    }
+
+    /// A rename asked for while its row could not edit yet: now, if it can.
+    func startPendingRename() {
+        guard let pending = pendingRename, outline.window != nil, nodes[pending.path].map(outline.row(forItem:)) ?? -1 >= 0 else { return }
+        beginRename(pending.path, name: pending.name)
+    }
+
+    /// Return and Tab keep the name typed, Esc the name it had; either way the outline has the keyboard again.
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard renaming != nil else { return false }
+        switch selector {
+        case #selector(NSResponder.cancelOperation(_:)):
+            renameCancelled = true
+        case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)), #selector(NSResponder.insertBacktab(_:)):
+            break
+        default:
+            return false
+        }
+        outline.window?.makeFirstResponder(outline)
+        return true
+    }
+
+    /// The edit ended (Return, Esc, a click elsewhere).
+    func controlTextDidEndEditing(_ notification: Notification) {
+        endRename(cancelled: renameCancelled)
+    }
+
+    /// Unless `cancelled`, the item takes the name typed; one Finder would refuse is explained in a sheet, then edits
+    /// again. An empty or unchanged name renames nothing.
+    private func endRename(cancelled: Bool) {
+        guard let node = renaming else { return }
+        renaming = nil
+        let typed = FileNamePrompt.trimmed(renamingCell?.editedName ?? node.name)
+        renamingCell?.endEditing(showing: node.name)
+        renamingCell = nil
+        guard !cancelled, !typed.isEmpty, typed != node.name else { return }
+        if let problem = FileNamePrompt.problem(naming: typed, in: (node.path as NSString).deletingLastPathComponent, renaming: node.path) {
+            refuse(typed, problem, renaming: node.path)
+            return
+        }
+        if let renamed = app.renameItem(node.path, to: typed, undoManager: outline.undoManager) { reveal([renamed]) }
+    }
+
+    /// Why `name` can't be the item's, in a sheet, as Finder says it; then the name typed edits again.
+    private func refuse(_ name: String, _ problem: String, renaming path: String) {
+        guard let window = outline.window else { return }
+        let alert = NSAlert()
+        alert.messageText = problem
+        alert.informativeText = "Please choose a different name."
+        Task {
+            _ = await alert.beginSheetModal(for: window)
+            beginRename(path, name: name)
+        }
+    }
+
+    // MARK: - Quick Look
+
+    /// Space, Quick Look: the selected items show in Quick Look (one after the other in its panel), and the panel
+    /// follows the selection; Space again, or Esc, closes it.
     func toggleQuickLook() {
-        guard let node = selectedNodes.first, selectedNodes.count == 1 else { return }
-        app.toggleQuickLook(node.path, in: project)
+        if closeQuickLook() { return }
+        showQuickLook()
+    }
+
+    func showQuickLook() {
+        guard hasSelection, let panel = QLPreviewPanel.shared() else { return }
+        if quickLookClosing, panel.isVisible {
+            // Still zooming back into the row: it opens again once it is gone.
+            reopenQuickLook = true
+            return
+        }
+        ownsQuickLook = true
+        quickLookClosing = false
+        if (panel.dataSource as AnyObject?) === self {
+            followQuickLook()
+        } else if (panel.currentController as AnyObject?) === outline {
+            // Another Quick Look (the agents' output) took the panel's items while the outline controlled it.
+            beginQuickLook(panel)
+        } else {
+            panel.updateController()
+        }
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    /// Closes Quick Look while it shows this outline's items; false when it doesn't.
+    @discardableResult
+    func closeQuickLook() -> Bool {
+        guard let panel = quickLookShown else { return false }
+        // The panel zooms back into the row's icon before it goes; Space meanwhile opens it again.
+        quickLookClosing = true
+        panel.orderOut(nil)
+        return true
+    }
+
+    /// The panel, while it shows this outline's items.
+    private var quickLookShown: QLPreviewPanel? {
+        guard ownsQuickLook, !quickLookClosing, QLPreviewPanel.sharedPreviewPanelExists(), let panel = QLPreviewPanel.shared(),
+              panel.isVisible, (panel.dataSource as AnyObject?) === self
+        else { return nil }
+        return panel
+    }
+
+    /// Whether the outline takes the panel when the panel looks for its controller: while it opened it, not once it
+    /// closed it (another view's Quick Look, the agents' output, is then not the outline's to show).
+    var controlsQuickLook: Bool {
+        ownsQuickLook && !quickLookClosing
+    }
+
+    /// The selection changed: Quick Look shows the items selected now, and closes when nothing is.
+    private func followQuickLook() {
+        guard let panel = quickLookShown else { return }
+        let urls = selectedNodes.map { URL(filePath: $0.path) }
+        guard !urls.isEmpty else {
+            closeQuickLook()
+            return
+        }
+        guard urls != previewItems else { return }
+        previewItems = urls
+        panel.reloadData()
+    }
+
+    /// The panel found the outline in the responder chain: it shows the selection.
+    fileprivate func beginQuickLook(_ panel: QLPreviewPanel) {
+        previewItems = selectedNodes.map { URL(filePath: $0.path) }
+        panel.dataSource = self
+        panel.delegate = self
+        panel.reloadData()
+    }
+
+    /// The panel left the outline: it closed, or the keyboard went elsewhere (it comes back with the keyboard while the
+    /// panel is open).
+    fileprivate func endQuickLook(_ panel: QLPreviewPanel) {
+        if (panel.dataSource as AnyObject?) === self {
+            panel.dataSource = nil
+            panel.delegate = nil
+        }
+        if !panel.isVisible || quickLookClosing { quickLookClosed() }
+    }
+
+    /// The panel closed (its close button too).
+    func windowWillClose(_ notification: Notification) {
+        quickLookClosed()
+    }
+
+    private func quickLookClosed() {
+        ownsQuickLook = false
+        quickLookClosing = false
+        guard reopenQuickLook else { return }
+        reopenQuickLook = false
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.showQuickLook() }
+        }
     }
 
     // MARK: - Copy, cut, paste and duplicate
@@ -490,13 +735,18 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
         return outline.selectedRowIndexes.contains(row) ? selectedNodes : [clicked]
     }
 
+    /// Each item shows the key the outline answers for it (the keys themselves are the outline's, `FilesOutlineView`).
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         let targets = menuTargets
         let paths = targets.map(\.path)
         @discardableResult
-        func add(_ title: String, _ action: Selector, _ represented: Any? = nil, enabled: Bool = true) -> NSMenuItem {
-            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+        func add(
+            _ title: String, _ action: Selector, _ represented: Any? = nil, key: String = "", _ modifiers: NSEvent.ModifierFlags = .command,
+            enabled: Bool = true
+        ) -> NSMenuItem {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = modifiers
             item.target = self
             item.representedObject = represented
             item.isEnabled = enabled
@@ -505,45 +755,46 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
         /// Paste Item, and Move Item Here while ⌥ is down.
         func addPaste(into folder: String) {
             let count = AppState.pasteboardFiles().count
-            let paste = add(count > 1 ? "Paste \(count) Items" : "Paste Item", #selector(pasteItems(_:)), folder, enabled: count > 0)
-            paste.keyEquivalentModifierMask = []
-            let move = add(count > 1 ? "Move \(count) Items Here" : "Move Item Here", #selector(moveItemsHere(_:)), folder, enabled: count > 0)
-            move.keyEquivalentModifierMask = .option
+            add(count > 1 ? "Paste \(count) Items" : "Paste Item", #selector(pasteItems(_:)), folder, key: "v", enabled: count > 0)
+            let move = add(
+                count > 1 ? "Move \(count) Items Here" : "Move Item Here", #selector(moveItemsHere(_:)), folder, key: "v", [.command, .option],
+                enabled: count > 0)
             move.isAlternate = true
         }
         guard let first = targets.first else {
             // The empty area: the project folder's own menu.
             add("Open in Terminal", #selector(openInTerminal(_:)), project, enabled: app.connection.isConnected)
-            add("Reveal in Finder", #selector(revealInFinder(_:)), [project])
+            add("Reveal in Finder", #selector(showInFinder(_:)), [project], key: "r", [.command, .shift])
             menu.addItem(.separator())
             addPaste(into: project)
             menu.addItem(.separator())
             add("Copy Path", #selector(copyPath(_:)), project)
             menu.addItem(.separator())
             add("New File…", #selector(newFile(_:)), project)
-            add("New Folder…", #selector(newFolder(_:)), project)
+            add("New Folder", #selector(newFolder(_:)), project, key: "n", [.command, .shift])
             return
         }
         let folder = first.isDirectory ? first.path : (first.path as NSString).deletingLastPathComponent
-        if targets.contains(where: { !$0.isDirectory }) { add("Open", #selector(openPaths(_:)), paths) }
-        if targets.count == 1, !first.isDirectory { add("Quick Look", #selector(quickLook(_:)), first.path) }
+        if targets.contains(where: { !$0.isDirectory }) { add("Open", #selector(openPaths(_:)), paths, key: "o") }
+        add("Quick Look", #selector(quickLook(_:)), paths, key: " ", [])
         if targets.count == 1 { add("Open in Terminal", #selector(openInTerminal(_:)), folder, enabled: app.connection.isConnected) }
-        add("Reveal in Finder", #selector(revealInFinder(_:)), paths)
+        add("Reveal in Finder", #selector(showInFinder(_:)), paths, key: "r", [.command, .shift])
         menu.addItem(.separator())
-        add("Cut", #selector(cutItems(_:)), paths)
-        add("Copy", #selector(copyItems(_:)), paths)
+        add("Cut", #selector(cutItems(_:)), paths, key: "x")
+        add("Copy", #selector(copyItems(_:)), paths, key: "c")
         addPaste(into: folder)
-        add("Duplicate", #selector(duplicateItems(_:)), paths)
-        guard targets.count == 1 else { return }
+        add("Duplicate", #selector(duplicateItems(_:)), paths, key: "d")
+        if targets.count == 1 {
+            menu.addItem(.separator())
+            add("Copy Path", #selector(copyPath(_:)), first.path)
+            add("Copy Relative Path", #selector(copyPath(_:)), AppState.relativePath(first.path, in: project))
+            menu.addItem(.separator())
+            add("New File…", #selector(newFile(_:)), folder)
+            add("New Folder", #selector(newFolder(_:)), folder, key: "n", [.command, .shift])
+        }
         menu.addItem(.separator())
-        add("Copy Path", #selector(copyPath(_:)), first.path)
-        add("Copy Relative Path", #selector(copyPath(_:)), AppState.relativePath(first.path, in: project))
-        menu.addItem(.separator())
-        add("New File…", #selector(newFile(_:)), folder)
-        add("New Folder…", #selector(newFolder(_:)), folder)
-        menu.addItem(.separator())
-        add("Rename…", #selector(rename(_:)), first.path)
-        add("Move to Trash", #selector(moveToTrash(_:)), first.path)
+        if targets.count == 1 { add("Rename", #selector(rename(_:)), first.path, key: "\r", []) }
+        add("Move to Trash", #selector(moveToTrash(_:)), paths, key: "\u{8}")
     }
 
     @objc private func cutItems(_ sender: NSMenuItem) {
@@ -574,9 +825,10 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
         }
     }
 
+    /// Quick Look for the rows the menu is for, which become the selection the panel follows.
     @objc private func quickLook(_ sender: NSMenuItem) {
-        guard let path = sender.representedObject as? String else { return }
-        app.toggleQuickLook(path, in: project)
+        reveal(sender.representedObject as? [String] ?? [])
+        showQuickLook()
     }
 
     @objc private func openInTerminal(_ sender: NSMenuItem) {
@@ -584,9 +836,8 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
         app.newTerminal(in: folder)
     }
 
-    @objc private func revealInFinder(_ sender: NSMenuItem) {
-        let paths = sender.representedObject as? [String] ?? []
-        NSWorkspace.shared.activateFileViewerSelecting(paths.map { URL(filePath: $0) })
+    @objc private func showInFinder(_ sender: NSMenuItem) {
+        revealInFinder(sender.representedObject as? [String] ?? [])
     }
 
     @objc private func copyPath(_ sender: NSMenuItem) {
@@ -601,22 +852,110 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
 
     @objc private func newFolder(_ sender: NSMenuItem) {
         guard let folder = sender.representedObject as? String else { return }
-        app.newFolder(in: folder)
+        newFolder(in: folder)
     }
 
     @objc private func rename(_ sender: NSMenuItem) {
         guard let path = sender.representedObject as? String else { return }
-        app.renameItem(path, project: project)
+        beginRename(path)
     }
 
     @objc private func moveToTrash(_ sender: NSMenuItem) {
-        guard let path = sender.representedObject as? String else { return }
-        app.trashItem(path, project: project)
+        trash(sender.representedObject as? [String] ?? [])
+    }
+
+    // MARK: - Drag and drop
+
+    /// A dragged row is its file's URL, which Finder, Mail, the terminal and the editor take.
+    func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> (any NSPasteboardWriting)? {
+        guard let node = item as? FileNode, node.failure == nil else { return nil }
+        return URL(filePath: node.path) as NSURL
+    }
+
+    /// A drop goes into a folder, which is highlighted: the folder under the pointer, the folder of the file under it,
+    /// or the project's top level below the rows (and the whole outline lights up). A folder never goes into itself,
+    /// and items never move into the folder they are in.
+    func outlineView(
+        _ outlineView: NSOutlineView, validateDrop info: any NSDraggingInfo, proposedItem item: Any?, proposedChildIndex index: Int
+    ) -> NSDragOperation {
+        let paths = AppState.pasteboardFiles(info.draggingPasteboard)
+        let folder = dropFolder(onto: item as? FileNode)
+        guard !paths.isEmpty, !paths.contains(where: { folder == $0 || folder.hasPrefix($0 + "/") }) else { return [] }
+        let operation = dropOperation(info)
+        if operation == .move, paths.allSatisfy({ ($0 as NSString).deletingLastPathComponent == folder }) { return [] }
+        outlineView.setDropItem(folder == project ? nil : nodes[folder], dropChildIndex: NSOutlineViewDropOnItemIndex)
+        return operation
+    }
+
+    /// The dragged items move or are copied into the folder, as one step of Undo; open editors follow moved files.
+    func outlineView(_ outlineView: NSOutlineView, acceptDrop info: any NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
+        let paths = AppState.pasteboardFiles(info.draggingPasteboard)
+        let folder = dropFolder(onto: item as? FileNode)
+        guard !paths.isEmpty else { return false }
+        let undoManager = outline.undoManager
+        if dropOperation(info) == .move {
+            reveal(app.moveItems(paths, into: folder, undoManager: undoManager))
+        } else {
+            Task { reveal(await app.copyItems(paths, into: folder, undoManager: undoManager)) }
+        }
+        return true
+    }
+
+    /// The folder a drop on `item` goes into: a folder (or a folder that could not be listed) itself, a file's folder,
+    /// and the project's top level for the space below the rows.
+    private func dropFolder(onto item: FileNode?) -> String {
+        guard let item else { return project }
+        return item.isDirectory || item.failure != nil ? item.path : (item.path as NSString).deletingLastPathComponent
+    }
+
+    /// Rows from a Files outline move (⌥ copies); items from Finder or another app are copied (⌘ moves them), as Finder
+    /// treats a drag from another disk. ⌥ leaves Copy alone in the drag's operations, ⌘ Generic.
+    private func dropOperation(_ info: any NSDraggingInfo) -> NSDragOperation {
+        let allowed = info.draggingSourceOperationMask
+        let moves = info.draggingSource is FilesOutlineView ? allowed != .copy : !allowed.contains(.copy)
+        if moves, allowed.contains(.move) || allowed.contains(.generic) { return .move }
+        return allowed.contains(.copy) ? .copy : []
     }
 }
 
-/// The Files outline's view: the keys Finder's list answers, Edit › Cut, Copy and Paste for the selected items, and a
-/// click in a window in the background that acts on the row at once.
+extension FilesOutlineController: @preconcurrency QLPreviewPanelDataSource, @preconcurrency QLPreviewPanelDelegate {
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        previewItems.count
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
+        previewItems.indices.contains(index) ? previewItems[index] as NSURL : nil
+    }
+
+    /// Keys pressed in the panel act in the outline, as in Finder: ↑ and ↓ move the selection (the panel follows),
+    /// Space and Esc close it, letters select by name. Return is left alone: it would rename.
+    func previewPanel(_ panel: QLPreviewPanel!, handle event: NSEvent!) -> Bool {
+        guard let event, event.type == .keyDown,
+              event.modifierFlags.intersection([.command, .control]).isEmpty,
+              // kVK_Return, kVK_ANSI_KeypadEnter
+              event.keyCode != 36, event.keyCode != 76
+        else { return false }
+        outline.keyDown(with: event)
+        return true
+    }
+
+    /// The panel zooms out of the row's icon, and back into it when it closes; from the middle of the screen for an
+    /// item scrolled out of view.
+    func previewPanel(_ panel: QLPreviewPanel!, sourceFrameOnScreenFor item: (any QLPreviewItem)!) -> NSRect {
+        guard let path = item?.previewItemURL?.path(percentEncoded: false), let node = nodes[path], let window = outline.window else { return .zero }
+        let row = outline.row(forItem: node)
+        guard row >= 0, NSLocationInRange(row, outline.rows(in: outline.visibleRect)),
+              let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? FileCell
+        else { return .zero }
+        return window.convertToScreen(cell.iconFrameInWindow)
+    }
+}
+
+/// The Files outline's view, with Finder's keys while it has the keyboard: Return renames, ⌘↓ and ⌘O open, Space is
+/// Quick Look, ⌘⌫ moves to the Trash, ⇧⌘N makes a folder, ⇧⌘R reveals in Finder, ⌘D duplicates, ⌥⌘V moves the items
+/// on the pasteboard here; ← and → collapse and expand (with ⌥ everything inside), letters select by name (all three
+/// `NSOutlineView`'s own). Edit › Cut, Copy and Paste act on the selected items. A click in a window in the background
+/// acts on the row at once, and the outline controls the Quick Look panel while it shows the outline's items.
 final class FilesOutlineView: NSOutlineView {
     weak var controller: FilesOutlineController?
 
@@ -628,25 +967,41 @@ final class FilesOutlineView: NSOutlineView {
         switch (event.keyCode, modifiers) {
         // kVK_Return, kVK_ANSI_KeypadEnter
         case (36, []), (76, []):
-            controller?.openSelection()
+            controller?.renameSelection()
         // kVK_Space
         case (49, []):
             controller?.toggleQuickLook()
+        // kVK_Escape, while Quick Look shows the outline's items
+        case (53, []) where controller?.closeQuickLook() == true:
+            break
         default:
             super.keyDown(with: event)
         }
     }
 
-    /// The Finder keys the menus do not carry: ⌥⌘V (Move Item Here) and ⌘D (Duplicate), while the outline has the
-    /// keyboard.
+    /// The keys with ⌘. ⌘O is File › Add Project… unless the outline has the keyboard and something selected.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard let controller, window?.firstResponder === self else { return super.performKeyEquivalent(with: event) }
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
-        switch (modifiers, event.charactersIgnoringModifiers?.lowercased()) {
-        case ([.command, .option], "v"):
+        switch (modifiers, event.keyCode, event.charactersIgnoringModifiers?.lowercased()) {
+        // kVK_Delete
+        case ([.command], 51, _):
+            guard controller.hasSelection else { return false }
+            controller.trashSelection()
+        // kVK_DownArrow
+        case ([.command], 125, _):
+            controller.openSelection()
+        case ([.command], _, "o"):
+            guard controller.hasSelection else { return false }
+            controller.openSelection()
+        case ([.command, .shift], _, "n"):
+            controller.newFolder()
+        case ([.command, .shift], _, "r"):
+            controller.revealSelection()
+        case ([.command, .option], _, "v"):
             guard !AppState.pasteboardFiles().isEmpty else { return false }
             controller.paste(moving: true)
-        case ([.command], "d"):
+        case ([.command], _, "d"):
             guard controller.canCopy else { return false }
             controller.duplicateSelection()
         default:
@@ -674,19 +1029,57 @@ final class FilesOutlineView: NSOutlineView {
         default: super.validateUserInterfaceItem(item)
         }
     }
+
+    /// Folders a drag sprang open stay open once it dropped into them, where the dropped items are selected; a drag
+    /// that leaves or is cancelled closes them again.
+    override func shouldCollapseAutoExpandedItems(forDeposited deposited: Bool) -> Bool {
+        !deposited
+    }
+
+    /// A rename asked for while Files was not on screen starts once the outline is.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else { return }
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.controller?.startPendingRename() }
+        }
+    }
+
+    // Quick Look asks the responder chain for its controller: the outline, while it opened the panel for its items.
+
+    nonisolated override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        MainActor.assumeIsolated { controller?.controlsQuickLook == true }
+    }
+
+    nonisolated override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated {
+            guard let panel else { return }
+            controller?.beginQuickLook(panel)
+        }
+    }
+
+    nonisolated override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated {
+            guard let panel else { return }
+            controller?.endQuickLook(panel)
+        }
+    }
 }
 
 /// A Files row: the icon, the name (in git's color while git has something to say about the file, or about something
 /// in the folder), a dot while it has unsaved edits and git's letter trailing; dimmed while git ignores it. On the
-/// accent of a selected row in a focused outline the text and icon are white.
+/// accent of a selected row in a focused outline the text and icon are white. The name edits in place for a rename.
 final class FileCell: NSTableCellView {
     static let identifier = NSUserInterfaceItemIdentifier("file")
 
     private let icon = NSImageView()
-    private let name = NSTextField(labelWithString: "")
+    private let name = NameField(labelWithString: "")
     private let unsaved = UnsavedDot()
     private let letter = NSTextField(labelWithString: "")
     private var mark: GitMarks.Mark?
+    /// While the name edits, it reaches as far as git's letter, to show what is typed.
+    private var editingWidth: NSLayoutConstraint?
+    private var isEditing = false
 
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: 200, height: 22))
@@ -727,6 +1120,7 @@ final class FileCell: NSTableCellView {
             letter.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
             letter.firstBaselineAnchor.constraint(equalTo: name.firstBaselineAnchor),
         ])
+        editingWidth = leading.trailingAnchor.constraint(equalTo: letter.leadingAnchor, constant: -4)
     }
 
     @available(*, unavailable)
@@ -745,7 +1139,7 @@ final class FileCell: NSTableCellView {
     func show(_ node: FileNode, mark: GitMarks.Mark?, isIgnored: Bool, isDirty: Bool) {
         self.mark = mark
         icon.image = Self.symbol(FileSymbol.name(for: node.name, isDirectory: node.isDirectory))
-        name.stringValue = node.name
+        if !isEditing { name.stringValue = node.name }
         unsaved.isHidden = !isDirty
         let letterShown = !node.isDirectory ? mark : nil
         letter.isHidden = letterShown == nil
@@ -771,9 +1165,53 @@ final class FileCell: NSTableCellView {
         let selected = backgroundStyle == .emphasized
         let white = NSColor.alternateSelectedControlTextColor
         icon.contentTintColor = selected ? white : .secondaryLabelColor
-        name.textColor = selected ? white : mark?.color ?? .labelColor
+        name.textColor = isEditing ? .textColor : selected ? white : mark?.color ?? .labelColor
         letter.textColor = selected ? white : mark?.color
         unsaved.color = selected ? white : .labelColor
+    }
+
+    /// Where Quick Look's panel zooms from: the icon, in the window.
+    var iconFrameInWindow: NSRect {
+        icon.convert(icon.bounds, to: nil)
+    }
+
+    /// The name as typed in place.
+    var editedName: String {
+        name.stringValue
+    }
+
+    /// The name becomes a field like Finder's holding `text`, selected up to its extension when `selectingBaseName`
+    /// (all of it otherwise), with the keyboard.
+    func beginEditing(_ text: String, delegate: any NSTextFieldDelegate, selectingBaseName: Bool) {
+        isEditing = true
+        name.stringValue = text
+        name.isEditable = true
+        name.isSelectable = true
+        name.drawsBackground = true
+        name.backgroundColor = .textBackgroundColor
+        name.lineBreakMode = .byClipping
+        name.cell?.isScrollable = true
+        name.delegate = delegate
+        editingWidth?.isActive = true
+        applyColors()
+        window?.makeFirstResponder(name)
+        let base = (text as NSString).deletingPathExtension
+        let length = selectingBaseName && !base.isEmpty ? (base as NSString).length : (text as NSString).length
+        name.currentEditor()?.selectedRange = NSRange(location: 0, length: length)
+    }
+
+    /// The name is a label again, showing `text`.
+    func endEditing(showing text: String) {
+        isEditing = false
+        name.delegate = nil
+        name.isEditable = false
+        name.isSelectable = false
+        name.drawsBackground = false
+        name.cell?.isScrollable = false
+        name.lineBreakMode = .byTruncatingMiddle
+        name.stringValue = text
+        editingWidth?.isActive = false
+        applyColors()
     }
 }
 

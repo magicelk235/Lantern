@@ -1,8 +1,11 @@
 import AppKit
+import IDEEditorModel
 import IDEModel
 import SwiftTerm
 
-/// SwiftTerm's AppKit terminal in the system text color on Lantern's canvas, following light and dark mode.
+/// SwiftTerm's AppKit terminal in the system text color on Lantern's canvas, following light and dark mode. Files
+/// dropped on it (from Files, from Finder) type their paths, escaped for the shell and each followed by a space, as in
+/// Terminal.
 final class OmpTerminalView: TerminalView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -30,6 +33,29 @@ final class OmpTerminalView: TerminalView {
         allowMouseReporting = false
         feed(byteArray: bytes)
         allowMouseReporting = reportsMouse
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        AppState.pasteboardFiles(sender.draggingPasteboard).isEmpty ? [] : .copy
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        AppState.pasteboardFiles(sender.draggingPasteboard).isEmpty ? [] : .copy
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let paths = AppState.pasteboardFiles(sender.draggingPasteboard)
+        guard !paths.isEmpty else { return false }
+        typePasted(ShellQuoting.dropText(paths))
+        window?.makeFirstResponder(self)
+        return true
+    }
+
+    /// `text` reaches the program as a paste does: bracketed (`ESC [200~` … `ESC [201~`) while it asked for bracketed
+    /// paste, so a shell inserts it and runs nothing.
+    func typePasted(_ text: String) {
+        let bracketed = getTerminal().bracketedPasteMode
+        send(txt: bracketed ? "\u{1b}[200~" + text + "\u{1b}[201~" : text)
     }
 }
 
@@ -69,6 +95,7 @@ final class TerminalTab {
             frame: .zero, font: font,
             options: TerminalOptions(scrollback: Self.scrollbackLines, initialBidiState: Self.bidiState))
         view.applyColors()
+        view.registerForDraggedTypes([.fileURL])
         view.optionAsMetaKey = optionAsMeta
         view.terminalDelegate = self
         endpoint.attach(to: self)

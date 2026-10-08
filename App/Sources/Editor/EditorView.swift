@@ -1,6 +1,7 @@
 import AppKit
 import CodeEditLanguages
 import CodeEditSourceEditor
+import CodeEditTextView
 import IDEEditorModel
 import SwiftUI
 
@@ -65,14 +66,21 @@ private struct SourceEditorHost: NSViewRepresentable {
 }
 
 /// Where the document's text shows while the host is in a window (`EditorDocument.host(in:)`): the controller has one
-/// view, and a second window SwiftUI opens for the same project gets a host of its own until it closes again.
+/// view, and a second window SwiftUI opens for the same project gets a host of its own until it closes again. Files
+/// dropped on the text (from Files, from Finder) type their paths where they land: relative to the project for its
+/// own files, whole for others, one per line.
 final class EditorHostingView: NSView {
     private let document: EditorDocument
     private var closeObserver: (any NSObjectProtocol)?
+    /// Where dropped paths would go, while files are dragged over the text.
+    private let dropCaret = NSView()
 
     init(document: EditorDocument) {
         self.document = document
         super.init(frame: .zero)
+        registerForDraggedTypes([.fileURL])
+        dropCaret.wantsLayer = true
+        dropCaret.layer?.backgroundColor = NSColor.textInsertionPointColor.cgColor
     }
 
     @available(*, unavailable)
@@ -113,6 +121,49 @@ final class EditorHostingView: NSView {
     private func stopWatchingWindow() {
         if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
         closeObserver = nil
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        draggingUpdated(sender)
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard let (textView, offset) = dropTarget(sender), let rect = textView.layoutManager.rectForOffset(offset) else {
+            dropCaret.removeFromSuperview()
+            return []
+        }
+        if dropCaret.superview !== textView { textView.addSubview(dropCaret) }
+        dropCaret.frame = NSRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height)
+        return .copy
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        dropCaret.removeFromSuperview()
+    }
+
+    override func draggingEnded(_ sender: any NSDraggingInfo) {
+        dropCaret.removeFromSuperview()
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        dropCaret.removeFromSuperview()
+        guard let (textView, offset) = dropTarget(sender) else { return false }
+        let text = AppState.pasteboardFiles(sender.draggingPasteboard)
+            .map { AppState.relativePath($0, in: document.workspace) }
+            .joined(separator: textView.layoutManager.detectedLineEnding.rawValue)
+        textView.replaceCharacters(in: NSRange(location: offset, length: 0), with: text)
+        textView.selectionManager.setSelectedRange(NSRange(location: offset, length: (text as NSString).length))
+        window?.makeFirstResponder(textView)
+        return true
+    }
+
+    /// The text view and the place in its text under a drag of files, when the text takes them.
+    private func dropTarget(_ info: any NSDraggingInfo) -> (TextView, Int)? {
+        guard let textView = document.controller?.textView, textView.isEditable, textView.window === window,
+              !AppState.pasteboardFiles(info.draggingPasteboard).isEmpty,
+              let offset = textView.layoutManager.textOffsetAtPoint(textView.convert(info.draggingLocation, from: nil))
+        else { return nil }
+        return (textView, offset)
     }
 }
 

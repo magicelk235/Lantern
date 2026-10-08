@@ -114,7 +114,7 @@ struct ProjectHeader: View {
             Spacer(minLength: 4)
             Menu {
                 Button("New File…") { app.newFile(in: project, project: project) }
-                Button("New Folder…") { app.newFolder(in: project) }
+                Button("New Folder") { app.filesOutlines.newFolder(in: project, of: project, app: app) }
                 Divider()
                 Button("New Session") { app.newSession(in: project) }
                     .disabled(!app.connection.isConnected)
