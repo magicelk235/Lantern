@@ -21,20 +21,24 @@ struct DaemonFixture {
     private let pauseGrace: Duration
     private let capabilities: [String: Bool]
     let services: FakeServices
+    /// omp's agent directory is `$PI_CODING_AGENT_DIR` = `<temp>/agent`, so nothing reaches the user's own.
+    private let isolatedAgent: Bool
 
     init(
         pausable: Bool = true, pauseGrace: Duration = .seconds(3), capabilities: [String: Bool] = [:],
-        services: FakeServices = FakeServices()
+        services: FakeServices = FakeServices(), isolatedAgent: Bool = false
     ) async throws {
         let temp = try ShortTempDir()
         try await self.init(
             temp: temp, omp: try FakeOmp(in: temp.url), pausable: pausable, pauseGrace: pauseGrace, capabilities: capabilities,
-            services: services)
+            services: services, isolatedAgent: isolatedAgent)
     }
 
     private init(
-        temp: ShortTempDir, omp: FakeOmp, pausable: Bool, pauseGrace: Duration, capabilities: [String: Bool], services: FakeServices
+        temp: ShortTempDir, omp: FakeOmp, pausable: Bool, pauseGrace: Duration, capabilities: [String: Bool], services: FakeServices,
+        isolatedAgent: Bool
     ) async throws {
+        self.isolatedAgent = isolatedAgent
         self.temp = temp
         self.omp = omp
         self.pausable = pausable
@@ -47,10 +51,12 @@ struct DaemonFixture {
         workspace = try temp.directory("workspace")
         bridge = ScriptedBridge(omp: omp, connects: true, pausable: pausable, capabilities: capabilities)
         locks = FakeLocks()
+        var environment = omp.environment
+        if isolatedAgent { environment["PI_CODING_AGENT_DIR"] = temp.url.appending(path: "agent").path(percentEncoded: false) }
         let configuration = Daemon.Configuration(
             paths: paths, ompExecutable: omp.executable, ompArguments: ["--thinking", "off"],
             sessionDirectory: temp.url.appending(path: "omp-sessions").path(percentEncoded: false),
-            bridgeExtension: "/fake/ide-bridge.ts", baseEnvironment: omp.environment, timings: .fastTests,
+            bridgeExtension: "/fake/ide-bridge.ts", baseEnvironment: environment, timings: .fastTests,
             wakeHealthCheckDelay: .zero, detachedPauseGrace: pauseGrace, services: services)
         daemon = Daemon(
             configuration: configuration, token: token, bridge: bridge, locks: locks,
@@ -61,7 +67,8 @@ struct DaemonFixture {
     /// A second daemon on the same `$APP_SUPPORT` and fake omp, as after a daemon restart.
     func restarted() async throws -> DaemonFixture {
         try await DaemonFixture(
-            temp: temp, omp: omp, pausable: pausable, pauseGrace: pauseGrace, capabilities: capabilities, services: services)
+            temp: temp, omp: omp, pausable: pausable, pauseGrace: pauseGrace, capabilities: capabilities, services: services,
+            isolatedAgent: isolatedAgent)
     }
 
     /// A Lantern window (`app`; `hasWindow` false: an app whose windows are all closed), or a command-line client

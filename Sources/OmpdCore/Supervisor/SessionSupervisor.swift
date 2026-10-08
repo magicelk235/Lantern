@@ -32,6 +32,8 @@ public actor SessionSupervisor {
         case daemonShutdown
         /// `restart`: omp is resumed right after it exits.
         case restart
+        /// `stopForRelocation`: omp is resumed once its project's folder was renamed (`resumeAfterRelocation`).
+        case relocation
     }
 
     private let context: SupervisorContext
@@ -107,6 +109,10 @@ public actor SessionSupervisor {
         var restart = false
         var restarted: Interruption?
     }
+
+    /// `stopForRelocation` holds the session for a rename of its project's folder: whether omp ran (it is resumed
+    /// afterwards) and what its stop interrupted (continued then).
+    private var relocation: (wasRunning: Bool, interrupted: Interruption?)?
 
     // omp's pause gate
     /// Who holds the gate closed, as the bridge last reported it; nil while it is open.
@@ -591,6 +597,71 @@ public actor SessionSupervisor {
         let restarted = InterruptionAnalyzer.analyze(sessionFile: file, since: runStart, cause: "the session was restarted from Lantern")
         // What an earlier death left and a resume never got to apply (its bridge did not say hello) is kept for its policy.
         recovery = Recovery(interruption: recovery?.interruption, restart: true, restarted: restarted)
+        try await start(.resume)
+    }
+
+    // MARK: - Relocation
+
+    /// `project.rename`, before the folder moves: omp stops the graceful way, as `restart` stops it, and nothing starts
+    /// it again until `resumeAfterRelocation` (a stop by the user still closes it). True when omp ran: it is resumed then,
+    /// in the renamed folder, continuing what the stop interrupted. An omp in one of Lantern's terminals is stopped through
+    /// its ide-bridge (the terminal stays the user's; the session resumes in a session PTY of its own); one that does not
+    /// exit is refused with `sessionBusy` and keeps running there.
+    public func stopForRelocation() async throws -> Bool {
+        if let startTask { _ = try? await startTask.value }
+        guard !stopRequested else { return false }
+        guard pid != nil else {
+            stopRequested = true
+            relocation = (false, nil)
+            return false
+        }
+        guard stopping == nil else {
+            throw DaemonError(.sessionBusy, "omp of session \(sessionKey) is starting or stopping; try again in a moment")
+        }
+        stopRequested = true
+        let runStart = spawnedAt
+        stopping = .relocation
+        await terminate()
+        if adopted, !exited.isOpen {
+            stopping = nil
+            stopRequested = false
+            throw DaemonError(.sessionBusy, "omp running in a terminal did not stop; quit it there and try again")
+        }
+        await forgetSpawn()
+        // Its session file is about to move: ownership is taken again for the new path.
+        releaseLock()
+        if adopted {
+            adopted = false
+            ptyId = nil
+            await updateEntry { entry in
+                entry.adopted = false
+                entry.ptyId = nil
+            }
+        }
+        let file = await context.manifest.entry(sessionKey)?.sessionFile
+        let interrupted = file.flatMap { file in
+            FileManager.default.fileExists(atPath: file)
+                ? InterruptionAnalyzer.analyze(sessionFile: file, since: runStart, cause: "its project's folder was renamed") : nil
+        }
+        relocation = (true, interrupted)
+        await setStatus(.resuming)
+        return true
+    }
+
+    /// `project.rename`, once the entry names the renamed folder and the moved session file, or once the rename was
+    /// given up: omp is resumed where the entry says, what `stopForRelocation` interrupted continued whatever the
+    /// restore policy (a session that never wrote its file starts afresh). A session the user closed meanwhile stays
+    /// closed; one whose omp did not run is only let go.
+    public func resumeAfterRelocation() async throws {
+        guard let relocation else { return }
+        self.relocation = nil
+        guard await context.manifest.entry(sessionKey)?.closedByUser != true else { return }
+        stopRequested = false
+        guard relocation.wasRunning else { return }
+        guard let file = await context.manifest.entry(sessionKey)?.sessionFile, FileManager.default.fileExists(atPath: file) else {
+            return try await start(.fresh)
+        }
+        recovery = Recovery(interruption: recovery?.interruption, restart: true, restarted: relocation.interrupted)
         try await start(.resume)
     }
 

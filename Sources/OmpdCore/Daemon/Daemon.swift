@@ -100,6 +100,8 @@ public actor Daemon {
     private var shutdownRequested = false
     /// `daemon.upgrade whenSettled`: ompd restarts into the installed executable once every session is settled.
     private let restartWhenSettled = Flag()
+    /// The project folder `project.rename` is moving: nothing starts in it, or in its new path, until it is done.
+    private var renaming: FolderMove?
     /// Free space and PTY snapshot writes, checked whenever ompd writes anyway.
     private lazy var storageWatch = StorageWatch(
         volume: configuration.paths.root, alarm: LowSpaceAlarm(fixedThreshold: configuration.lowSpaceThreshold),
@@ -142,6 +144,8 @@ public actor Daemon {
         precondition(server == nil && shutdownTask == nil, "Daemon.start() called twice")
         try await manifest.store.load()
         if handover == nil {
+            // A rename a crash cut short is finished (or forgotten) before anything is restored from the manifest.
+            _ = await ProjectRenamer(journalURL: configuration.paths.projectRename, manifest: manifest).recover()
             try await manifest.update { manifest in
                 for index in manifest.sessions.indices {
                     manifest.sessions[index].ptyId = nil
@@ -308,6 +312,12 @@ public actor Daemon {
         if readOnly.isOn { throw DaemonError(.readOnly, "ompd is read-only: the session manifest could not be written (disk full?)") }
     }
 
+    /// Refuses to start anything in the folder `project.rename` is moving, or at its new path, until the rename is done.
+    private func ensureNotRenaming(_ workspace: String) throws {
+        guard let renaming, renaming.contains(workspace) || renaming.reversed.contains(workspace) else { return }
+        throw DaemonError(.sessionBusy, "“\((renaming.from as NSString).lastPathComponent)” is being renamed; try again in a moment")
+    }
+
     /// Adds `entry` to the manifest with a new supervisor; undone if the manifest cannot be written.
     private func register(_ entry: SessionManifestEntry) async throws -> SessionSupervisor {
         let supervisor = SessionSupervisor(entry: entry, context: supervisorContext)
@@ -373,6 +383,7 @@ public actor Daemon {
         let workspace = try Self.canonicalDirectory(params.workspace)
         let launch = try await launchSpec(approvalMode: params.approvalMode, model: params.model)
         try ensureAcceptingWork()
+        try ensureNotRenaming(workspace)
         let entry = SessionManifestEntry(
             sessionKey: UUID().uuidString.lowercased(), workspace: workspace, launch: launch, createdAt: Date())
         let supervisor = try await register(entry)
@@ -391,6 +402,7 @@ public actor Daemon {
         let existing = await manifest.sessions.first { entry in
             entry.sessionFile.map { Self.canonicalFile($0) ?? $0 } == file
         }
+        try ensureNotRenaming(workspace)
         if let existing {
             try await supervisor(existing.sessionKey).reopen(workspace: workspace, cols: params.cols, rows: params.rows)
             guard let entry = await manifest.entry(existing.sessionKey) else {
@@ -405,6 +417,7 @@ public actor Daemon {
         do {
             let launch = try await launchSpec(approvalMode: nil, model: nil)
             try ensureAcceptingWork()
+            try ensureNotRenaming(workspace)
             let entry = SessionManifestEntry(
                 sessionKey: key, workspace: workspace, sessionFile: file, launch: launch, createdAt: Date())
             supervisor = try await register(entry)
@@ -439,6 +452,7 @@ public actor Daemon {
                 throw DaemonError(.sessionBusy, "terminal \(request.ptyId) already runs omp session \(hosting.sessionKey)")
             }
             workspace = try Self.canonicalDirectory(hello.cwd)
+            try ensureNotRenaming(workspace)
             let file = OwnershipLock.canonicalPath(hello.sessionFile)
             let existing = await manifest.sessions.first { $0.sessionFile.map(OwnershipLock.canonicalPath) == file }
             if let existing {
@@ -548,6 +562,103 @@ public actor Daemon {
             persistenceFailed(error)
             throw DaemonError(.internal, "cannot write the session manifest: \(error)")
         }
+    }
+
+    // MARK: - Renaming a project
+
+    /// `project.rename` (`ProjectRename`): the project's running sessions stop, the folder moves, omp's data and the
+    /// manifest follow (`ProjectRenamer`, journaled), and the stopped sessions resume in the renamed folder in the
+    /// background once the answer is out. Anything that fails before the folder moved leaves everything as it was.
+    private func renameProject(_ params: ProjectRename.Params) async throws -> ProjectRename.Result {
+        try ensureAcceptingWork()
+        guard renaming == nil else {
+            throw DaemonError(.sessionBusy, "Another project is being renamed. Try again once that is done.")
+        }
+        let paths = try Self.renamePaths(params)
+        renaming = paths.canonical
+        defer { renaming = nil }
+        let entries = await manifest.sessions.filter { paths.canonical.contains($0.workspace) }
+        let renamer = ProjectRenamer(journalURL: configuration.paths.projectRename, manifest: manifest)
+        let omp = try? await brokerOmp(for: entries)
+        let stores = await ProjectRenamer.stores(for: entries, baseEnvironment: configuration.baseEnvironment, paths: paths) { environment in
+            guard let omp else { return OmpMemorySettings() }
+            return await OmpMemorySettings.read(omp: omp.path, environment: environment)
+        }
+        var journal = ProjectRenamer.Journal(paths: paths, moveFolder: params.moveFolder, phase: .stopping, stores: stores)
+        do {
+            try renamer.begin(journal)
+        } catch {
+            throw DaemonError(.internal, "cannot write the rename journal: \(error)")
+        }
+        let held = entries.compactMap { supervisors[$0.sessionKey] }
+        let stops = await withTaskGroup(of: (SessionKey, (any Error)?, Bool).self) { group in
+            for supervisor in held {
+                group.addTask {
+                    do {
+                        return (supervisor.sessionKey, nil, try await supervisor.stopForRelocation())
+                    } catch {
+                        return (supervisor.sessionKey, error, false)
+                    }
+                }
+            }
+            var stops: [(SessionKey, (any Error)?, Bool)] = []
+            for await stop in group { stops.append(stop) }
+            return stops
+        }
+        let resume = { @Sendable in
+            await withTaskGroup(of: Void.self) { group in
+                for supervisor in held { group.addTask { try? await supervisor.resumeAfterRelocation() } }
+            }
+        }
+        do {
+            if let failure = stops.lazy.compactMap(\.1).first { throw failure }
+            try renamer.moveFolder(&journal)
+        } catch {
+            renamer.abandon()
+            Task { await resume() }
+            throw error
+        }
+        let problems: [String]
+        do {
+            problems = try await renamer.finish(journal)
+        } catch {
+            // The journal stays: the next ompd finishes the rename.
+            persistenceFailed(error)
+            throw DaemonError(.internal, "cannot write the session manifest: \(error)")
+        }
+        Task { await resume() }
+        return ProjectRename.Result(
+            workspace: paths.canonical.to, resumed: stops.filter(\.2).map(\.0).sorted(), notMoved: problems)
+    }
+
+    /// The folder's old and new paths in both of omp's forms, checked: an existing folder renamed to a free name in an
+    /// existing folder, or (`moveFolder` false) a gone folder found at an existing one.
+    static func renamePaths(_ params: ProjectRename.Params) throws -> ProjectPaths {
+        guard params.from.hasPrefix("/"), params.to.hasPrefix("/") else {
+            throw DaemonError(.badParams, "project.rename needs absolute paths")
+        }
+        let name = (params.to as NSString).lastPathComponent
+        guard !name.isEmpty, name != ".", name != "..", name != "/" else { throw DaemonError(.badParams, "The name “\(name)” is reserved by the system.") }
+        guard params.moveFolder else {
+            let to = try canonicalDirectory(params.to)
+            let from = OmpAgentStorage.absolute(params.from)
+            guard canonicalFile(from) == nil else { throw DaemonError(.badParams, "the folder \(from) is still there") }
+            // A gone folder has no realpath: omp's form of it is that of its parent, which is still there.
+            let parent = (from as NSString).deletingLastPathComponent
+            let ompFrom = canonicalFile(parent).map { (OmpPaths.ompCwd($0) as NSString).appendingPathComponent((from as NSString).lastPathComponent) } ?? from
+            return ProjectPaths(canonical: FolderMove(from: from, to: to), omp: FolderMove(from: ompFrom, to: OmpPaths.ompCwd(to)))
+        }
+        let from = try canonicalDirectory(params.from)
+        let parent = try canonicalDirectory((params.to as NSString).deletingLastPathComponent)
+        let to = (parent as NSString).appendingPathComponent(name)
+        guard to != from else { throw DaemonError(.badParams, "the folder is already named “\(name)”") }
+        if FileManager.default.fileExists(atPath: to), !OmpDataMigration.isSameItem(from, to) {
+            throw DaemonError(.badParams, "A folder named “\(name)” already exists.")
+        }
+        let ompFrom = OmpPaths.ompCwd(from)
+        // The same parent folder: omp names the new path the way it names the old one.
+        let ompTo = ompFrom != from && to.hasPrefix("/private/") ? String(to.dropFirst("/private".count)) : to
+        return ProjectPaths(canonical: FolderMove(from: from, to: to), omp: FolderMove(from: ompFrom, to: ompTo))
     }
 
     // MARK: - Agent supervision
@@ -770,6 +881,9 @@ public actor Daemon {
         router.on(DaemonUpgrade.self) { [weak self] params, _ in
             try await Self.alive(self).upgrade(params.mode)
         }
+        router.on(ProjectRename.self) { [weak self] params, _ in
+            try await Self.alive(self).renameProject(params)
+        }
     }
 
     private static func alive(_ daemon: Daemon?) throws -> Daemon {
@@ -830,6 +944,7 @@ public actor Daemon {
     /// stopping or being continued) is waited out first, at most `handoverSettle`.
     private func handoverBlocker(for installed: InstalledExecutable) async -> String? {
         if let failure = installed.failure { return "the installed ompd could not be started: \(failure)" }
+        if renaming != nil { return "a project's folder is being renamed" }
         guard installed.handoverFormats.contains(DaemonHandover.format) else {
             return "the installed ompd \(installed.version ?? "") cannot take over from a running one"
         }

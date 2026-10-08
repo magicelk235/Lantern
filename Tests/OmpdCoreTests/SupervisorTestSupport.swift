@@ -27,6 +27,7 @@ struct FakeOmp: Sendable {
     static let script = #"""
         #!/bin/sh
         if [ "$1" = "--version" ]; then echo "omp/18.3.1"; exit 0; fi
+        if [ "$1" = "config" ]; then echo '{}'; exit 0; fi
         dir="$FAKE_OMP_DIR"
         session="$dir/session-$$.jsonl"
         previous=""
