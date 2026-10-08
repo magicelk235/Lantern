@@ -34,9 +34,17 @@ struct FilesOutline: NSViewRepresentable {
     }
 }
 
-/// The Files outline of each project, kept while the pane shows something else.
+/// The Files outline of each project, kept while the pane shows something else; and what Cut put on the pasteboard.
 @MainActor
 final class FilesOutlines {
+    /// Items cut in a Files pane: Paste moves them while the pasteboard still holds them (its change count is the one
+    /// Cut left).
+    struct Cut {
+        let changeCount: Int
+        let paths: [String]
+    }
+
+    var cut: Cut?
     private var outlines: [String: FilesOutlineController] = [:]
 
     /// `project`'s outline. One a window of the project still shows (a second window SwiftUI opens for the project, on
@@ -405,6 +413,61 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
         app.toggleQuickLook(node.path, in: project)
     }
 
+    // MARK: - Copy, cut, paste and duplicate
+
+    /// Where Paste puts items: into the selected folder, else the selected file's folder, else the top level.
+    private var pasteFolder: String {
+        guard let first = selectedNodes.first else { return project }
+        return first.isDirectory ? first.path : (first.path as NSString).deletingLastPathComponent
+    }
+
+    var canCopy: Bool { !selectedNodes.isEmpty }
+
+    func copySelection(cut: Bool) {
+        app.putOnPasteboard(selectedNodes.map(\.path), cut: cut)
+    }
+
+    /// Paste (⌘V), or Move Item Here (⌥⌘V): into the selected folder, or the selected file's folder.
+    func paste(moving: Bool) {
+        paste(into: pasteFolder, moving: moving)
+    }
+
+    private func paste(into folder: String, moving: Bool) {
+        let undoManager = outline.undoManager
+        Task {
+            reveal(await app.pasteFiles(into: folder, moving: moving, undoManager: undoManager))
+        }
+    }
+
+    /// Duplicate (⌘D): a copy of each selected item next to it.
+    func duplicateSelection() {
+        duplicate(selectedNodes.map(\.path))
+    }
+
+    private func duplicate(_ paths: [String]) {
+        let undoManager = outline.undoManager
+        Task {
+            reveal(await app.copyItems(paths, into: nil, undoManager: undoManager))
+        }
+    }
+
+    /// Selects `paths` (copies, moved items), expanding the folders they are in.
+    func reveal(_ paths: [String]) {
+        guard !paths.isEmpty, !stopped else { return }
+        for path in paths {
+            var folder = (path as NSString).deletingLastPathComponent
+            while folder.hasPrefix(project + "/") {
+                tree.setExpanded(folder, true)
+                folder = (folder as NSString).deletingLastPathComponent
+            }
+        }
+        syncWithTree()
+        let rows = IndexSet(paths.compactMap { nodes[$0] }.map { outline.row(forItem: $0) }.filter { $0 >= 0 })
+        guard let first = rows.first else { return }
+        outline.selectRowIndexes(rows, byExtendingSelection: false)
+        outline.scrollRowToVisible(first)
+    }
+
     // MARK: - Context menu
 
     /// The paths a context menu acts on: the selection when it was right-clicked, else the row clicked; none for the
@@ -419,16 +482,29 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
         menu.removeAllItems()
         let targets = menuTargets
         let paths = targets.map(\.path)
-        func add(_ title: String, _ action: Selector, _ represented: Any? = nil, enabled: Bool = true) {
+        @discardableResult
+        func add(_ title: String, _ action: Selector, _ represented: Any? = nil, enabled: Bool = true) -> NSMenuItem {
             let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
             item.target = self
             item.representedObject = represented
             item.isEnabled = enabled
+            return item
+        }
+        /// Paste Item, and Move Item Here while ⌥ is down.
+        func addPaste(into folder: String) {
+            let count = AppState.pasteboardFiles().count
+            let paste = add(count > 1 ? "Paste \(count) Items" : "Paste Item", #selector(pasteItems(_:)), folder, enabled: count > 0)
+            paste.keyEquivalentModifierMask = []
+            let move = add(count > 1 ? "Move \(count) Items Here" : "Move Item Here", #selector(moveItemsHere(_:)), folder, enabled: count > 0)
+            move.keyEquivalentModifierMask = .option
+            move.isAlternate = true
         }
         guard let first = targets.first else {
             // The empty area: the project folder's own menu.
             add("Open in Terminal", #selector(openInTerminal(_:)), project, enabled: app.connection.isConnected)
             add("Reveal in Finder", #selector(revealInFinder(_:)), [project])
+            menu.addItem(.separator())
+            addPaste(into: project)
             menu.addItem(.separator())
             add("Copy Path", #selector(copyPath(_:)), project)
             menu.addItem(.separator())
@@ -436,18 +512,17 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
             add("New Folder…", #selector(newFolder(_:)), project)
             return
         }
-        if targets.count > 1 {
-            if targets.contains(where: { !$0.isDirectory }) { add("Open", #selector(openPaths(_:)), paths) }
-            add("Reveal in Finder", #selector(revealInFinder(_:)), paths)
-            return
-        }
         let folder = first.isDirectory ? first.path : (first.path as NSString).deletingLastPathComponent
-        if !first.isDirectory {
-            add("Open", #selector(openPaths(_:)), paths)
-            add("Quick Look", #selector(quickLook(_:)), first.path)
-        }
-        add("Open in Terminal", #selector(openInTerminal(_:)), folder, enabled: app.connection.isConnected)
+        if targets.contains(where: { !$0.isDirectory }) { add("Open", #selector(openPaths(_:)), paths) }
+        if targets.count == 1, !first.isDirectory { add("Quick Look", #selector(quickLook(_:)), first.path) }
+        if targets.count == 1 { add("Open in Terminal", #selector(openInTerminal(_:)), folder, enabled: app.connection.isConnected) }
         add("Reveal in Finder", #selector(revealInFinder(_:)), paths)
+        menu.addItem(.separator())
+        add("Cut", #selector(cutItems(_:)), paths)
+        add("Copy", #selector(copyItems(_:)), paths)
+        addPaste(into: folder)
+        add("Duplicate", #selector(duplicateItems(_:)), paths)
+        guard targets.count == 1 else { return }
         menu.addItem(.separator())
         add("Copy Path", #selector(copyPath(_:)), first.path)
         add("Copy Relative Path", #selector(copyPath(_:)), AppState.relativePath(first.path, in: project))
@@ -457,6 +532,28 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
         menu.addItem(.separator())
         add("Rename…", #selector(rename(_:)), first.path)
         add("Move to Trash", #selector(moveToTrash(_:)), first.path)
+    }
+
+    @objc private func cutItems(_ sender: NSMenuItem) {
+        app.putOnPasteboard(sender.representedObject as? [String] ?? [], cut: true)
+    }
+
+    @objc private func copyItems(_ sender: NSMenuItem) {
+        app.putOnPasteboard(sender.representedObject as? [String] ?? [], cut: false)
+    }
+
+    @objc private func pasteItems(_ sender: NSMenuItem) {
+        guard let folder = sender.representedObject as? String else { return }
+        paste(into: folder, moving: false)
+    }
+
+    @objc private func moveItemsHere(_ sender: NSMenuItem) {
+        guard let folder = sender.representedObject as? String else { return }
+        paste(into: folder, moving: true)
+    }
+
+    @objc private func duplicateItems(_ sender: NSMenuItem) {
+        duplicate(sender.representedObject as? [String] ?? [])
     }
 
     @objc private func openPaths(_ sender: NSMenuItem) {
@@ -506,8 +603,8 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
     }
 }
 
-/// The Files outline's view: the keys Finder's list answers, and a click in a window in the background that acts on
-/// the row at once.
+/// The Files outline's view: the keys Finder's list answers, Edit › Cut, Copy and Paste for the selected items, and a
+/// click in a window in the background that acts on the row at once.
 final class FilesOutlineView: NSOutlineView {
     weak var controller: FilesOutlineController?
 
@@ -525,6 +622,44 @@ final class FilesOutlineView: NSOutlineView {
             controller?.toggleQuickLook()
         default:
             super.keyDown(with: event)
+        }
+    }
+
+    /// The Finder keys the menus do not carry: ⌥⌘V (Move Item Here) and ⌘D (Duplicate), while the outline has the
+    /// keyboard.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard let controller, window?.firstResponder === self else { return super.performKeyEquivalent(with: event) }
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        switch (modifiers, event.charactersIgnoringModifiers?.lowercased()) {
+        case ([.command, .option], "v"):
+            guard !AppState.pasteboardFiles().isEmpty else { return false }
+            controller.paste(moving: true)
+        case ([.command], "d"):
+            guard controller.canCopy else { return false }
+            controller.duplicateSelection()
+        default:
+            return super.performKeyEquivalent(with: event)
+        }
+        return true
+    }
+
+    @objc func copy(_ sender: Any?) {
+        controller?.copySelection(cut: false)
+    }
+
+    @objc func cut(_ sender: Any?) {
+        controller?.copySelection(cut: true)
+    }
+
+    @objc func paste(_ sender: Any?) {
+        controller?.paste(moving: false)
+    }
+
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        switch item.action {
+        case #selector(copy(_:)), #selector(cut(_:)): controller?.canCopy == true
+        case #selector(paste(_:)): !AppState.pasteboardFiles().isEmpty
+        default: super.validateUserInterfaceItem(item)
         }
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import IDEEditorModel
 
 extension AppState {
     /// `path` relative to `project`, or itself when it lies outside.
@@ -70,6 +71,202 @@ extension AppState {
             } catch {
                 alert = AlertMessage(title: "“\(name)” couldn’t be moved to the Trash.", message: FileNamePrompt.explanation(of: error, name: name))
             }
+        }
+    }
+
+    // MARK: - Copy, paste, move and duplicate
+
+    /// The items of `paths` no other of them holds: copying or moving a folder takes what is in it along.
+    static func outermost(_ paths: [String]) -> [String] {
+        var outermost: [String] = []
+        for path in Set(paths).sorted() where !paths.contains(where: { path.hasPrefix($0 + "/") }) {
+            outermost.append(path)
+        }
+        return outermost
+    }
+
+    /// The files and folders on the pasteboard, as Finder puts them there.
+    static func pasteboardFiles(_ pasteboard: NSPasteboard = .general) -> [String] {
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.map { $0.path(percentEncoded: false) }
+    }
+
+    /// Copy (and Cut): the items go on the pasteboard as file URLs, which Finder pastes too. After Cut, Paste moves them,
+    /// until something else is copied.
+    func putOnPasteboard(_ paths: [String], cut: Bool) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects(Self.outermost(paths).map { URL(filePath: $0) as NSURL })
+        filesOutlines.cut = cut ? FilesOutlines.Cut(changeCount: pasteboard.changeCount, paths: Self.outermost(paths)) : nil
+    }
+
+    /// Paste: the items on the pasteboard are copied into `folder`, or moved there when they were cut in Lantern or
+    /// `moving` (Move Item Here, ⌥⌘V). Returns where they are now.
+    func pasteFiles(into folder: String, moving: Bool, undoManager: UndoManager?) async -> [String] {
+        let pasteboard = NSPasteboard.general
+        let paths = Self.pasteboardFiles(pasteboard)
+        guard !paths.isEmpty else { return [] }
+        let wasCut = filesOutlines.cut.map { $0.changeCount == pasteboard.changeCount && $0.paths == paths } ?? false
+        if moving || wasCut {
+            if wasCut { filesOutlines.cut = nil }
+            return moveItems(paths, into: folder, undoManager: undoManager)
+        }
+        return await copyItems(paths, into: folder, undoManager: undoManager)
+    }
+
+    /// Copies `sources` into `folder` off the main thread (each into its own folder for Duplicate, ⌘D, when `folder` is
+    /// nil), named the way Finder names copies: one in its own folder is "name copy.ext", one whose name is taken where it
+    /// goes "name 2.ext". Undo moves the copies to the Trash. Returns the copies.
+    @discardableResult
+    func copyItems(_ sources: [String], into folder: String?, undoManager: UndoManager?) async -> [String] {
+        let done = await performCopies(copyPlan(sources, into: folder))
+        registerUndoOfCopies(done, into: folder, undoManager: undoManager)
+        return done.map(\.destination)
+    }
+
+    private func copyPlan(_ sources: [String], into folder: String?) -> [(source: String, destination: String)] {
+        var plan: [(source: String, destination: String)] = []
+        var chosen = Set<String>()
+        for source in Self.outermost(sources) {
+            let name = (source as NSString).lastPathComponent
+            let parent = (source as NSString).deletingLastPathComponent
+            let target = folder ?? parent
+            if target == source || target.hasPrefix(source + "/") {
+                alert = AlertMessage(title: "“\(name)” couldn’t be copied.", message: "A folder can’t be copied into itself.")
+                continue
+            }
+            let isTaken = { (candidate: String) in
+                let path = (target as NSString).appendingPathComponent(candidate)
+                return chosen.contains(path.lowercased()) || FileManager.default.fileExists(atPath: path)
+            }
+            let inPlace = parent == target
+            let copyName = inPlace || isTaken(name)
+                ? FinderNaming.name(for: name, isDirectory: Self.isFolder(source), style: inPlace ? .duplicate : .keepBoth, isTaken: isTaken)
+                : name
+            let destination = (target as NSString).appendingPathComponent(copyName)
+            chosen.insert(destination.lowercased())
+            plan.append((source, destination))
+        }
+        return plan
+    }
+
+    /// Copies off the main thread; says which copies could not be made. Returns those made.
+    private func performCopies(_ plan: [(source: String, destination: String)]) async -> [(source: String, destination: String)] {
+        guard !plan.isEmpty else { return [] }
+        let outcomes = await Task.detached(priority: .userInitiated) { [plan] in
+            plan.map { step -> (any Error)? in
+                do {
+                    try FileManager.default.copyItem(atPath: step.source, toPath: step.destination)
+                    return nil
+                } catch {
+                    return error
+                }
+            }
+        }.value
+        var done: [(source: String, destination: String)] = []
+        for (step, failure) in zip(plan, outcomes) {
+            if let failure {
+                let name = (step.source as NSString).lastPathComponent
+                alert = AlertMessage(title: "“\(name)” couldn’t be copied.", message: FileNamePrompt.explanation(of: failure, name: name))
+            } else {
+                done.append(step)
+                editors.relist((step.destination as NSString).deletingLastPathComponent)
+            }
+        }
+        return done
+    }
+
+    /// Undo moves the copies to the Trash; Redo copies again (its Undo registered at once, so that the other steps
+    /// waiting to be redone stay).
+    private func registerUndoOfCopies(_ copies: [(source: String, destination: String)], into folder: String?, undoManager: UndoManager?) {
+        guard !copies.isEmpty, let undoManager else { return }
+        registerFileUndo(undoManager, folder == nil ? "Duplicate" : "Copy") { app in
+            for copy in copies {
+                try? FileManager.default.trashItem(at: URL(filePath: copy.destination), resultingItemURL: nil)
+                app.editors.relist((copy.destination as NSString).deletingLastPathComponent)
+            }
+            app.registerFileUndo(undoManager, folder == nil ? "Duplicate" : "Copy") { app in
+                let plan = app.copyPlan(copies.map(\.source), into: folder)
+                app.registerUndoOfCopies(plan, into: folder, undoManager: undoManager)
+                Task { await app.performCopies(plan) }
+            }
+        }
+    }
+
+    /// Registers one step of Undo (of Redo, while undoing) for a file operation. One that finishes after an await is in
+    /// no event's group: it gets a group of its own, never shared with the next operation.
+    func registerFileUndo(_ undoManager: UndoManager, _ actionName: String, _ handler: @escaping @MainActor (AppState) -> Void) {
+        let ownGroup = undoManager.groupingLevel == 0
+        let groupsByEvent = undoManager.groupsByEvent
+        if ownGroup {
+            undoManager.groupsByEvent = false
+            undoManager.beginUndoGrouping()
+        }
+        undoManager.registerUndo(withTarget: self) { app in
+            MainActor.assumeIsolated { handler(app) }
+        }
+        undoManager.setActionName(actionName)
+        if ownGroup {
+            undoManager.endUndoGrouping()
+            undoManager.groupsByEvent = groupsByEvent
+        }
+    }
+
+    /// Moves `sources` into `folder` (a name taken there gets " 2"); their open editors follow, unsaved edits and all.
+    /// Undo moves them back. Returns where they are now.
+    @discardableResult
+    func moveItems(_ sources: [String], into folder: String, undoManager: UndoManager?) -> [String] {
+        var moves: [(from: String, to: String)] = []
+        for source in Self.outermost(sources) where (source as NSString).deletingLastPathComponent != folder {
+            let name = (source as NSString).lastPathComponent
+            if folder == source || folder.hasPrefix(source + "/") {
+                alert = AlertMessage(title: "“\(name)” couldn’t be moved.", message: "A folder can’t be moved into itself.")
+                continue
+            }
+            let isTaken = { (candidate: String) in
+                moves.contains { ($0.to as NSString).lastPathComponent.lowercased() == candidate.lowercased() }
+                    || FileManager.default.fileExists(atPath: (folder as NSString).appendingPathComponent(candidate))
+            }
+            let target = isTaken(name) ? FinderNaming.name(for: name, isDirectory: Self.isFolder(source), style: .keepBoth, isTaken: isTaken) : name
+            let destination = (folder as NSString).appendingPathComponent(target)
+            do {
+                try FileManager.default.moveItem(atPath: source, toPath: destination)
+            } catch {
+                alert = AlertMessage(title: "“\(name)” couldn’t be moved.", message: FileNamePrompt.explanation(of: error, name: name))
+                continue
+            }
+            itemMoved(from: source, to: destination)
+            moves.append((source, destination))
+        }
+        registerUndoOfMoves(moves, undoManager: undoManager, actionName: "Move")
+        return moves.map(\.to)
+    }
+
+    /// `path` is at `destination` now: the navigators and the open editors follow it.
+    private func itemMoved(from path: String, to destination: String) {
+        editors.itemMoved(from: path, to: destination)
+        moveEditors(from: path, to: destination)
+        editors.relist((destination as NSString).deletingLastPathComponent)
+    }
+
+    /// Undo puts each item back where it was (and Redo moves it again), editors following.
+    private func registerUndoOfMoves(_ moves: [(from: String, to: String)], undoManager: UndoManager?, actionName: String) {
+        guard !moves.isEmpty, let undoManager else { return }
+        let back = moves.reversed().map { (from: $0.to, to: $0.from) }
+        registerFileUndo(undoManager, actionName) { app in
+            var done: [(from: String, to: String)] = []
+            for move in back {
+                do {
+                    try FileManager.default.moveItem(atPath: move.from, toPath: move.to)
+                } catch {
+                    let name = (move.from as NSString).lastPathComponent
+                    app.alert = AlertMessage(title: "“\(name)” couldn’t be moved back.", message: FileNamePrompt.explanation(of: error, name: name))
+                    continue
+                }
+                app.itemMoved(from: move.from, to: move.to)
+                done.append(move)
+            }
+            app.registerUndoOfMoves(done, undoManager: undoManager, actionName: actionName)
         }
     }
 }

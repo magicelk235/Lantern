@@ -52,6 +52,11 @@ final class FileTree {
         }
     }
 
+    /// Lists `folder` again now, if it is listed: a change Lantern made shows before FSEvents reports it.
+    func relist(_ folder: String) {
+        if children[folder] != nil { list(folder) }
+    }
+
     func isIgnored(_ path: String) -> Bool {
         ignored.contains(path, under: root)
     }

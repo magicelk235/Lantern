@@ -86,6 +86,11 @@ final class Editors {
         for tree in trees.values where path.hasPrefix(tree.root + "/") { tree.itemMoved(from: path, to: destination) }
     }
 
+    /// Lists `folder` again in the navigators that list it: a change the app made shows before FSEvents reports it.
+    func relist(_ folder: String) {
+        for tree in trees.values where folder == tree.root || folder.hasPrefix(tree.root + "/") { tree.relist(folder) }
+    }
+
     /// Unsaved buffers of the previous run whose tab did not come back (a lost window layout, say), with the folder
     /// whose strip should show each: the deepest of `workspaces` holding it, else its own folder.
     func unclaimedBuffers(workspaces: [String]) -> [(path: String, workspace: String)] {
