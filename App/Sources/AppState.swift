@@ -61,6 +61,10 @@ final class AppState {
     var sessionPickerProject: String?
     /// The file Quick Look shows, and the project whose window shows it (`QuickLook.swift`).
     var quickLookItem: QuickLookItem?
+    /// The project folder ompd is renaming (Rename Project…, Locate Folder…), until it answers: the window says so.
+    var renaming: FolderMove?
+    /// What of omp's data stayed under a renamed project's old path, for the renamed project's window.
+    var renameNotice: RenameNotice?
 
     /// `state.sqlite` and the hot-exit copies; its `writeFailure` is the window's banner while writes fail.
     @ObservationIgnored let persistence: StatePersistence
@@ -71,6 +75,9 @@ final class AppState {
     /// Windows `attach(_:project:)` set up, until they close, and their observers.
     @ObservationIgnored private var windowsAttached: Set<ObjectIdentifier> = []
     @ObservationIgnored private var windowObservers: [ObjectIdentifier: [any NSObjectProtocol]] = [:]
+    /// Points each attached window's scene at another project (its `project` binding): the window of no project
+    /// showing the first project, a project window following its renamed folder.
+    @ObservationIgnored private var windowShows: [ObjectIdentifier: @MainActor (String) -> Void] = [:]
     /// Tells ompd the last window closed once `windowlessDelay` passed with none open.
     @ObservationIgnored private var windowlessReport: Task<Void, Never>?
     @ObservationIgnored private var windowsByProject: [String: ObjectIdentifier] = [:]
@@ -93,7 +100,8 @@ final class AppState {
         let message: String
     }
 
-    /// A close that waits for the user's confirmation in the window of `project`, with what it ends (`confirm`).
+    /// A close, or a rename, that waits for the user's confirmation in the window of `project`, with what it ends or
+    /// interrupts (`confirm`).
     struct CloseRequest {
         enum Action {
             /// Close these tabs (Close Tab, Close Other Tabs, …), or end the session or terminal (Close Session, Close
@@ -103,12 +111,15 @@ final class AppState {
             case forget(SessionKey)
             /// Remove the project from the list (Remove Project): its tabs close, then its window.
             case removeProject(String, tabs: [TabKind])
+            /// Rename the project's folder (Rename Project…): its running sessions stop and resume in the renamed folder,
+            /// and `services` (named services that would outlive them under the old path) stop.
+            case renameProject(FolderMove, services: [ServiceStop])
 
             /// The tabs that close.
             var closing: [TabKind] {
                 switch self {
                 case .close(let tabs), .removeProject(_, let tabs): tabs
-                case .forget: []
+                case .forget, .renameProject: []
                 }
             }
         }
@@ -137,6 +148,14 @@ final class AppState {
         let project: String
         let sessions: Int
         let terminals: Int
+    }
+
+    /// See `renameNotice`.
+    struct RenameNotice: Equatable {
+        /// The project as it is named now.
+        let project: String
+        /// One sentence each, from ompd.
+        let notMoved: [String]
     }
 
     init() {
@@ -191,6 +210,8 @@ final class AppState {
         connection.start()
         sessionPrompts.follow(connection)
         crashNotices.start()
+        // A rename the launch left to ompd: the app follows the folder once ompd has finished it.
+        Task { await settleRenameLeftBehind() }
         if let reason = persistence.unavailableReason {
             alert = AlertMessage(
                 title: "The window layout will not be remembered",
@@ -254,9 +275,9 @@ final class AppState {
         }
     }
 
-    /// Asks about `request` the way Terminal does: an alert sheet on its window whose default button (Return) closes,
-    /// Cancel answering Esc and ⌘. (wording in `ContentView`'s `CloseRequest` extension).
-    private func confirm(_ request: CloseRequest) {
+    /// Asks about `request` the way Terminal does: an alert sheet on its window whose default button (Return) closes
+    /// (or renames), Cancel answering Esc and ⌘. (wording in `ContentView`'s `CloseRequest` extension).
+    func confirm(_ request: CloseRequest) {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = request.title
@@ -279,6 +300,7 @@ final class AppState {
         case .close(let closing): Task { await close(closing) }
         case .forget(let sessionKey): forgetSession(sessionKey)
         case .removeProject(let project, let closing): Task { await remove(project, closing: closing) }
+        case .renameProject(let move, let services): Task { await renameFolder(move, stopping: services) }
         }
     }
 
@@ -463,11 +485,10 @@ final class AppState {
     func showProject(_ workspace: String) {
         let workspace = Self.normalized(workspace)
         guard projects.contains(workspace) else { return }
-        if windowsByProject[workspace] == nil, let blank = window(of: ""), let showInBlank = showInNoProjectWindow {
-            showInNoProjectWindow = nil
-            windowClosing(ObjectIdentifier(blank), project: "")
-            attach(blank, project: workspace)
-            showInBlank(workspace)
+        if windowsByProject[workspace] == nil, let blank = window(of: ""), let show = windowShows[ObjectIdentifier(blank)] {
+            windowClosing(ObjectIdentifier(blank))
+            attach(blank, project: workspace, show: show)
+            show(workspace)
             return
         }
         openProjectWindow?(workspace)
@@ -507,6 +528,43 @@ final class AppState {
         saveWindow()
         if window(of: workspace) != nil { removedProjectWindows.insert(workspace) }
         closeProjectWindow?(workspace)
+    }
+
+    /// The project folder `move.from` is at `move.to` now (Rename Project…, Locate Folder…): every project, tab, editor,
+    /// navigator and terminal that names it or a folder inside it names the new place, and `state.sqlite` with them
+    /// (durably, before this returns). Its window shows the new folder, the window tab titled by its name.
+    func projectMoved(_ move: FolderMove) {
+        func moved(_ path: String) -> String { move.moved(path) ?? path }
+        var seen = Set<String>()
+        addedProjects = addedProjects.map(moved).filter { seen.insert($0).inserted }
+        tabs.moveFolder(move)
+        persistence.moveFolder(move)
+        editors.folderMoved(move)
+        filesOutlines.folderMoved(move)
+        terminals.folderMoved(move)
+        windowsToReopen = windowsToReopen.map(moved)
+        frontToReopen = frontToReopen.map(moved)
+        removedProjectWindows = Set(removedProjectWindows.map(moved))
+        keyProject = keyProject.map(moved)
+        sessionPickerProject = sessionPickerProject.map(moved)
+        if let closed = closedProjectNotice, let project = move.moved(closed.project) {
+            closedProjectNotice = ClosedProject(project: project, sessions: closed.sessions, terminals: closed.terminals)
+        }
+        if let item = quickLookItem, move.contains(item.project) || move.contains(item.url.path(percentEncoded: false)) {
+            quickLookItem = QuickLookItem(url: URL(filePath: moved(item.url.path(percentEncoded: false))), project: moved(item.project))
+        }
+        for (project, id) in windowsByProject {
+            guard let newProject = move.moved(project) else { continue }
+            windowsByProject[project] = nil
+            // The new folder has a window of its own already (its sessions' folder was gone): this one gives way.
+            guard windowsByProject[newProject] == nil else {
+                NSApp.windows.first { ObjectIdentifier($0) == id }?.close()
+                continue
+            }
+            windowsByProject[newProject] = id
+            windowShows[id]?(newProject)
+        }
+        saveWindow()
     }
 
     /// Every session and terminal ompd lists gets a tab in its project's strip (the tabs are the only list of them);
@@ -562,11 +620,16 @@ final class AppState {
     }
 
     /// The session's folder is gone: asks where it is now and resumes the session there (same session, new folder).
-    /// Its tab moves to that folder's project, which joins the projects if needed.
+    /// What omp keeps under the old path and the folder's other sessions follow it there first, as they follow Rename
+    /// Project… (`followFolder`), and so do its tabs and editors. Its tab moves to that folder's project, which joins
+    /// the projects if needed.
     func locateFolder(_ sessionKey: SessionKey) {
         guard let folder = WorkspacePicker.choose(prompt: "Resume Here") else { return }
         let size = connection.openSessions[sessionKey]?.size ?? newTabSize()
         Task {
+            if let gone = entry(for: sessionKey)?.workspace {
+                await followFolder(FolderMove(from: gone, to: Self.normalized(folder.standardizedFileURL.path(percentEncoded: false))), of: sessionKey)
+            }
             do {
                 let entry = try await connection.resumeSession(sessionKey, in: folder, size: size)
                 addProject(entry.workspace)
@@ -861,12 +924,10 @@ final class AppState {
     @ObservationIgnored var openProjectWindow: ((String) -> Void)?
     /// Closes the window of a project; set by the scene.
     @ObservationIgnored var closeProjectWindow: ((String) -> Void)?
-    /// Makes the window of no project show a project; set by that window's scene, which owns its value.
-    @ObservationIgnored var showInNoProjectWindow: ((String) -> Void)?
 
     /// Called with the window hosting `project`'s scene each time it (re)appears: it joins the tab group and, while
-    /// it is key, it is the project in focus.
-    func attach(_ window: NSWindow, project: String) {
+    /// it is key, it is the project in focus. `show` points the window's scene at another project (`windowShows`).
+    func attach(_ window: NSWindow, project: String, show: @escaping @MainActor (String) -> Void) {
         guard windowsAttached.insert(ObjectIdentifier(window)).inserted else { return }
         // One window per project: another one SwiftUI opens for it (its default window, say) closes itself.
         if !project.isEmpty, let existing = windowsByProject[project], existing != ObjectIdentifier(window) {
@@ -878,6 +939,7 @@ final class AppState {
             return
         }
         windowsByProject[project] = ObjectIdentifier(window)
+        windowShows[ObjectIdentifier(window)] = show
         window.tabbingMode = .preferred
         window.tabbingIdentifier = Self.windowTabbingIdentifier
         // The window may have turned key before it became a project window here.
@@ -895,13 +957,16 @@ final class AppState {
         let id = ObjectIdentifier(window)
         let observers = [
             center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.keyProject = project }
+                MainActor.assumeIsolated {
+                    guard let self, let shown = self.project(ofWindow: id) else { return }
+                    self.keyProject = shown
+                }
             },
             center.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.flushState() }
             },
             center.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.windowClosing(id, project: project) }
+                MainActor.assumeIsolated { self?.windowClosing(id) }
             },
         ]
         windowObservers[id] = observers
@@ -916,9 +981,16 @@ final class AppState {
         return NSApp.windows.first { ObjectIdentifier($0) == id }
     }
 
-    private func windowClosing(_ id: ObjectIdentifier, project: String) {
+    /// The project the window `id` shows now: a rename changes it under the window (`projectMoved`).
+    private func project(ofWindow id: ObjectIdentifier) -> String? {
+        windowsByProject.first { $0.value == id }?.key
+    }
+
+    private func windowClosing(_ id: ObjectIdentifier) {
+        let project = self.project(ofWindow: id) ?? ""
         if removedProjectWindows.remove(project) == nil { noteClosedProject(project) }
         windowsAttached.remove(id)
+        windowShows[id] = nil
         if windowsByProject[project] == id { windowsByProject[project] = nil }
         for observer in windowObservers.removeValue(forKey: id) ?? [] { NotificationCenter.default.removeObserver(observer) }
         if keyProject == project { keyProject = nil }

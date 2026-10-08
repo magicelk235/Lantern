@@ -62,7 +62,7 @@ final class EditorDocument {
     }
 
     private(set) var path: String
-    let workspace: String
+    private(set) var workspace: String
     private(set) var content: Content
     /// The viewer of a media file; nil for anything else.
     private(set) var media: MediaViewer? = nil
@@ -96,7 +96,7 @@ final class EditorDocument {
     @ObservationIgnored private(set) var controller: TextViewController?
     @ObservationIgnored private var buffer: EditorBuffer?
     @ObservationIgnored private let persistence: StatePersistence
-    @ObservationIgnored private let repository: GitRepository
+    @ObservationIgnored private var repository: GitRepository
     @ObservationIgnored private let languageServers: LanguageServers
     /// The file as last read or written, to skip re-reading it when nothing touched it.
     @ObservationIgnored private var stamp: FileStamp?
@@ -132,6 +132,8 @@ final class EditorDocument {
     @ObservationIgnored private var hotExitDueSince: ContinuousClock.Instant?
     /// `state.sqlite` holds a hot-exit copy for this path.
     @ObservationIgnored private var hotExitStored: Bool
+    /// The project's folder is being renamed (`holdWrites`): autosave and disk checks wait until it is done.
+    @ObservationIgnored private var writesHeld = false
 
     private struct WeakHost {
         weak var host: EditorHostingView?
@@ -239,18 +241,25 @@ final class EditorDocument {
         }
     }
 
-    /// The file is at `newPath` now (renamed, or saved under another name): the text keeps its undo history, selection
+    /// The file is at `newPath` now (renamed, or saved under another name; or its project's folder was renamed, which
+    /// puts it in `newWorkspace`, whose `newRepository` marks the gutter): the text keeps its undo history, selection
     /// and scroll position, while the hot-exit copy, the language server, the gutter marks and the highlighting follow.
-    func relocate(to newPath: String) {
-        guard newPath != path else { return }
-        clearHotExit()
-        path = newPath
-        buffer?.move(to: newPath)
-        stamp = FileStamp(path: newPath)
-        if isDirty { writeHotExit() }
-        // The new place may take the text: autosave tries again.
-        saveFailure = nil
-        if isDirty { scheduleAutosave() }
+    /// A new workspace is a new root for the language server: the text joins (or starts) the server of that folder.
+    func relocate(to newPath: String, workspace newWorkspace: String? = nil, repository newRepository: GitRepository? = nil) {
+        let rerooted = newWorkspace.map { $0 != workspace } ?? false
+        guard newPath != path || rerooted else { return }
+        if let newWorkspace { workspace = newWorkspace }
+        if let newRepository { repository = newRepository }
+        if newPath != path {
+            clearHotExit()
+            path = newPath
+            buffer?.move(to: newPath)
+            stamp = FileStamp(path: newPath)
+            if isDirty { writeHotExit() }
+            // The new place may take the text: autosave tries again.
+            saveFailure = nil
+            if isDirty { scheduleAutosave() }
+        }
         // Without text there is nothing to carry over: the file opens again under its new name, as media or not.
         guard let controller else {
             if !openMedia() { load(EditorBuffer.open(path: path, disk: TextFile.read(path), restored: nil), savedUI: nil) }
@@ -265,15 +274,34 @@ final class EditorDocument {
         }
         // The new one first: with the same server, closing the old one last keeps the server running.
         let previous = languageDocument
-        languageDocument = LanguageDocument(path: newPath, workspace: workspace, controller: controller, servers: languageServers)
+        languageDocument = LanguageDocument(path: path, workspace: workspace, controller: controller, servers: languageServers)
         previous?.close()
         controller.configuration.peripherals.codeSuggestionTriggerCharacters = languageDocument?.completionTriggers ?? []
         gitGutter?.detach()
-        let gitGutter = GitGutterView(path: newPath, textView: controller.textView, repository: repository)
+        let gitGutter = GitGutterView(path: path, textView: controller.textView, repository: repository)
         gitGutter.refresh()
         gitGutter.attach(to: controller)
         self.gitGutter = gitGutter
         saveUI()
+    }
+
+    /// The project's folder is being renamed: nothing is written to the file and the disk is not looked at until
+    /// `releaseWrites`, so no save lands under the folder's old name and the folder moving away is not taken for the
+    /// file being deleted. Unsaved text waiting for its hot-exit copy gets it now.
+    func holdWrites() {
+        writesHeld = true
+        autosave?.cancel()
+        autosave = nil
+        if hotExitPending { writeHotExit() }
+    }
+
+    /// The rename is over (`relocate` moved the document, or the folder stayed): what changed on disk meanwhile is read,
+    /// and the edits are saved once more.
+    func releaseWrites() {
+        guard writesHeld else { return }
+        writesHeld = false
+        checkDisk()
+        if isDirty { scheduleAutosave() }
     }
 
     // MARK: - Disk
@@ -281,6 +309,7 @@ final class EditorDocument {
     /// The file may have changed: FSEvents reported it, its folder, or lost events. Read again unless `stat` shows
     /// nothing touched it since it was last read or written.
     func checkDisk() {
+        guard !writesHeld else { return }
         let current = FileStamp(path: path)
         guard current != stamp else { return }
         stamp = current
@@ -655,6 +684,7 @@ final class EditorDocument {
     /// notice decides) or is gone (Save puts it back on purpose).
     private func scheduleAutosave() {
         autosave?.cancel()
+        guard !writesHeld else { return }
         autosave = Task { [weak self] in
             try? await Task.sleep(for: Self.autosaveDelay)
             guard !Task.isCancelled, let self else { return }
@@ -666,7 +696,7 @@ final class EditorDocument {
     func autosaveNow() {
         autosave?.cancel()
         autosave = nil
-        guard isDirty, conflict == nil, gone == nil, saveFailure == nil, content == .text else { return }
+        guard !writesHeld, isDirty, conflict == nil, gone == nil, saveFailure == nil, content == .text else { return }
         // A failed write keeps the edits (and their hot-exit copy) and shows the save failure notice, and autosave
         // waits for the user: retrying on every pause would fail the same way.
         try? save()

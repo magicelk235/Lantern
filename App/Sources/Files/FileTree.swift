@@ -1,11 +1,12 @@
 import Foundation
 import IDEEditorModel
+import IDEProtocol
 
 /// The file navigator of one workspace folder: folders are listed when first expanded and listed again when FSEvents
 /// says their content changed. Entries git ignores are known so the navigator can dim them.
 @MainActor @Observable
 final class FileTree {
-    let root: String
+    private(set) var root: String
     /// The entries of each folder listed so far.
     private(set) var children: [String: [FileEntry]] = [:]
     /// Why a folder could not be listed.
@@ -13,14 +14,14 @@ final class FileTree {
     private(set) var expanded: Set<String> = []
     private(set) var ignored = GitIgnoredPaths.none
 
-    /// The first listing asks for the watcher that keeps the tree current.
-    @ObservationIgnored private let startWatching: () -> Void
+    /// The first listing asks for the watcher that keeps the tree current, of the folder at `root` then.
+    @ObservationIgnored private let startWatching: (String) -> Void
     @ObservationIgnored private var watching = false
     @ObservationIgnored private var ignoredRefresh: Task<Void, Never>?
     /// A change arrived while `ignoredRefresh` ran: run it once more afterwards.
     @ObservationIgnored private var ignoredStale = false
 
-    init(root: String, startWatching: @escaping () -> Void) {
+    init(root: String, startWatching: @escaping (String) -> Void) {
         self.root = root
         self.startWatching = startWatching
     }
@@ -50,6 +51,21 @@ final class FileTree {
         where children[folder] != nil || expanded.contains(folder) {
             list(folder)
         }
+    }
+
+    /// The folder at `root` is at `move.to` now (Rename Project…): the navigator lists it there, every folder listed or
+    /// expanded before listed or expanded under its new path.
+    func moveRoot(_ move: FolderMove) {
+        guard let newRoot = move.moved(root) else { return }
+        let listed = children.keys.compactMap(move.moved)
+        root = newRoot
+        expanded = Set(expanded.map { move.moved($0) ?? $0 })
+        children = [:]
+        failures = [:]
+        for folder in listed.sorted() where folder == root || children[(folder as NSString).deletingLastPathComponent] != nil {
+            list(folder)
+        }
+        refreshIgnored()
     }
 
     /// Lists `folder` again now, if it is listed: a change Lantern made shows before FSEvents reports it.
@@ -97,7 +113,7 @@ final class FileTree {
         }
         if !watching {
             watching = true
-            startWatching()
+            startWatching(root)
             refreshIgnored()
         }
     }

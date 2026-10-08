@@ -92,6 +92,14 @@ final class TerminalsController {
         workspaces[ptyId] = nil
     }
 
+    /// The folder `move.from` is at `move.to` now (Rename Project…): its terminals, and those of the folders in it,
+    /// belong to the new place. Their shells are in the renamed folder already: a working directory follows its folder.
+    func folderMoved(_ move: FolderMove) {
+        for (ptyId, workspace) in workspaces {
+            if let moved = move.moved(workspace) { workspaces[ptyId] = moved }
+        }
+    }
+
     // MARK: - Session tabs
 
     /// The emulator of `session`'s tab, made the first time the tab is shown; it attaches omp's TUI.

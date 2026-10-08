@@ -65,7 +65,10 @@ struct ProjectWindow: View {
         .frame(minWidth: Self.minimumSize.width, minHeight: Self.minimumSize.height)
         .onGeometryChange(for: Double.self) { Double($0.size.width) } action: { width = $0 }
         .background(Chrome.surface)
-        .background(WindowAccessor { app.attach($0, project: project) })
+        // The scene's value is the window's project: a rename points the window at the renamed folder through it.
+        .background(WindowAccessor { [shown = $project] window in
+            app.attach(window, project: shown.wrappedValue) { shown.wrappedValue = $0 }
+        })
         .background(ProjectTabMarker(app: app, project: project))
         .navigationTitle(project.isEmpty ? "Lantern" : AppState.projectName(project))
         .toolbarBackground(Chrome.surface, for: .windowToolbar)
@@ -77,10 +80,6 @@ struct ProjectWindow: View {
             app.closeProjectWindow = { dismissWindow(id: LanternApp.projectWindowID, value: $0) }
             // The project is back: no window needs to say it keeps running (the notice shows the next time instead).
             if app.closedProjectNotice?.project == project { app.dismissClosedProjectNotice(seen: false) }
-            if project.isEmpty {
-                let shown = $project
-                app.showInNoProjectWindow = { shown.wrappedValue = $0 }
-            }
         }
         // A window can name a folder the app does not list: one open at the last quit whose project only ompd's sessions
         // named. A folder that is still there becomes a project, a gone one gives way to the first project's window,
@@ -116,13 +115,15 @@ struct ProjectWindow: View {
 }
 
 /// The words of a close's confirmation: Terminal's for the processes of a terminal, the session's title for one
-/// session, the count for several tabs, the project's name for Remove Project, each saying what ends.
+/// session, the count for several tabs, the project's name for Remove Project, each saying what ends; Rename Project…
+/// says what stops for the rename and comes back after it.
 @MainActor
 extension AppState.CloseRequest {
     var title: String {
         switch action {
         case .forget: "Remove this session from the list?"
         case .removeProject(let project, _): "Remove “\(AppState.projectName(project))” from the projects?"
+        case .renameProject(let move, _): "Rename “\(AppState.projectName(move.from))” to “\(AppState.projectName(move.to))”?"
         case .close(let closing) where closing.count > 1: "Close \(closing.count) tabs?"
         case .close: sessions.first.map { "Close \(Self.quoted($0.title))?" } ?? "Do you want to terminate running processes in this tab?"
         }
@@ -132,6 +133,7 @@ extension AppState.CloseRequest {
         switch action {
         case .forget: "Remove Session"
         case .removeProject: "Remove Project"
+        case .renameProject: "Rename"
         case .close(let closing) where closing.count > 1: "Close Tabs"
         case .close: sessions.isEmpty ? "Terminate" : "Close Session"
         }
@@ -144,6 +146,8 @@ extension AppState.CloseRequest {
         case .removeProject(_, let closing):
             let tabs = closing.count == 1 ? "Its tab closes" : "Its \(closing.count) tabs close"
             return working + "\(tabs): \(ending)." + resume + " The folder on disk is kept."
+        case .renameProject(_, let services):
+            return renaming(services: services.map(\.name))
         case .close(let closing) where closing.count == 1 && sessions.isEmpty:
             return "Closing this tab will terminate the running processes: \(processes.joined(separator: ", "))."
         case .close(let closing) where closing.count == 1:
@@ -153,6 +157,24 @@ extension AppState.CloseRequest {
         case .close:
             return working + ending.prefix(1).uppercased() + ending.dropFirst() + "." + resume
         }
+    }
+
+    /// What a rename interrupts: "The omp session “X” stops while the folder is renamed, then resumes in the renamed
+    /// folder with its conversation. The named service “web” stops."
+    private func renaming(services: [String]) -> String {
+        var sentences: [String] = []
+        if !sessions.isEmpty {
+            let titles = ListFormatter.localizedString(byJoining: sessions.map { Self.quoted($0.title) })
+            let what = sessions.count == 1 ? "The omp session \(titles) stops" : "The omp sessions \(titles) stop"
+            let resumes = sessions.count == 1 ? "resumes in the renamed folder with its conversation" : "resume in the renamed folder with their conversations"
+            let working = sessions.contains(where: \.working) ? " The agents’ work goes on where it was interrupted." : ""
+            sentences.append("\(what) while the folder is renamed, then \(resumes).\(working)")
+        }
+        if !services.isEmpty {
+            let names = ListFormatter.localizedString(byJoining: services.map { "“\($0)”" })
+            sentences.append(services.count == 1 ? "The named service \(names) stops." : "The named services \(names) stop.")
+        }
+        return sentences.joined(separator: " ")
     }
 
     /// What ends, as one clause: "the omp session “X” ends, and the running process vim is terminated".
@@ -319,8 +341,9 @@ private struct SidebarResizeHandle: View {
     }
 }
 
-/// What the project in focus offers: New Session, New Terminal, Open Session…, Finder, and Remove Project, which closes
-/// its tabs first (asking when that ends sessions or running commands).
+/// What the project in focus offers: New Session, New Terminal, Open Session…, Finder, Rename Project…, which renames
+/// its folder with its sessions following it, and Remove Project, which closes its tabs first (asking when that ends
+/// sessions or running commands).
 struct ProjectMenu: View {
     let app: AppState
     let project: String
@@ -335,6 +358,8 @@ struct ProjectMenu: View {
         Button("Reveal in Finder") {
             NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: project, directoryHint: .isDirectory)])
         }
+        Button("Rename Project…") { app.renameProject(project) }
+            .disabled(!app.connection.isConnected || app.renaming != nil || !AppState.isFolder(project))
         Button("Remove Project") { app.removeProject(project) }
     }
 }
@@ -436,6 +461,22 @@ struct StatusBanners: View {
                 .help(
                     "Closing a project’s window ends nothing in it. Its agents keep working while a Lantern window is open; "
                         + "with none open, ompd pauses them until one opens again. Terminals keep running either way.")
+            }
+            if let move = app.renaming, move.from == project {
+                NoticeBar(
+                    systemImage: "folder", tint: .secondary,
+                    title: "Renaming “\(AppState.projectName(move.from))” to “\(AppState.projectName(move.to))”",
+                    message: "Its sessions resume once the folder and what omp keeps for it have moved.", inProgress: true
+                ) {}
+            }
+            if let notice = app.renameNotice, notice.project == project {
+                NoticeBar(
+                    systemImage: "exclamationmark.triangle", tint: .orange, title: "Not all of omp’s data followed the folder",
+                    message: notice.notMoved.joined(separator: " "), stacksWhenNarrow: true
+                ) {
+                    Button("Dismiss") { app.renameNotice = nil }
+                }
+                .help(notice.notMoved.joined(separator: "\n"))
             }
             switch agent.state {
             case .requiresApproval:

@@ -1,5 +1,6 @@
 import AppKit
 import IDEEditorModel
+import IDEProtocol
 import IDEState
 import SwiftUI
 
@@ -61,6 +62,17 @@ final class FilesOutlines {
         let outline = FilesOutlineController(app: app, project: project)
         outlines[project] = outline
         return outline
+    }
+
+    /// The project folder `move.from` is at `move.to` now (Rename Project…): the outlines of it and of the folders
+    /// inside it go (the pane shows a new one from the moved `FileTree`, its folders expanded as they were), and so does
+    /// a Cut of items in it, whose paths on the pasteboard are gone.
+    func folderMoved(_ move: FolderMove) {
+        for (project, outline) in outlines where move.contains(project) {
+            outline.stop()
+            outlines[project] = nil
+        }
+        if cut?.paths.contains(where: move.contains) == true { cut = nil }
     }
 }
 

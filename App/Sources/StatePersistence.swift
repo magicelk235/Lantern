@@ -18,6 +18,8 @@ struct StateWriteFailure: Equatable, Sendable {
 /// for this run, it just does not remember it. While writes fail, `writeFailure` says why.
 @MainActor @Observable
 final class StatePersistence {
+    /// Where `state.sqlite`, the hot-exit copies and the rename journals are.
+    let paths: AppSupportPaths
     /// Why nothing is saved this run; nil when `state.sqlite` works.
     let unavailableReason: String?
     /// The window's layout when the app last ran.
@@ -37,6 +39,7 @@ final class StatePersistence {
     private let dirtyBufferQueue = DispatchQueue(label: "com.magicelklabs.lantern.hot-exit", qos: .userInitiated)
 
     init(paths: AppSupportPaths) {
+        self.paths = paths
         var store: StateStore?
         var window: WindowState?
         var dirtyBuffers: [String: DirtyBuffer] = [:]
@@ -49,6 +52,8 @@ final class StatePersistence {
                     "state.sqlite was unusable (\(recovery.reason, privacy: .public)); moved to \(recovery.movedAside.path(percentEncoded: false), privacy: .public); \(recovery.restoredBuffers.count) unsaved buffers restored from hot-exit copies"
                 )
             }
+            // A Rename Project… that a crash or a quit cut short: the stored state follows the folder if it moved.
+            Self.settleRename(paths: paths, store: opened)
             window = try opened.window(id: AppState.mainWindowID)
             dirtyBuffers = Dictionary(try opened.dirtyBuffers().map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
             editorUI = try opened.editorUIStates()
@@ -117,6 +122,52 @@ final class StatePersistence {
             } catch {
                 appLog.error("forgetting the unsaved text of \(path, privacy: .private) failed: \(String(describing: error), privacy: .public)")
             }
+        }
+    }
+
+    /// The folder `move.from` is at `move.to` now (Rename Project…): the editor state and the unsaved buffers kept for
+    /// paths in it, here and in `state.sqlite` (window layouts too), name the new place. Durable when this returns,
+    /// after every earlier dirty-buffer call.
+    func moveFolder(_ move: FolderMove) {
+        for (path, state) in editorUI {
+            guard let movedPath = move.moved(path) else { continue }
+            var moved = state
+            moved.path = movedPath
+            editorUI[path] = nil
+            editorUI[movedPath] = moved
+        }
+        guard let store else { return }
+        dirtyBufferQueue.sync {
+            do {
+                try store.moveFolder(move)
+            } catch {
+                appLog.error("moving the state of a renamed folder failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    /// What the app's journal of a Rename Project… (`ProjectRenameJournal`) comes to: when the folder moved, the state
+    /// stored for it follows (`StateStore.moveFolder`) and the journal goes, and the move is returned; when it never
+    /// will, the journal goes. While ompd may still move it, or the state cannot be moved, the journal stays.
+    @discardableResult
+    static func settleRename(paths: AppSupportPaths, store: StateStore?) -> FolderMove? {
+        guard let journal = ProjectRenameJournal.read(at: paths.projectRenameApp) else { return nil }
+        switch journal.outcome(daemonJournal: paths.projectRename) {
+        case .moved(let move):
+            guard let store else { return nil }
+            do {
+                try store.moveFolder(move)
+                try ProjectRenameJournal.remove(at: paths.projectRenameApp)
+                return move
+            } catch {
+                appLog.error("settling a project rename failed: \(String(describing: error), privacy: .public)")
+                return nil
+            }
+        case .dropped:
+            try? ProjectRenameJournal.remove(at: paths.projectRenameApp)
+            return nil
+        case .undecided:
+            return nil
         }
     }
 

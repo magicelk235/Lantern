@@ -1,6 +1,7 @@
 import AppKit
 import CodeEditTextView
 import IDEEditorModel
+import IDEProtocol
 import IDEState
 
 /// Every open editor document and file navigator of the window, the FSEvents watchers (one per workspace folder) that
@@ -18,6 +19,8 @@ final class Editors {
     @ObservationIgnored private var restoredBuffers: [String: DirtyBuffer]
     @ObservationIgnored private var trees: [String: FileTree] = [:]
     @ObservationIgnored private var watchers: [String: FileSystemWatcher] = [:]
+    /// Project folders being renamed (`holdFolder`): FSEvents under them waits until the rename is over.
+    @ObservationIgnored private var heldFolders: Set<String> = []
     @ObservationIgnored private var appearanceObservation: NSKeyValueObservation?
     @ObservationIgnored private var fontSize = EditorSettings.fontSize
     @ObservationIgnored private var defaultsObserver: (any NSObjectProtocol)?
@@ -91,6 +94,69 @@ final class Editors {
         for tree in trees.values where folder == tree.root || folder.hasPrefix(tree.root + "/") { tree.relist(folder) }
     }
 
+    /// The project folder `folder` is about to be renamed: its documents write nothing and leave the disk alone, and
+    /// FSEvents under it is not heeded (the folder going away is not its files being deleted), until `folderMoved` or
+    /// `releaseFolder`. The unsaved text waiting for its hot-exit copy gets it now.
+    func holdFolder(_ folder: String) {
+        heldFolders.insert(folder)
+        for document in documents.values where Self.isInside(document.path, folder) || Self.isInside(document.workspace, folder) {
+            document.holdWrites()
+        }
+    }
+
+    /// The rename of `folder` did not happen: its documents carry on there.
+    func releaseFolder(_ folder: String) {
+        heldFolders.remove(folder)
+        for document in documents.values { document.releaseWrites() }
+    }
+
+    /// The project folder `move.from` is at `move.to` now (Rename Project…, Locate Folder…): its documents follow with
+    /// their text, undo history, selection and scroll (each joining the language server of the new folder, while the old
+    /// folder's shuts down with its last document), its navigators keep their expanded folders, its repository its
+    /// commit message, and the watchers watch the new folder. Then the documents write again. A folder found where
+    /// Lantern already shows one (Locate Folder… onto an open project) keeps its own documents and navigator.
+    func folderMoved(_ move: FolderMove) {
+        repositories.folderMoved(move)
+        for (path, document) in documents {
+            let newWorkspace = move.moved(document.workspace)
+            let newPath = move.moved(path) ?? path
+            guard newPath != path || newWorkspace != nil else { continue }
+            documents[path] = nil
+            if newPath != path, documents[newPath] != nil {
+                document.close()
+                continue
+            }
+            document.relocate(to: newPath, workspace: newWorkspace, repository: newWorkspace.map(repositories.repository(for:)))
+            documents[newPath] = document
+        }
+        for (path, buffer) in restoredBuffers {
+            guard let newPath = move.moved(path) else { continue }
+            var moved = buffer
+            moved.path = newPath
+            restoredBuffers[path] = nil
+            restoredBuffers[newPath] = moved
+        }
+        for (root, tree) in trees {
+            guard let newRoot = move.moved(root) else { continue }
+            trees[root] = nil
+            guard trees[newRoot] == nil else { continue }
+            tree.moveRoot(move)
+            trees[newRoot] = tree
+        }
+        for root in watchers.keys {
+            guard let moved = move.moved(root) else { continue }
+            watchers[root] = nil
+            watch(moved)
+        }
+        heldFolders.remove(move.from)
+        for document in documents.values { document.releaseWrites() }
+    }
+
+    /// `path` is `folder` or inside it.
+    private static func isInside(_ path: String, _ folder: String) -> Bool {
+        path == folder || path.hasPrefix(folder + "/")
+    }
+
     /// Unsaved buffers of the previous run whose tab did not come back (a lost window layout, say), with the folder
     /// whose strip should show each: the deepest of `workspaces` holding it, else its own folder.
     func unclaimedBuffers(workspaces: [String]) -> [(path: String, workspace: String)] {
@@ -141,7 +207,7 @@ final class Editors {
     /// The navigator of `workspace`; it lists and watches the folder once expanded.
     func tree(for workspace: String) -> FileTree {
         if let tree = trees[workspace] { return tree }
-        let tree = FileTree(root: workspace) { [weak self] in self?.watch(workspace) }
+        let tree = FileTree(root: workspace) { [weak self] root in self?.watch(root) }
         trees[workspace] = tree
         return tree
     }
@@ -179,6 +245,7 @@ final class Editors {
     }
 
     private func filesChanged(_ changes: [FileSystemWatcher.Change], under root: String) {
+        guard !heldFolders.contains(where: { Self.isInside(root, $0) }) else { return }
         trees[root]?.filesChanged(changes)
         for document in documents.values where document.path.hasPrefix(root + "/") {
             let affected = changes.contains { change in

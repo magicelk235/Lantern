@@ -1,5 +1,6 @@
 import AppKit
 import IDEEditorModel
+import IDEProtocol
 
 /// The git repository of one project folder: its branch, the local branches, what changed, a merge or rebase git
 /// stopped in, and the actions of the Changes panel and the Source Control menu. Every git call runs off the main
@@ -73,7 +74,7 @@ final class GitRepository {
         let hunks: [LineDiff.Hunk]
     }
 
-    let workspace: String
+    private(set) var workspace: String
     /// The first refresh is in: until then the panel shows nothing rather than "not a repository".
     private(set) var hasLoaded = false
     private(set) var isRepository = false
@@ -153,13 +154,22 @@ final class GitRepository {
         }
         refreshing = Task { [workspace] in
             let outcome = await Task.detached(priority: .userInitiated) { await Self.load(workspace) }.value
-            apply(outcome)
+            // Read in the folder's old place (`moveWorkspace` asked for another run meanwhile): nothing to show.
+            if workspace == self.workspace { apply(outcome) }
             refreshing = nil
             if refreshStale {
                 refreshStale = false
                 refresh()
             }
         }
+    }
+
+    /// The project's folder is at `newWorkspace` now (Rename Project…): git runs there from now on and the list is read
+    /// again there; the commit message being written stays.
+    func moveWorkspace(to newWorkspace: String) {
+        guard newWorkspace != workspace else { return }
+        workspace = newWorkspace
+        refresh()
     }
 
     /// What one refresh read.
@@ -718,6 +728,18 @@ final class GitRepositories {
         repositories[workspace] = repository
         repository.refresh()
         return repository
+    }
+
+    /// The project folder `move.from` is at `move.to` now (Rename Project…, Locate Folder…): the repositories of it and
+    /// of the folders inside it move with it, unless the new place has one already.
+    func folderMoved(_ move: FolderMove) {
+        for (workspace, repository) in repositories {
+            guard let moved = move.moved(workspace) else { continue }
+            repositories[workspace] = nil
+            guard repositories[moved] == nil else { continue }
+            repository.moveWorkspace(to: moved)
+            repositories[moved] = repository
+        }
     }
 
     /// `Editors` saw FSEvents changes under `root`.
