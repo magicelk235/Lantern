@@ -995,7 +995,7 @@ private struct TabItem<Press: Gesture>: View {
             if document.isDirty {
                 Circle().fill(.primary).frame(width: 7, height: 7).help("Unsaved changes")
             } else {
-                Image(systemName: "doc.text")
+                Image(systemName: document.symbol)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }

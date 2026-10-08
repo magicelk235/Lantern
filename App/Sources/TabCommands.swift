@@ -137,10 +137,14 @@ extension AppState {
         terminals.shownEmulator(for: tab)?.clearToStart()
     }
 
-    /// View › Bigger, Smaller and Actual Size, for the tab on screen.
+    /// View › Bigger, Smaller and Actual Size, for the tab on screen: an image's or PDF's zoom, else the text size.
     func zoom(_ zoom: Zoom) {
         guard let tab = selectedTab else { return }
-        TextSize(of: tab).apply(zoom)
+        if let media = tab.editorPath.flatMap(editors.document(for:))?.media {
+            media.zoom(zoom)
+        } else {
+            TextSize(of: tab).apply(zoom)
+        }
     }
 
     /// ⌃Tab, ⌃⇧Tab, ⇧⌘], ⇧⌘[ and ⌘1…⌘9 switch the key project window's tabs wherever its focus is, ⌥⌘→ and ⌥⌘← its
@@ -251,7 +255,13 @@ struct TabCommands: Commands {
 
     private func zoomButton(_ title: String, _ zoom: Zoom) -> some View {
         Button(title) { app.zoom(zoom) }
-            .disabled(!(textSize?.allows(zoom) ?? false))
+            .disabled(!allows(zoom))
+    }
+
+    /// A media tab zooms its image or PDF (never a player); any other tab its text.
+    private func allows(_ zoom: Zoom) -> Bool {
+        if let media = tab?.editorPath.flatMap(app.editors.document(for:))?.media { return media.allows(zoom) }
+        return textSize?.allows(zoom) ?? false
     }
 }
 

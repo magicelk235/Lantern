@@ -11,12 +11,15 @@ import IDEState
 /// on disk. Unsaved text is copied to `state.sqlite` ~300 ms after typing pauses (hot-exit), and the file is
 /// re-read when FSEvents reports a change: a buffer without edits follows it silently, one with edits gets a conflict.
 /// A `GitGutterView` over the gutter marks what differs from HEAD, a `LanguageDocument` connects the text to the
-/// project's language server for its language, and an `EditorFind` is its find bar.
+/// project's language server for its language, and an `EditorFind` is its find bar. An image, PDF, video or audio file
+/// (`MediaKind`) shows as itself instead (`MediaViewer`), without a text view, buffer or hot-exit copy.
 @MainActor @Observable
 final class EditorDocument {
     enum Content: Equatable {
         /// Editable text, in `controller`.
         case text
+        /// An image, PDF, video or audio file, in `media`.
+        case media(MediaKind)
         /// Nothing at the path, and no unsaved copy of it.
         case missing
         case unsupported(UnsupportedReason)
@@ -61,6 +64,8 @@ final class EditorDocument {
     private(set) var path: String
     let workspace: String
     private(set) var content: Content
+    /// The viewer of a media file; nil for anything else.
+    private(set) var media: MediaViewer? = nil
     private(set) var isDirty = false
     /// A version of the file written on disk under unsaved edits, until the user reloads it or keeps theirs.
     private(set) var conflict: TextSnapshot? = nil
@@ -80,6 +85,10 @@ final class EditorDocument {
     let find = EditorFind()
 
     var name: String { (path as NSString).lastPathComponent }
+    /// The tab's symbol: a media file keeps its kind's while it is gone.
+    var symbol: String {
+        if content == .text { "doc.text" } else { MediaKind(path: path)?.symbol ?? "doc.text" }
+    }
     /// Save writes the text: it has edits, or the file is gone and saving puts it back.
     var canSave: Bool { content == .text && (isDirty || gone != nil) }
     var canRevert: Bool { content == .text && isDirty && gone == nil }
@@ -144,7 +153,10 @@ final class EditorDocument {
         content = .missing
         stamp = FileStamp(path: path)
         find.document = self
-        load(EditorBuffer.open(path: path, disk: TextFile.read(path), restored: restored), savedUI: savedUI)
+        // A hot-exit copy is unsaved text, which wins even over a media file (an SVG being edited as text).
+        if restored != nil || !openMedia() {
+            load(EditorBuffer.open(path: path, disk: TextFile.read(path), restored: restored), savedUI: savedUI)
+        }
         // The copy matched the file: nothing is unsaved anymore.
         if !isDirty { clearHotExit() }
     }
@@ -239,7 +251,11 @@ final class EditorDocument {
         // The new place may take the text: autosave tries again.
         saveFailure = nil
         if isDirty { scheduleAutosave() }
-        guard let controller else { return }
+        // Without text there is nothing to carry over: the file opens again under its new name, as media or not.
+        guard let controller else {
+            if !openMedia() { load(EditorBuffer.open(path: path, disk: TextFile.read(path), restored: nil), savedUI: nil) }
+            return
+        }
         let text = controller.textView.textStorage.mutableString
         let detected = CodeLanguage.detectLanguageFrom(
             url: URL(filePath: newPath), prefixBuffer: text.substring(to: min(512, text.length)))
@@ -268,12 +284,13 @@ final class EditorDocument {
         let current = FileStamp(path: path)
         guard current != stamp else { return }
         stamp = current
-        let disk = TextFile.read(path)
         switch content {
         case .text:
-            _ = diskDidChange(disk)
-        case .missing, .unsupported:
-            load(EditorBuffer.open(path: path, disk: disk, restored: nil), savedUI: persistence.editorUI[path])
+            _ = diskDidChange(TextFile.read(path))
+        case .media, .missing, .unsupported:
+            if !openMedia() {
+                load(EditorBuffer.open(path: path, disk: TextFile.read(path), restored: nil), savedUI: persistence.editorUI[path])
+            }
         }
     }
 
@@ -307,6 +324,36 @@ final class EditorDocument {
         case .unsupported(let reason):
             content = .unsupported(reason)
         }
+    }
+
+    /// Shows the file as media when its extension is one (`MediaKind`), reloading the viewer it has, and returns true;
+    /// also when nothing is at the path (`.missing`). Otherwise lets go of any viewer and returns false: the file
+    /// opens as text or as the binary notice.
+    private func openMedia() -> Bool {
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+        guard let kind = MediaKind(path: path), !isDirectory.boolValue else {
+            closeMedia()
+            return false
+        }
+        guard exists else {
+            closeMedia()
+            content = .missing
+            return true
+        }
+        if let media, media.kind == kind {
+            if media.path == path { media.reload() } else { media.move(to: path) }
+        } else {
+            closeMedia()
+            media = MediaViewer(path: path, kind: kind)
+        }
+        content = .media(kind)
+        return true
+    }
+
+    private func closeMedia() {
+        media?.close()
+        media = nil
     }
 
     private func becomeUnsupported(_ reason: UnsupportedReason) {
@@ -748,12 +795,14 @@ final class EditorDocument {
         hotExitStored = false
     }
 
-    /// The tab closed: remember where it was and let go of the text view. Unsaved edits were saved or discarded first.
+    /// The tab closed: remember where it was and let go of the text view or the player. Unsaved edits were saved or
+    /// discarded first.
     func close() {
         saveUI()
         hotExitWrite?.cancel()
         hotExitWrite = nil
         tearDownController()
+        closeMedia()
     }
 
     /// Forwards the text view's appearance and selection changes; CodeEditSourceEditor calls it on the main thread. Text

@@ -4,8 +4,9 @@ import CodeEditSourceEditor
 import IDEEditorModel
 import SwiftUI
 
-/// An editor tab: the file's text with syntax highlighting, its find bar, and the notices about the file on disk. Files
-/// the editor does not open as text show a notice instead. Caret and language show in the window's status bar.
+/// An editor tab: the file's text with syntax highlighting, its find bar, and the notices about the file on disk. An
+/// image, PDF, video or audio file shows as itself (`MediaView`); other files the editor does not open as text show a
+/// notice instead. Caret and language, or what the media is, show in the window's status bar.
 struct EditorView: View {
     let app: AppState
     @Bindable var document: EditorDocument
@@ -34,8 +35,12 @@ struct EditorView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Chrome.canvas)
+            case .media:
+                if let media = document.media {
+                    MediaView(app: app, document: document, media: media)
+                }
             case .unsupported(let reason):
-                UnsupportedNotice(document: document, reason: reason) { app.closeTab(.editor(path: document.path)) }
+                FileNotice(app: app, document: document, title: "“\(document.name)” can’t be shown here", explanation: reason.explanation)
             }
         }
         .sheet(item: $document.comparison) { comparison in
@@ -171,19 +176,21 @@ private struct DiskNotices: View {
     }
 }
 
-private struct UnsupportedNotice: View {
+/// A file the tab can't show: why, and the ways to see it elsewhere (its default app, Quick Look, Finder).
+struct FileNotice: View {
+    let app: AppState
     let document: EditorDocument
-    let reason: UnsupportedReason
-    let close: () -> Void
+    let title: String
+    let explanation: String
     @State private var width: CGFloat = 0
 
     var body: some View {
         ContentUnavailableView {
-            Label("“\(document.name)” can’t be shown here", systemImage: "doc.questionmark")
+            Label(title, systemImage: "doc.questionmark")
         } description: {
             Text(explanation)
         } actions: {
-            // The view offers its actions less than its own width, too little for the three in a row: they are
+            // The view offers its actions less than its own width, too little for them all in a row: they are
             // measured against the notice's width (less its margins) and stack when even that is too narrow.
             ViewThatFits(in: .horizontal) {
                 HStack { actions }.fixedSize()
@@ -198,13 +205,29 @@ private struct UnsupportedNotice: View {
 
     @ViewBuilder
     private var actions: some View {
-        Button("Open with Default App") { NSWorkspace.shared.open(URL(filePath: document.path)) }
-        Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: document.path)]) }
-        Button("Close Tab", action: close)
+        let url = URL(filePath: document.path)
+        if let opener = NSWorkspace.shared.urlForApplication(toOpen: url) {
+            Button("Open with \(Self.appName(opener))") { NSWorkspace.shared.open(url) }
+        }
+        // Quick Look has nothing to show for a folder.
+        if document.content != .unsupported(.directory) {
+            Button("Quick Look") { app.toggleQuickLook(document.path, in: app.currentProject ?? document.workspace) }
+        }
+        Button("Reveal in Finder") { app.revealInFinder(document.path) }
+        Button("Close Tab") { app.closeTab(.editor(path: document.path)) }
     }
 
-    private var explanation: String {
-        switch reason {
+    /// "Preview", the way the Finder names the app at `url`, without its extension.
+    private static func appName(_ url: URL) -> String {
+        let name = FileManager.default.displayName(atPath: url.path(percentEncoded: false))
+        return name.hasSuffix(".app") ? String(name.dropLast(4)) : name
+    }
+}
+
+extension UnsupportedReason {
+    /// Why the file is not shown, in a sentence.
+    var explanation: String {
+        switch self {
         case .tooLarge(let bytes):
             "It is \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)); the editor opens files up to \(ByteCountFormatter.string(fromByteCount: Int64(TextFile.sizeLimit), countStyle: .file))."
         case .binary:

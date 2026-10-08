@@ -116,6 +116,9 @@ private struct EditorState: View {
 
     var body: some View {
         HStack(spacing: 14) {
+            if let media = document.media {
+                MediaState(media: media)
+            }
             if let language = document.languageDocument {
                 LanguageServerState(language: language, status: servers.statuses[language.key]) { servers.restart(language.key) }
             }
@@ -131,6 +134,23 @@ private struct EditorState: View {
                 Text(LanguageName.display(id: document.language.id.rawValue))
                     .modifier(JumpToLineAnchor(document: document, isAnchor: document.caret == nil))
             }
+        }
+    }
+}
+
+/// What a media tab shows: "1024 × 768 · 33 KB · PNG", "0:18 · 1920 × 1080 · 868 KB · MP4", and an image's or PDF's
+/// zoom.
+private struct MediaState: View {
+    let media: MediaViewer
+
+    var body: some View {
+        if !media.details.isEmpty {
+            Text(media.details.joined(separator: " · "))
+        }
+        if let scale = media.scale {
+            Text("\(Int((scale * 100).rounded()))%")
+                .monospacedDigit()
+                .help(media.fitsWindow ? "Fit to the window. View › Actual Size (⌘0) shows it at its own size." : "View › Actual Size (⌘0) toggles between its own size and fitting the window.")
         }
     }
 }
