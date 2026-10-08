@@ -49,6 +49,7 @@ extension View {
 private struct GeneralSettings: View {
     let connection: DaemonConnection
     @AppStorage(AppSettings.defaultApprovalModeKey) private var approvalMode = ""
+    @AppStorage(AppSettings.notifyWhenAgentFinishesKey) private var notifyWhenAgentFinishes = true
 
     var body: some View {
         Form {
@@ -62,6 +63,11 @@ private struct GeneralSettings: View {
                 }
             } footer: {
                 Text(explanation)
+            }
+            Section {
+                Toggle("Notify when an agent finishes", isOn: $notifyWhenAgentFinishes)
+            } footer: {
+                Text("While Lantern is in the background, a notification says when a session's agent finishes its turn. A project's window tab marks it either way until you look at that project.")
             }
             RestorePolicySection(connection: connection)
         }

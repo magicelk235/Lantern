@@ -4,9 +4,10 @@ import UserNotifications
 
 /// What waits for the user in the sessions outside the window: the Dock badge counts it (tool approvals and `ask`s in
 /// the session TUIs, and interrupted work waiting for Continue or Leave), and each new approval or ask posts a
-/// notification while Lantern is in the background, titled by its session (permission is asked for with the first). A
-/// click on one brings the app forward on that session's tab; it is withdrawn once its approval or question is
-/// answered or its omp stopped, also when an earlier run of the app posted it.
+/// notification while Lantern is in the background, titled by its session (permission is asked for with the first); so
+/// does a turn an agent finished (`FinishedTurns`), unless Settings turned that off. A click on one brings the app
+/// forward on that session's tab; it is withdrawn once its approval or question is answered, its finished turn seen or
+/// its omp stopped, also when an earlier run of the app posted it.
 @MainActor
 final class AttentionAlerts: NSObject, UNUserNotificationCenterDelegate {
     private let app: AppState
@@ -44,8 +45,10 @@ final class AttentionAlerts: NSObject, UNUserNotificationCenterDelegate {
 
     private func observe() {
         let runtimes = withObservationTracking {
-            // The sessions too: interrupted work waiting for Continue or Leave counts on the Dock's badge.
+            // The sessions too: interrupted work waiting for Continue or Leave counts on the Dock's badge. And the
+            // finished turns: a notification of one goes once it is seen.
             _ = app.connection.sessions
+            _ = app.finishedTurns.unseen
             return app.connection.runtimes
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in self?.observe() }
@@ -68,6 +71,10 @@ final class AttentionAlerts: NSObject, UNUserNotificationCenterDelegate {
                 items.append((runtime.sessionKey, item))
             }
         }
+        let finished = app.finishedTurns.follow(app)
+        for sessionKey in app.finishedTurns.unseen {
+            current[Self.finishedIdentifier(of: sessionKey)] = sessionKey
+        }
         // Right after connecting, ompd has not said yet what waits in the sessions whose omp runs.
         func unknown(_ sessionKey: SessionKey) -> Bool {
             guard runtimes[sessionKey] == nil, let status = app.entry(for: sessionKey)?.status else { return false }
@@ -85,18 +92,29 @@ final class AttentionAlerts: NSObject, UNUserNotificationCenterDelegate {
                 let identifier = Self.identifier(item, in: sessionKey)
                 if waiting[identifier] == nil, posted[identifier] == nil { post(item, in: sessionKey, as: identifier) }
             }
+            if AppSettings.notifiesWhenAgentFinishes {
+                for sessionKey in finished {
+                    let project = app.entry(for: sessionKey).map { AppState.projectName($0.workspace) }
+                    post(
+                        title: app.sessionTitle(sessionKey), body: project.map { "omp finished in \($0)" } ?? "omp finished",
+                        in: sessionKey, as: Self.finishedIdentifier(of: sessionKey))
+                }
+            }
         }
         waiting = current.merging(waiting.filter { unknown($0.value) }) { new, _ in new }
     }
 
     private func post(_ item: AttentionItem, in sessionKey: SessionKey, as identifier: String) {
-        posted[identifier] = sessionKey
-        let title = app.sessionTitle(sessionKey)
         let body =
             switch item.kind {
             case .approval: "Waiting for your approval: \(item.toolName)"
             case .ask: "omp is asking you something"
             }
+        post(title: app.sessionTitle(sessionKey), body: body, in: sessionKey, as: identifier)
+    }
+
+    private func post(title: String, body: String, in sessionKey: SessionKey, as identifier: String) {
+        posted[identifier] = sessionKey
         let userInfo = [Self.sessionKeyInfo: sessionKey]
         // Asks for permission the first time; afterwards it answers at once with the user's choice.
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { @Sendable [weak self] granted, _ in
@@ -121,6 +139,10 @@ final class AttentionAlerts: NSObject, UNUserNotificationCenterDelegate {
 
     private static func identifier(_ item: AttentionItem, in sessionKey: SessionKey) -> String {
         "\(sessionKey)/\(item.id)"
+    }
+
+    private static func finishedIdentifier(of sessionKey: SessionKey) -> String {
+        "\(sessionKey)/finished"
     }
 
     /// A click on a notification: the app comes forward on the session's tab.

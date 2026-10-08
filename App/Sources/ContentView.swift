@@ -66,6 +66,7 @@ struct ProjectWindow: View {
         .onGeometryChange(for: Double.self) { Double($0.size.width) } action: { width = $0 }
         .background(Chrome.surface)
         .background(WindowAccessor { app.attach($0, project: project) })
+        .background(ProjectTabMarker(app: app, project: project))
         .navigationTitle(project.isEmpty ? "Lantern" : AppState.projectName(project))
         .toolbarBackground(Chrome.surface, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)

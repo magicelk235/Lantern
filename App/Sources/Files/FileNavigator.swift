@@ -320,46 +320,17 @@ private struct ProjectsPane: View {
     }
 }
 
-/// What a project's running sessions do, in the sessions' vocabulary (`SessionIndicator`): the approvals and questions
-/// waiting in them, else whether one works; and which sessions those are, with what each does ("Fix login — working,
-/// 2 subagents").
-@MainActor
-private struct ProjectActivity {
-    /// Approvals and questions waiting in the project's sessions.
-    let waiting: Int
-    /// One of its sessions works (and none waits on the user).
-    let isWorking: Bool
-    /// The sessions behind the badge, one per line; nil without a badge.
-    let help: String?
-
-    init(app: AppState, project: String) {
-        let sessions = app.runningSessions(in: project).map { (title: app.sessionTitle($0.id), indicator: app.indicator(of: $0.entry)) }
-        let waiting = sessions.reduce(0) { $0 + $1.indicator.waitingCount }
-        let shown = sessions.filter { waiting > 0 ? $0.indicator.waitingCount > 0 : $0.indicator.isWorking }
-        self.waiting = waiting
-        isWorking = waiting == 0 && !shown.isEmpty
-        help = shown.isEmpty ? nil : shown.map { "\($0.title) — \($0.indicator.words)" }.joined(separator: "\n")
-    }
-
-    /// The badge in words.
-    var words: String? {
-        if waiting > 0 { return waiting == 1 ? "1 waiting for you" : "\(waiting) waiting for you" }
-        return isWorking ? "working" : nil
-    }
-}
-
-/// A project's activity at a row's end: a red count of what waits on the user, else the lit ember dot while one of its
-/// sessions works, else nothing. The tooltip names those sessions and what each does.
+/// A project's activity at a row's end (`ProjectActivityMark`): a red count of what waits on the user, else the lit
+/// ember dot while one of its sessions works, else the blue dot while one finished a turn unseen. The tooltip names
+/// those sessions and what each does.
 private struct ProjectBadge: View {
     let activity: ProjectActivity
 
     var body: some View {
-        if activity.waiting > 0 {
-            CountBadge(count: activity.waiting)
-                .help(activity.help ?? "")
-        } else if activity.isWorking {
-            WorkingDot()
-                .padding(.horizontal, 4)
+        if let mark = activity.mark {
+            ProjectActivityMark(mark: mark)
+                // A dot sits where the count's capsule would.
+                .padding(.horizontal, mark == .working || mark == .finished ? 4 : 0)
                 .help(activity.help ?? "")
         }
     }

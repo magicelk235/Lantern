@@ -240,6 +240,12 @@ final class FocusKeeper {
 enum AppSettings {
     /// `ApprovalMode.rawValue`; empty or absent = use the omp configuration.
     static let defaultApprovalModeKey = "defaultApprovalMode"
+    /// A notification says when a session's agent finishes its turn while Lantern is in the background; on when absent.
+    static let notifyWhenAgentFinishesKey = "notifyWhenAgentFinishes"
+
+    static var notifiesWhenAgentFinishes: Bool {
+        UserDefaults.standard.object(forKey: notifyWhenAgentFinishesKey) as? Bool ?? true
+    }
 }
 
 @MainActor

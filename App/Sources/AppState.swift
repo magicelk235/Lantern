@@ -18,6 +18,8 @@ final class AppState {
     let crashNotices = CrashNotices()
     /// The first prompt of each session omp has not titled, which titles it (`sessionTitle`).
     let sessionPrompts = SessionPrompts()
+    /// Turns the agents finished while nobody looked at their project.
+    let finishedTurns = FinishedTurns()
     /// Open files and the file navigators.
     let editors: Editors
     /// Terminal emulators: `.terminal` tabs on PTYs in ompd, and `.session` tabs showing omp's TUI.

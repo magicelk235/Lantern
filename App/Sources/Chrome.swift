@@ -231,6 +231,17 @@ struct WorkingDot: View {
     }
 }
 
+/// A turn an agent finished while nobody looked: a 7-point dot in the system's blue, as Mail marks what is unread. Not
+/// Lantern's accent: that is the ember, and the dot would read as `WorkingDot` with its glow dimmed. White on a selected
+/// row, whose highlight is the accent.
+struct FinishedDot: View {
+    @Environment(\.backgroundProminence) private var prominence
+
+    var body: some View {
+        StatusDot(color: prominence == .increased ? .white : Color(nsColor: .systemBlue))
+    }
+}
+
 /// The glow behind `WorkingDot`, animated by Core Animation on its own clock: a session working for an hour costs no
 /// redraws. Every glow breathes in step with the others.
 private struct EmberGlow: NSViewRepresentable {
