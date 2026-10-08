@@ -1,26 +1,10 @@
 import Foundation
 @testable import IDEModel
+import IDEProtocol
 import Testing
 
 @Suite struct SessionFileListingTests {
     // MARK: - Buckets
-
-    @Test(arguments: [
-        ("/Users/u/Desktop/Projects/Lantern", "-Desktop-Projects-Lantern"),
-        ("/Users/u", "-"),
-        ("/Users/u/.omp/agent", "-.omp-agent"),
-        ("/private/var/folders/x/T/tmp.VTr3", "-tmp-tmp.VTr3"),
-        ("/private/var/folders/x/T", "-tmp"),
-        ("/private/tmp/oi-work", "--private-tmp-oi-work--"),
-        ("/", "----"),
-        ("/Users/username", "--Users-username--"),
-        ("/Volumes/Disk/a:b", "--Volumes-Disk-a-b--"),
-        // Node's path.relative starts with ".." here, so omp takes it for outside the home folder.
-        ("/Users/u/..cache", "--Users-u-..cache--"),
-    ])
-    func bucketsFollowOmpsEncoding(cwd: String, bucket: String) {
-        #expect(SessionFileListing.bucketName(canonicalCwd: cwd, home: "/Users/u", temporaryDirectory: "/private/var/folders/x/T") == bucket)
-    }
 
     @Test func aWorkspaceReachedThroughASymlinkListsItsRealFoldersBucket() async throws {
         let fixture = try Fixture()
@@ -31,7 +15,7 @@ import Testing
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
         let environment = ProcessInfo.processInfo.environment
         let temp = environment["TMPDIR"].map { $0.hasSuffix("/") ? String($0.dropLast()) : $0 } ?? "/tmp"
-        let bucket = SessionFileListing.bucketName(
+        let bucket = OmpPaths.sessionDirectoryName(
             canonicalCwd: SessionFileListing.canonicalPath(real.path(percentEncoded: false)),
             home: SessionFileListing.canonicalPath(environment["HOME"] ?? NSHomeDirectory()),
             temporaryDirectory: SessionFileListing.canonicalPath(temp))

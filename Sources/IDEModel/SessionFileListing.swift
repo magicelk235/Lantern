@@ -1,4 +1,5 @@
 import Foundation
+import IDEProtocol
 
 /// One omp session file of a workspace, as omp's resume picker reads it (`SessionManager.list`): metadata from the
 /// file's first 4 KiB, lifecycle status from its last 32 KiB, never the whole file.
@@ -85,7 +86,8 @@ public enum SessionFileListing {
         workspace: URL, sessionsRoot: URL = defaultSessionsRoot, sessionDirectories: [URL] = []
     ) async -> [SessionFileInfo] {
         let cwd = canonicalPath(workspace.path(percentEncoded: false))
-        let name = bucketName(canonicalCwd: cwd, home: canonicalPath(home), temporaryDirectory: canonicalPath(temporaryDirectory))
+        let name = OmpPaths.sessionDirectoryName(
+            canonicalCwd: cwd, home: canonicalPath(home), temporaryDirectory: canonicalPath(temporaryDirectory))
         let bucket = canonicalPath(sessionsRoot.appending(path: name).path(percentEncoded: false))
         var sessions = list(directory: URL(filePath: bucket, directoryHint: .isDirectory))
         var seen = Set(sessions.map(\.path))
@@ -132,20 +134,7 @@ public enum SessionFileListing {
         return a.path > b.path
     }
 
-    // MARK: - Buckets
-
-    /// omp's bucket for a canonical cwd (`session-paths.ts`): `-<relative>` under the home folder, `-tmp-<relative>`
-    /// under the temp folder, else `--<absolute>--`, with `/`, `\` and `:` in the path made `-`. `home` and
-    /// `temporaryDirectory` are canonical too.
-    public static func bucketName(canonicalCwd cwd: String, home: String, temporaryDirectory: String) -> String {
-        if let relative = relativePath(of: cwd, inside: home) {
-            return joined("-", relative)
-        }
-        if let relative = relativePath(of: cwd, inside: temporaryDirectory) {
-            return joined("-tmp", relative)
-        }
-        return "--\(dashed(String(cwd.drop { $0 == "/" || $0 == "\\" })))--"
-    }
+    // MARK: - Paths
 
     /// `path`'s `realpath`, else the path standardized; without a trailing slash. omp buckets and ompd compares session
     /// files by it.
@@ -158,31 +147,6 @@ public enum SessionFileListing {
             resolved = URL(filePath: path).standardizedFileURL.path(percentEncoded: false)
         }
         return resolved.count > 1 && resolved.hasSuffix("/") ? String(resolved.dropLast()) : resolved
-    }
-
-    /// Node's `path.relative(base, path)` when it neither climbs out (`..`) nor is absolute; nil otherwise.
-    private static func relativePath(of path: String, inside base: String) -> String? {
-        let relative: String
-        if path == base {
-            relative = ""
-        } else if base == "/" {
-            relative = String(path.dropFirst())
-        } else if path.hasPrefix(base + "/") {
-            relative = String(path.dropFirst(base.count + 1))
-        } else {
-            return nil
-        }
-        return relative.hasPrefix("..") ? nil : relative
-    }
-
-    private static func joined(_ prefix: String, _ relative: String) -> String {
-        let tail = dashed(relative)
-        guard !tail.isEmpty else { return prefix }
-        return prefix.hasSuffix("-") ? prefix + tail : "\(prefix)-\(tail)"
-    }
-
-    private static func dashed(_ path: String) -> String {
-        String(path.map { $0 == "/" || $0 == "\\" || $0 == ":" ? "-" : $0 })
     }
 
     /// Node's `os.homedir()` and `os.tmpdir()`, which omp buckets by.
