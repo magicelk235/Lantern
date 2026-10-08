@@ -93,6 +93,7 @@ With `OMPD_HOME` set, Lantern doesn't register the production LaunchAgent, and o
 | `Sources/IDEState` | Window and editor state in `state.sqlite` |
 | `Sources/IDEEditorModel` | Editor logic without AppKit: files, dirty tracking, diffs, git |
 | `Sources/IDELanguageModel` | Language server discovery and the LSP client |
+| `Sources/IDEShellEnvironment` | The login shell's environment that omp sessions and language servers start from |
 | `bridge/ide-bridge.ts` | The omp extension ompd loads into every session it runs |
 | `scripts/` | Release, development LaunchAgent, app icon and acceptance scripts |
 

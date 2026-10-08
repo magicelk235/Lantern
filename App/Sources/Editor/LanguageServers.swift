@@ -1,5 +1,6 @@
 import Foundation
 import IDELanguageModel
+import IDEShellEnvironment
 import os
 
 /// The editor's language servers, independent of omp: one process per project folder and server kind,

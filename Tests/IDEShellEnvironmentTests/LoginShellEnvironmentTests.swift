@@ -1,5 +1,5 @@
 import Foundation
-import IDELanguageModel
+import IDEShellEnvironment
 import Testing
 
 @Suite struct LoginShellEnvironmentTests {

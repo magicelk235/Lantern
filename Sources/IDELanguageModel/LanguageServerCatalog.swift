@@ -1,4 +1,5 @@
 import Foundation
+import IDEShellEnvironment
 
 /// The language servers the editor starts, one per program: Swift, TypeScript/JavaScript, Python,
 /// Rust, Go and the C family. Each project gets its own process of each, started for the first editor of a file it

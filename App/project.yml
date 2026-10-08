@@ -77,6 +77,9 @@ targets:
       # Lantern package's own requirements.
       - package: Lantern
         product: IDELanguageModel
+      # The login shell's environment the language servers run in.
+      - package: Lantern
+        product: IDEShellEnvironment
       - package: CodeEditSourceEditor
       - package: CodeEditTextView
       - package: CodeEditLanguages

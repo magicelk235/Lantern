@@ -37,6 +37,8 @@ public actor PTYPool {
 
     private let store: PTYSnapshotStore
     private let snapshotInterval: Duration
+    /// What plain terminals' programs start from (the login shell's environment in the daemon), under their overrides.
+    private let baseEnvironment: [String: String]
     private var ptys: [PTYID: ManagedPTY] = [:]
     /// Last snapshot of each session's PTY written before this daemon started, kept until the session's next PTY
     /// continues from it (`restoreFromSnapshots` collects them; `discardSessionScreens` drops unknown sessions).
@@ -56,9 +58,13 @@ public actor PTYPool {
     private var closingPIDs: Set<pid_t> = []
     private var readBuffer = [UInt8](repeating: 0, count: 64 * 1024)
 
-    public init(snapshotDirectory: URL, snapshotInterval: Duration = .seconds(5)) {
+    public init(
+        snapshotDirectory: URL, snapshotInterval: Duration = .seconds(5),
+        baseEnvironment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
         store = PTYSnapshotStore(directory: snapshotDirectory)
         self.snapshotInterval = snapshotInterval
+        self.baseEnvironment = baseEnvironment
     }
 
     deinit {
@@ -87,7 +93,7 @@ public actor PTYPool {
     }
 
     /// Starts `params.command` (nil: the user's login shell with `-l`) on a new PTY with `TERM=xterm-256color`,
-    /// in `params.cwd`, with `params.env` merged over the daemon environment and the terminal environment over both.
+    /// in `params.cwd`, with `params.env` merged over the pool's base environment and the terminal environment over both.
     public func open(_ params: PTYOpen.Params) async throws -> PTYInfo {
         try ensureRunning()
         try Self.validateSize(cols: params.cols, rows: params.rows)
@@ -100,7 +106,7 @@ public actor PTYPool {
         try ensureRunning()
         let pty = try launch(
             id: id, cwd: params.cwd, command: command,
-            environment: PTYSpawner.environment(base: ProcessInfo.processInfo.environment, overlay: overlay, cwd: params.cwd),
+            environment: PTYSpawner.environment(base: baseEnvironment, overlay: overlay, cwd: params.cwd),
             persistedEnv: params.env, cols: params.cols, rows: params.rows)
         publishChange()
         return pty.info
@@ -275,7 +281,7 @@ public actor PTYPool {
                 let overlay = await terminalOverlay(info.ptyId, over: snapshot.env)
                 try ensureRunning()
                 guard ptys[info.ptyId] == nil else { continue }
-                let environment = PTYSpawner.environment(base: ProcessInfo.processInfo.environment, overlay: overlay, cwd: cwd)
+                let environment = PTYSpawner.environment(base: baseEnvironment, overlay: overlay, cwd: cwd)
                 if let pty = try? launch(
                     id: info.ptyId, cwd: cwd, command: info.command, environment: environment, persistedEnv: snapshot.env,
                     cols: info.cols, rows: info.rows,

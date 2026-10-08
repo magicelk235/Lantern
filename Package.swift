@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "IDEModel", targets: ["IDEModel"]),
         .library(name: "IDEState", targets: ["IDEState"]),
         .library(name: "IDEEditorModel", targets: ["IDEEditorModel"]),
+        .library(name: "IDEShellEnvironment", targets: ["IDEShellEnvironment"]),
         .library(name: "IDELanguageModel", targets: ["IDELanguageModel"]),
         .executable(name: "ompd", targets: ["ompd"]),
     ],
@@ -32,10 +33,13 @@ let package = Package(
         .target(name: "IDEProtocol"),
         // Length-prefixed frames over a unix domain socket (NWListener/NWConnection), used by ompd and the app.
         .target(name: "IDETransport", dependencies: ["IDEProtocol"]),
+        // The login shell's environment (PATH and the rest), for programs started outside a terminal: omp sessions
+        // and the editor's language servers.
+        .target(name: "IDEShellEnvironment"),
         // Daemon internals: manifest, session supervisors (omp TUIs in PTYs), PTY pool, ide-bridge server, power observers.
         .target(
             name: "OmpdCore",
-            dependencies: ["IDEProtocol", "IDETransport", .product(name: "SwiftTerm", package: "SwiftTerm")],
+            dependencies: ["IDEProtocol", "IDETransport", "IDEShellEnvironment", .product(name: "SwiftTerm", package: "SwiftTerm")],
             swiftSettings: daemonSwiftSettings
         ),
         .executableTarget(name: "ompd", dependencies: ["OmpdCore", "IDETransport"], swiftSettings: daemonSwiftSettings),
@@ -54,12 +58,14 @@ let package = Package(
         .target(
             name: "IDELanguageModel",
             dependencies: [
+                "IDEShellEnvironment",
                 .product(name: "LanguageClient", package: "LanguageClient"),
                 .product(name: "LanguageServerProtocol", package: "LanguageServerProtocol"),
                 .product(name: "JSONRPC", package: "JSONRPC"),
             ]
         ),
 
+        .testTarget(name: "IDEShellEnvironmentTests", dependencies: ["IDEShellEnvironment"]),
         .testTarget(name: "IDEProtocolTests", dependencies: ["IDEProtocol"]),
         .testTarget(name: "IDETransportTests", dependencies: ["IDETransport"]),
         .testTarget(name: "OmpdCoreTests", dependencies: ["OmpdCore"]),

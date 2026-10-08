@@ -4,9 +4,9 @@ import Foundation
 /// files wait for a terminal, an `xcrun` stuck on a prompt). Standard input and error are `/dev/null`. The output is
 /// read once the command exits, so a process it left behind holding the pipe (an agent a shell started) cannot keep
 /// the read waiting; output beyond the pipe's buffer (64 KiB) blocks the command until it times out.
-enum CommandRunner {
+package enum CommandRunner {
     /// What the command printed and its exit status; nil when it could not start or ran out of time.
-    static func run(
+    package static func run(
         _ executable: String, _ arguments: [String], environment: [String: String], timeout: Duration
     ) async -> (status: Int32, output: Data)? {
         await withCheckedContinuation { continuation in
@@ -17,7 +17,7 @@ enum CommandRunner {
     }
 
     /// The command's first line of output, when it exits with 0 within 10 s. Blocks: call it off the main thread.
-    static func output(_ executable: String, _ arguments: [String], environment: [String: String]) -> String? {
+    package static func output(_ executable: String, _ arguments: [String], environment: [String: String]) -> String? {
         guard let (status, output) = runBlocking(executable, arguments, environment: environment, timeout: .seconds(10)),
               status == 0 else { return nil }
         let line = String(decoding: output, as: UTF8.self).split(whereSeparator: \.isNewline).first.map(String.init)

@@ -1,10 +1,11 @@
 import Foundation
 
-/// The environment of the user's login shell, which language servers run in: they need its `PATH` to be found at all
-/// and to find their own tools (`node` for typescript-language-server, `go` for gopls, a virtualenv's Python). The app
-/// started from the Finder or the Dock has launchd's minimal environment instead, so it asks the shell: an interactive
-/// login shell first (rc files such as `.zshrc` add to `PATH` too), then a plain login shell, each given a few seconds;
-/// when neither answers, the app's own environment with the usual tool folders added to `PATH`.
+/// The environment of the user's login shell, which omp sessions and language servers run in: they need its `PATH` to
+/// be found at all and to find their own tools (`node` for MCP servers and typescript-language-server, `go` for gopls,
+/// a virtualenv's Python). The app started from the Finder or the Dock, and ompd started by launchd, have launchd's
+/// minimal environment instead, so they ask the shell: an interactive login shell first (rc files such as `.zshrc` add
+/// to `PATH` too), then a plain login shell, each given a few seconds; when neither answers, the process's own
+/// environment with the usual tool folders added to `PATH`.
 public enum LoginShellEnvironment {
     public static let beginMarker = "__LANTERN_ENVIRONMENT_BEGIN__"
     public static let endMarker = "__LANTERN_ENVIRONMENT_END__"

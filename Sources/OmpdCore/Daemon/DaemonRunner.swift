@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import IDEProtocol
+import IDEShellEnvironment
 
 /// `ompd run`: the daemon process from start to exit, and from one image to the next when it
 /// upgrades itself in place.
@@ -38,6 +39,9 @@ public enum DaemonRunner {
     /// from an async `main`, which keeps the main queue serviced (the PTY pool runs on the main executor).
     public static func run(_ options: Options, paths: AppSupportPaths = .standard) async throws -> Int32 {
         let environment = ProcessInfo.processInfo.environment
+        // launchd starts ompd with a bare PATH (/usr/bin:/bin:/usr/sbin:/sbin); omp, its MCP servers and its tools need
+        // the one the user's shell sets up (Homebrew's node, npx, uvx, …). Asked while the rest starts up.
+        let shellEnvironment = Task { await LoginShellEnvironment.capture(base: environment) }
         let handover = options.handover.flatMap { takeHandover(from: $0, paths: paths) }
         let instance = try handover.flatMap { DaemonInstanceLock(adopting: $0.instanceLock, in: paths) } ?? DaemonInstanceLock.acquire(paths)
         if let handover {
@@ -76,9 +80,10 @@ public enum DaemonRunner {
             reason: "ompd supervises omp sessions and terminals")
         let executable = RunningExecutable.current()
         if executable == nil { console("the ompd executable cannot be read; ompd will not upgrade itself") }
+        let baseEnvironment = await shellEnvironment.value
         let configuration = Daemon.Configuration(
             paths: paths, ompExecutable: options.ompExecutable, ompArguments: options.ompArguments,
-            sessionDirectory: options.sessionDirectory, bridgeExtension: bridgeExtension, baseEnvironment: environment,
+            sessionDirectory: options.sessionDirectory, bridgeExtension: bridgeExtension, baseEnvironment: baseEnvironment,
             lowSpaceThreshold: options.lowSpaceThreshold,
             process: executable.map {
                 RunnerProcess(
@@ -87,7 +92,8 @@ public enum DaemonRunner {
             })
         let daemon = Daemon(
             configuration: configuration, token: token, bridge: bridge,
-            locks: OwnedSessionLocks(directory: paths.ownedSessions), ptys: PTYPool(snapshotDirectory: paths.ptySnapshots),
+            locks: OwnedSessionLocks(directory: paths.ownedSessions),
+            ptys: PTYPool(snapshotDirectory: paths.ptySnapshots, baseEnvironment: baseEnvironment),
             startedAt: handover?.startedAt ?? Date())
         do {
             try await daemon.start(handover: handover)
