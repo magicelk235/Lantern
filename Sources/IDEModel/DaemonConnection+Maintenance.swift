@@ -1,7 +1,8 @@
 import Foundation
 import IDEProtocol
 
-// Hardening: restarting a session on the omp installed now, and what omp and Lantern can reclaim on disk.
+// Hardening: restarting a session on the omp installed now, what omp and Lantern can reclaim on disk, and renaming a
+// project's folder with what omp keeps under its path.
 // An ompd older than these methods answers `unknown_method`; the error then says to restart ompd.
 extension DaemonConnection {
     /// Stops the session's omp gracefully and resumes it on the omp installed now (`session.restart`); its tab follows
@@ -21,6 +22,14 @@ extension DaemonConnection {
     /// screens removed (`storage.clean`).
     public func cleanStorage() async throws -> StorageClean.Result {
         try await callNewer(StorageClean.self, Empty(), doing: "clean up storage")
+    }
+
+    /// Renames the project's folder `from` to `to` (`project.rename`): its sessions stop, the folder moves (unless
+    /// `moveFolder` is false: it is at `to` already, moved in the Finder), omp's sessions, memory and history follow,
+    /// and the sessions resume in the renamed folder once the answer is out. The error says why in the Finder's words
+    /// when the folder cannot be renamed.
+    public func renameProject(from: String, to: String, moveFolder: Bool = true) async throws -> ProjectRename.Result {
+        try await callNewer(ProjectRename.self, .init(from: from, to: to, moveFolder: moveFolder), doing: "rename projects")
     }
 
     /// `method`, with the `unknown_method` of an ompd from before it turned into a message that says what to do.

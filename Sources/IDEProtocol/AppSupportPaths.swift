@@ -26,6 +26,9 @@ public struct AppSupportPaths: Sendable, Equatable {
     /// `project-rename.json`: ompd's journal of a project folder rename under way (`ProjectRename`), which the next ompd
     /// finishes after a crash.
     public let projectRename: URL
+    /// `project-rename-app.json`: the app's journal of the same rename, until its window layouts, editor state and
+    /// unsaved buffers follow the folder.
+    public let projectRenameApp: URL
 
     public init(root: URL) {
         self.root = root
@@ -39,6 +42,7 @@ public struct AppSupportPaths: Sendable, Equatable {
         hotExit = root.appending(path: "hot-exit", directoryHint: .isDirectory)
         stateDB = root.appending(path: "state.sqlite", directoryHint: .notDirectory)
         projectRename = root.appending(path: "project-rename.json", directoryHint: .notDirectory)
+        projectRenameApp = root.appending(path: "project-rename-app.json", directoryHint: .notDirectory)
     }
 
     /// Environment variable that relocates `standard` (tests, side-by-side daemons).

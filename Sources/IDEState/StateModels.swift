@@ -1,4 +1,5 @@
 import Foundation
+import IDEProtocol
 
 /// One window's layout (table `window`).
 public struct WindowState: Equatable, Sendable {
@@ -31,6 +32,21 @@ public struct WindowState: Equatable, Sendable {
         self.tabNumbers = tabNumbers
         self.windows = windows
         self.frontWindow = frontWindow
+    }
+}
+
+extension WindowState {
+    /// The folder `move.from` is at `move.to` now (Rename Project…): the projects, tabs and windows that name it or a
+    /// folder inside it name the new place. A project or window that lands on one already listed keeps the first place.
+    public mutating func moveFolder(_ move: FolderMove) {
+        func moved(_ paths: [String]) -> [String] {
+            var seen = Set<String>()
+            return paths.map { move.moved($0) ?? $0 }.filter { seen.insert($0).inserted }
+        }
+        projects = moved(projects)
+        tabs.moveFolder(move)
+        windows = moved(windows)
+        frontWindow = frontWindow.map { move.moved($0) ?? $0 }
     }
 }
 

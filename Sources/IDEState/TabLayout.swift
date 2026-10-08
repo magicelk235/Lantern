@@ -214,6 +214,22 @@ public struct TabLayout: Equatable, Sendable {
         if strips[stripIndex].lastSelected == old { strips[stripIndex].lastSelected = new }
         if strips[stripIndex].lastAdded == old { strips[stripIndex].lastAdded = new }
     }
+
+    /// The folder `move.from` is at `move.to` now (Rename Project…): the strips of it and of the folders inside it name
+    /// the new place, and the editor tabs of its files their new paths, each tab keeping its place and the tab on screen
+    /// staying on screen. A strip that lands on a folder that has one already joins that one, after its tabs.
+    public mutating func moveFolder(_ move: FolderMove) {
+        func moved(_ tab: TabKind) -> TabKind {
+            guard case .editor(let path) = tab, let path = move.moved(path) else { return tab }
+            return .editor(path: path)
+        }
+        let strips = strips.map { strip in
+            Strip(
+                workspace: move.moved(strip.workspace) ?? strip.workspace, tabs: strip.tabs.map(moved),
+                lastSelected: strip.lastSelected.map(moved))
+        }
+        self = TabLayout(strips: strips, selection: selection.map(moved))
+    }
 }
 
 extension TabLayout: Codable {

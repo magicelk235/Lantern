@@ -298,6 +298,58 @@ public final class StateStore: Sendable {
         }
     }
 
+    // MARK: - A folder renamed
+
+    /// The folder `move.from` is at `move.to` now (Rename Project…): every window layout, editor UI and dirty buffer
+    /// that names it or a path inside it names the new place, changes not written yet included, committed durably
+    /// before this returns. The old mirrors go before the rows move and the new ones are written after: a crash in
+    /// between leaves rows whose mirrors the next open writes again, never a mirror of a path that is gone, which would
+    /// come back as an unsaved buffer of it. Running it again changes nothing.
+    public func moveFolder(_ move: FolderMove) throws {
+        try queue.sync {
+            pending.withLock { pending in
+                for (id, state) in pending.windows {
+                    var moved = state
+                    moved.moveFolder(move)
+                    pending.windows[id] = moved
+                }
+                for (path, state) in pending.editors {
+                    guard let movedPath = move.moved(path) else { continue }
+                    var moved = state
+                    moved.path = movedPath
+                    pending.editors[path] = nil
+                    pending.editors[movedPath] = moved
+                }
+            }
+            try reporting(.dirtyBuffer) {
+                let buffers = try database.read { db in try DirtyBufferRecord.fetchAll(db) }.map(\.buffer).filter { move.contains($0.path) }
+                for buffer in buffers { try HotExitMirror.remove(path: buffer.path, in: hotExitDirectory) }
+                let moved = buffers.map { buffer in
+                    var moved = buffer
+                    moved.path = move.moved(buffer.path) ?? buffer.path
+                    return moved
+                }
+                try writeDurably { db in
+                    for record in try WindowRecord.fetchAll(db) {
+                        var state = record.state
+                        state.moveFolder(move)
+                        if state != record.state { try WindowRecord(state).upsert(db) }
+                    }
+                    for record in try EditorUIRecord.fetchAll(db) {
+                        guard let movedPath = move.moved(record.state.path) else { continue }
+                        var state = record.state
+                        state.path = movedPath
+                        _ = try EditorUIRecord.deleteOne(db, key: record.state.path)
+                        try EditorUIRecord(state).upsert(db)
+                    }
+                    for buffer in buffers { _ = try DirtyBufferRecord.deleteOne(db, key: buffer.path) }
+                    for buffer in moved { try DirtyBufferRecord(buffer).upsert(db) }
+                }
+                for buffer in moved { try HotExitMirror.write(buffer, in: hotExitDirectory) }
+            }
+        }
+    }
+
     /// `error`, from a write of this store, says the disk (or the user's quota) is full.
     public static func isOutOfSpace(_ error: any Error) -> Bool {
         switch error {
