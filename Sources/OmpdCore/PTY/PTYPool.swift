@@ -528,13 +528,13 @@ public actor PTYPool {
                 pty.subscribers[subscriber] = nil
             }
         }
+        pty.mirror.feed(chunk)
         markDirty(pty)
     }
 
     private func masterWritable(_ id: PTYID) {
         ptys[id]?.channel?.flushPending()
     }
-        pty.mirror.feed(chunk)
 
     private func childExited(_ id: PTYID, pid: pid_t, status: Int32) {
         closingPIDs.remove(pid)
