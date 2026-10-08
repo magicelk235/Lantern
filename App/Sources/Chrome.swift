@@ -31,8 +31,8 @@ enum Chrome {
 
     /// Git marks in the Files pane: a file (or a folder holding one) new to the repository, or changed. The system
     /// green and yellow in dark mode; darker in light mode, where text in those two needs 4.5:1 on the surface.
-    static let gitAdded = Color(nsColor: dynamic(light: 0x1F8033, dark: .systemGreen))
-    static let gitModified = Color(nsColor: dynamic(light: 0x906901, dark: .systemYellow))
+    static let gitAddedColor = dynamic(light: 0x1F8033, dark: .systemGreen)
+    static let gitModifiedColor = dynamic(light: 0x906901, dark: .systemYellow)
 
     /// Secondary text in the chrome: the rail's names, unselected tabs, the status bar, notices' messages, the panes'
     /// quieter words. The system's secondary label reads 3.9:1 on the light surface, so it is spelled out: 5.3:1 on

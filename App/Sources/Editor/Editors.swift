@@ -7,15 +7,7 @@ import IDEState
 /// keep them in step with the disk — the agent edits files too — and the language servers of their files.
 @MainActor @Observable
 final class Editors {
-    /// A file row clicked once in the navigator, over the tab that was on screen then: it stays highlighted until the
-    /// user opens it or another tab shows.
-    struct Highlight: Equatable {
-        var path: String
-        var over: TabKind?
-    }
-
     private(set) var documents: [String: EditorDocument] = [:]
-    var highlight: Highlight?
     /// The git repository of each project folder, refreshed when FSEvents reports changes under it.
     let repositories = GitRepositories()
     /// One per project folder and language, for as long as an editor of it is open.
@@ -87,7 +79,6 @@ final class Editors {
         document.relocate(to: newPath)
         documents[newPath] = document
         watch(Self.watchRoot(for: newPath, in: document.workspace))
-        if highlight?.path == path { highlight?.path = newPath }
     }
 
     /// `path` was renamed to `destination`: the navigators showing it keep its folders expanded under the new name.
@@ -139,7 +130,6 @@ final class Editors {
         }
         document.close()
         documents[path] = nil
-        if highlight?.path == path { highlight = nil }
         return true
     }
 

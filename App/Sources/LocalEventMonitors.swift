@@ -1,10 +1,10 @@
 import AppKit
 
-/// The app's local event monitors (⌘F and ⌃⌘J for editors, ⌘-click, the tab keys, a click on a Files row of a window
-/// in the background), kept ahead of every editor's. AppKit calls the newest local monitor first, and each
-/// CodeEditSourceEditor `TextViewController` adds one when its view loads that answers ⌘F with the library's own find
-/// panel, ⌃⌘J with a beep and ⌃Tab over several lines with an indent, taking the key before the app sees it. An editor
-/// that appears calls `moveToFront()`, which adds the app's monitors again, newer than its controller's.
+/// The app's local event monitors (⌘F and ⌃⌘J for editors, ⌘-click, the tab keys), kept ahead of every editor's.
+/// AppKit calls the newest local monitor first, and each CodeEditSourceEditor `TextViewController` adds one when its
+/// view loads that answers ⌘F with the library's own find panel, ⌃⌘J with a beep and ⌃Tab over several lines with an
+/// indent, taking the key before the app sees it. An editor that appears calls `moveToFront()`, which adds the app's
+/// monitors again, newer than its controller's.
 @MainActor
 enum LocalEventMonitors {
     private static var handlers: [(mask: NSEvent.EventTypeMask, handle: (NSEvent) -> NSEvent?)] = []

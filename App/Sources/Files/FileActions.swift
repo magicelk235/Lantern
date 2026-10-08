@@ -1,36 +1,4 @@
 import AppKit
-import IDEState
-import SwiftUI
-
-/// The Files pane's context menu for one file or folder: open, Quick Look, a terminal there, Finder, the path, new
-/// items, rename and Trash. The basics, in Finder's words.
-struct FileItemMenu: View {
-    let app: AppState
-    let project: String
-    let path: String
-    let isDirectory: Bool
-
-    private var folder: String { isDirectory ? path : (path as NSString).deletingLastPathComponent }
-
-    var body: some View {
-        if !isDirectory {
-            Button("Open") { app.openEditor(path, in: project) }
-            Button("Quick Look") { app.toggleQuickLook(path, in: project) }
-        }
-        Button("Open in Terminal") { app.newTerminal(in: folder) }
-            .disabled(!app.connection.isConnected)
-        Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: path)]) }
-        Divider()
-        Button("Copy Path") { app.copyToPasteboard(path) }
-        Button("Copy Relative Path") { app.copyToPasteboard(AppState.relativePath(path, in: project)) }
-        Divider()
-        Button("New File…") { app.newFile(in: folder, project: project) }
-        Button("New Folder…") { app.newFolder(in: folder) }
-        Divider()
-        Button("Rename…") { app.renameItem(path, project: project) }
-        Button("Move to Trash") { app.trashItem(path, project: project) }
-    }
-}
 
 extension AppState {
     /// `path` relative to `project`, or itself when it lies outside.

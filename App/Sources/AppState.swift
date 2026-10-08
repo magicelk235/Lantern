@@ -22,6 +22,8 @@ final class AppState {
     let finishedTurns = FinishedTurns()
     /// Open files and the file navigators.
     let editors: Editors
+    /// The Files pane's outline of each project, kept while the pane shows something else.
+    let filesOutlines = FilesOutlines()
     /// Terminal emulators: `.terminal` tabs on PTYs in ompd, and `.session` tabs showing omp's TUI.
     let terminals: TerminalsController
     /// Whether the key window is a project window, for ⌘W and the tab commands.
@@ -162,7 +164,6 @@ final class AppState {
         connection.terminals.onGone = { [weak self] ptyId in self?.terminalGone(ptyId) }
         observeSystemPower()
         installEditorNavigation()
-        installFilesFirstMouse()
     }
 
     /// launchd starts a registered ompd within a moment. A daemon still out of reach this long after launch has a
@@ -226,7 +227,6 @@ final class AppState {
     }
 
     func selectTab(_ tab: TabKind) {
-        editors.highlight = nil
         tabs.select(tab)
         saveWindow()
     }
@@ -377,7 +377,6 @@ final class AppState {
     /// Shows `path` in its editor tab, opening one after the tab on screen in `workspace`'s strip first if needed.
     func openEditor(_ path: String, in workspace: String) {
         editors.open(path, in: workspace).focusOnAppear = true
-        editors.highlight = nil
         tabs.open(.editor(path: path), in: workspace)
         saveWindow()
         showProject(workspace)
