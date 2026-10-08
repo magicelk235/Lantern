@@ -19,6 +19,10 @@ import IDEProtocol
 /// serviced (`dispatchMain()` or an async `main`). Subscriber, change and exit callbacks run on the main queue inside
 /// the pool and must only hand data off (e.g. enqueue a frame, start a task).
 ///
+/// Every PTY is read as fast as its program writes, whoever is attached: output never waits for a subscriber. One that
+/// cannot keep up (its client stopped reading) refuses a chunk and is unsubscribed; its client attaches again for the
+/// current screen.
+///
 /// Terminal queries (DA, cursor position reports, kitty keyboard queries, …) are answered by the attached UI's
 /// terminal; while nobody is attached the headless terminal answers them, so programs never hang waiting.
 public actor PTYPool {
@@ -144,8 +148,9 @@ public actor PTYPool {
 
     /// Subscribes `subscriber` to live output. `screen` repaints scrollback, screen, cursor, attributes and modes
     /// into a fresh terminal of `info.cols`×`info.rows`; `onOutput` then receives every later chunk, with no gap
-    /// or overlap. Attaching again with the same subscriber replaces its callback.
-    public func attach(_ ptyId: PTYID, subscriber: UUID, onOutput: @escaping @Sendable (Data) -> Void) throws -> PTYAttach.Result {
+    /// or overlap, until it returns false: the subscriber fell too far behind to stream to, and neither that chunk nor
+    /// any later one goes to it. Attaching again with the same subscriber replaces its callback.
+    public func attach(_ ptyId: PTYID, subscriber: UUID, onOutput: @escaping @Sendable (Data) -> Bool) throws -> PTYAttach.Result {
         let pty = try existing(ptyId)
         refreshWorkingDirectory(pty)
         let screen = pty.mirror.serialize(includePending: true)
@@ -513,13 +518,15 @@ public actor PTYPool {
         bytes.withUnsafeBufferPointer { deliver(pty, $0) }
     }
 
-    /// Output as the terminal and every subscriber see it.
+    /// Output as every subscriber and the terminal see it. A subscriber that refuses the chunk is gone before the
+    /// terminal takes it, so a query in the chunk is answered (`wire`) even when that was the last subscriber.
     private func deliver(_ pty: ManagedPTY, _ chunk: UnsafeBufferPointer<UInt8>) {
         guard !chunk.isEmpty else { return }
-        pty.mirror.feed(chunk)
         if !pty.subscribers.isEmpty {
             let data = Data(buffer: chunk)
-            for deliver in pty.subscribers.values { deliver(data) }
+            for (subscriber, onOutput) in pty.subscribers where !onOutput(data) {
+                pty.subscribers[subscriber] = nil
+            }
         }
         markDirty(pty)
     }
@@ -527,6 +534,7 @@ public actor PTYPool {
     private func masterWritable(_ id: PTYID) {
         ptys[id]?.channel?.flushPending()
     }
+        pty.mirror.feed(chunk)
 
     private func childExited(_ id: PTYID, pid: pid_t, status: Int32) {
         closingPIDs.remove(pid)
@@ -706,7 +714,7 @@ private final class ManagedPTY {
     /// Nil once the tty hung up (all processes holding it are gone) or the PTY was closed.
     var channel: MasterChannel?
     var reaper: ChildReaper?
-    var subscribers: [UUID: @Sendable (Data) -> Void] = [:]
+    var subscribers: [UUID: @Sendable (Data) -> Bool] = [:]
     /// Session PTYs: the supervisor's exit callback, taken when the program exits.
     var onExit: (@Sendable (PTYExit) -> Void)?
     /// A session PTY continuing a previous screen, until its program's first scrollback erase went by.

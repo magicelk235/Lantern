@@ -7,7 +7,8 @@ import Testing
 
 /// A `Daemon` over the fake omp TUI, serving a real socket under a short /tmp home. `pausable: false` stands for an omp
 /// whose bridge cannot pause; `pauseGrace` is the daemon's `detachedPauseGrace`; `capabilities` are advertised by every
-/// bridge on top of the defaults; `services` is omp's launch broker.
+/// bridge on top of the defaults; `services` is omp's launch broker; `clientBehindBytes` is the daemon's
+/// `clientBehindBytes`.
 struct DaemonFixture {
     let temp: ShortTempDir
     let paths: AppSupportPaths
@@ -20,23 +21,24 @@ struct DaemonFixture {
     private let pausable: Bool
     private let pauseGrace: Duration
     private let capabilities: [String: Bool]
+    private let clientBehindBytes: Int
     let services: FakeServices
     /// omp's agent directory is `$PI_CODING_AGENT_DIR` = `<temp>/agent`, so nothing reaches the user's own.
     private let isolatedAgent: Bool
 
     init(
         pausable: Bool = true, pauseGrace: Duration = .seconds(3), capabilities: [String: Bool] = [:],
-        services: FakeServices = FakeServices(), isolatedAgent: Bool = false
+        services: FakeServices = FakeServices(), isolatedAgent: Bool = false, clientBehindBytes: Int = IDEServer.defaultBehindBytes
     ) async throws {
         let temp = try ShortTempDir()
         try await self.init(
             temp: temp, omp: try FakeOmp(in: temp.url), pausable: pausable, pauseGrace: pauseGrace, capabilities: capabilities,
-            services: services, isolatedAgent: isolatedAgent)
+            services: services, isolatedAgent: isolatedAgent, clientBehindBytes: clientBehindBytes)
     }
 
     private init(
         temp: ShortTempDir, omp: FakeOmp, pausable: Bool, pauseGrace: Duration, capabilities: [String: Bool], services: FakeServices,
-        isolatedAgent: Bool
+        isolatedAgent: Bool, clientBehindBytes: Int
     ) async throws {
         self.isolatedAgent = isolatedAgent
         self.temp = temp
@@ -44,6 +46,7 @@ struct DaemonFixture {
         self.pausable = pausable
         self.pauseGrace = pauseGrace
         self.capabilities = capabilities
+        self.clientBehindBytes = clientBehindBytes
         self.services = services
         paths = AppSupportPaths(root: temp.url.appending(path: "home", directoryHint: .isDirectory))
         try paths.prepare()
@@ -57,7 +60,7 @@ struct DaemonFixture {
             paths: paths, ompExecutable: omp.executable, ompArguments: ["--thinking", "off"],
             sessionDirectory: temp.url.appending(path: "omp-sessions").path(percentEncoded: false),
             bridgeExtension: "/fake/ide-bridge.ts", baseEnvironment: environment, timings: .fastTests,
-            wakeHealthCheckDelay: .zero, detachedPauseGrace: pauseGrace, services: services)
+            wakeHealthCheckDelay: .zero, detachedPauseGrace: pauseGrace, services: services, clientBehindBytes: clientBehindBytes)
         daemon = Daemon(
             configuration: configuration, token: token, bridge: bridge, locks: locks,
             ptys: PTYPool(snapshotDirectory: paths.ptySnapshots))
@@ -68,7 +71,7 @@ struct DaemonFixture {
     func restarted() async throws -> DaemonFixture {
         try await DaemonFixture(
             temp: temp, omp: omp, pausable: pausable, pauseGrace: pauseGrace, capabilities: capabilities, services: services,
-            isolatedAgent: isolatedAgent)
+            isolatedAgent: isolatedAgent, clientBehindBytes: clientBehindBytes)
     }
 
     /// A Lantern window (`app`; `hasWindow` false: an app whose windows are all closed), or a command-line client

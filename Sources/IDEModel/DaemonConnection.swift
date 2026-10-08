@@ -383,6 +383,7 @@ public final class DaemonConnection: TerminalBackend {
         case .sessions(let list): apply(sessions: list.sessions)
         case .ptys(let list): terminals.receive(list)
         case .ptyOutput(let output): terminals.receive(output)
+        case .ptyBehind(let behind): terminals.fellBehind(behind.ptyId)
         case .runtime(let runtime): apply(runtime: runtime)
         case .notice(let notice):
             notices.append(notice)

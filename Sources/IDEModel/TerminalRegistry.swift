@@ -119,6 +119,11 @@ public final class TerminalRegistry {
         models[output.ptyId]?.receive(output.data)
     }
 
+    /// A `ptyBehind` push: ompd stopped streaming the PTY here because this client fell behind on its output.
+    func fellBehind(_ ptyId: PTYID) {
+        models[ptyId]?.fellBehind()
+    }
+
     /// A `ptys` push: ompd's whole PTY list after a change.
     func receive(_ list: PTYList.Result) {
         pushes += 1

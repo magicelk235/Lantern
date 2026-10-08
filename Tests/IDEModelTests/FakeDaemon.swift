@@ -236,6 +236,17 @@ final class FakeDaemon: IDERequestHandler {
         }
     }
 
+    /// ompd ends the PTY's stream to every client attached to it, as it does to a client that fell behind on its output:
+    /// each gets `ptyBehind`, and nothing the PTY prints from then on reaches them until they attach again.
+    func dropSubscribersBehind(_ ptyId: PTYID) {
+        state.withLock { s in
+            guard let subscribers = s.ptys[ptyId]?.subscribers else { return }
+            s.ptys[ptyId]?.subscribers = []
+            s.lifecycle.append("behind \(ptyId)")
+            for connection in subscribers { connection.send(.ptyBehind(PTYBehind(ptyId: ptyId))) }
+        }
+    }
+
     // MARK: - Sessions
 
     /// Adds a session whose TUI runs on PTY `ptyId` and already printed `output`.

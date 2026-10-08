@@ -182,6 +182,28 @@ import Testing
         }
     }
 
+    @Test func aSubscriberThatFallsBehindIsDroppedAndTheTerminalAnswersQueriesForIt() async throws {
+        try await withFixture { fixture in
+            // Prints and asks for the cursor position in one write, then blocks until the terminal replies.
+            let script = #"stty -icanon -echo; sleep 1; printf 'before\nab\033[6n'; IFS= read -r -d R reply; printf '\ngot:%s\n' "${reply#?}"; sleep 5"#
+            let info = try await fixture.pool.open(PTYOpen.Params(cwd: fixture.directory, command: ["/bin/sh", "-c", script], cols: 80, rows: 24))
+            // Behind from its first chunk on (a client that stopped reading).
+            let offered = OSAllocatedUnfairLock(initialState: 0)
+            _ = try await fixture.pool.attach(info.ptyId, subscriber: UUID()) { _ in
+                offered.withLock { $0 += 1 }
+                return false
+            }
+            // Nothing waits for it: the query in the chunk it refused is answered by the headless terminal.
+            #expect(try await eventually {
+                let watcher = UUID()
+                let screen = try await fixture.pool.attach(info.ptyId, subscriber: watcher) { _ in true }
+                await fixture.pool.detach(info.ptyId, subscriber: watcher)
+                return Client.fromScreen(screen).lines().contains("got:[2;3")
+            })
+            #expect(offered.withLock { $0 } == 1, "a dropped subscriber is offered nothing more")
+        }
+    }
+
     @Test func restoredExitedProgramIsNotRerun() async throws {
         try await withFixture { fixture in
             let info = try await fixture.pool.open(PTYOpen.Params(cwd: fixture.directory, command: ["/bin/sh", "-c", "echo run >> runs.txt; echo done"], cols: 80, rows: 24))
@@ -313,7 +335,7 @@ import Testing
             let divider = try #require(lines.firstIndex(of: "— terminal restarted —"))
             #expect(lines[..<divider].contains("old-output"))
             #expect(lines[divider...].contains("fresh"))
-            #expect(Client.fromScreen(try await fixture.pool.attach(new.ptyId, subscriber: UUID()) { _ in }).lines() == lines)
+            #expect(Client.fromScreen(try await fixture.pool.attach(new.ptyId, subscriber: UUID()) { _ in true }).lines() == lines)
 
             // Only the first erase is dropped: a later one clears the scrollback as usual.
             try await fixture.pool.write(new.ptyId, Data("go\n".utf8))
@@ -485,7 +507,10 @@ private final class Client: Sendable {
     static func attach(_ pool: PTYPool, _ ptyId: PTYID) async throws -> Client {
         let id = UUID()
         let live = OSAllocatedUnfairLock(initialState: Data())
-        let result = try await pool.attach(ptyId, subscriber: id) { chunk in live.withLock { $0.append(chunk) } }
+        let result = try await pool.attach(ptyId, subscriber: id) { chunk in
+            live.withLock { $0.append(chunk) }
+            return true
+        }
         return Client(id: id, screen: result.screen, cols: result.info.cols, rows: result.info.rows, live: live)
     }
 

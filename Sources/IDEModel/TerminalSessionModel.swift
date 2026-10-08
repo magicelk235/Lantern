@@ -39,6 +39,8 @@ public protocol TerminalEndpoint: AnyObject {
 ///   right after it.
 /// - Reconnects: when the connection comes back (ompd restarted, or the socket dropped) a shown terminal attaches again
 ///   and its display starts over from the fresh screen.
+/// - Falling behind: ompd ends a stream this client stopped reading for too long (`ptyBehind`); the terminal attaches
+///   again the same way.
 /// - Input: one `pty.write` in flight at a time, everything typed meanwhile coalesced into the next one. ompd serves the
 ///   requests of a connection concurrently, so parallel writes could reach the PTY out of order.
 /// - Size: `resize` is debounced and one `pty.resize` is in flight at a time, so ompd ends up with the latest size.
@@ -193,6 +195,16 @@ public final class TerminalSessionModel: Identifiable, TerminalEndpoint {
             display?.feed(data)
         } else if early != nil {
             early?.append(data)
+        }
+    }
+
+    /// ompd stopped streaming the PTY here: this client fell too far behind on its output. Attaching again brings the
+    /// screen as it is now; the display keeps the old one until then. Received during an attach, the notice may be about
+    /// the stream that attach starts, so a new attach replaces it.
+    func fellBehind() {
+        switch phase {
+        case .attaching, .attached: beginAttach()
+        case .detached, .failed, .gone: break
         }
     }
 

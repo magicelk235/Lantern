@@ -119,7 +119,7 @@ struct SupervisorTests {
         let file = try #require(try await fixture.entry.sessionFile)
         #expect(fixture.omp.lines("argv").last?.contains("--resume \(file)") == true)
         #expect(await fixture.pool.info(old.ptyId) == nil)
-        let screen = screenLines(try await fixture.pool.attach(new, subscriber: UUID()) { _ in })
+        let screen = screenLines(try await fixture.pool.attach(new, subscriber: UUID()) { _ in true })
         let divider = try #require(screen.firstIndex(of: "— terminal restarted —"))
         #expect(screen[..<divider].contains("echo:before-crash"))
         #expect(fixture.notices.value.map(\.level) == ["warning", "info"])

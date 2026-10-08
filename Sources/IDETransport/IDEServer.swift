@@ -39,9 +39,16 @@ extension IDERequestHandler {
 /// `protocolVersion == ideProtocolVersion`; otherwise the server answers with an `unauthorized` / `version_mismatch`
 /// error response (id `"hello"`, or the request's id if a request came first) and closes. A connection that sends
 /// nothing is dropped after 10 s. On success the server sends `welcome`, then serves requests until either side closes.
+///
+/// Slow clients: a client with more than `behindBytes` queued is behind (it stopped reading, or reads slower than the
+/// daemon writes). Broadcasts wait until it has caught up; of those that carry a whole state (`sessions`, `ptys`, one
+/// session's `runtime`) only the newest of each goes out, so a client that stopped reading costs a bounded amount of
+/// memory and is never cut off for it. Only one more than `maxBacklogBytes` behind is disconnected.
 public final class IDEServer: Sendable {
     /// Default slow-consumer cutoff: room for one maximum-size frame plus as much again of queued pushes.
     public static let defaultMaxBacklogBytes = 2 * ideMaxFrameBytes
+    /// Default backlog past which a client is behind.
+    public static let defaultBehindBytes = 8 << 20
     static let handshakeTimeout: DispatchTimeInterval = .seconds(10)
     static let handshakeResponseID = "hello"
 
@@ -51,6 +58,7 @@ public final class IDEServer: Sendable {
     private let startedAt: Date
     private let handler: any IDERequestHandler
     private let maxBacklogBytes: Int
+    private let behindBytes: Int
     private let queue = DispatchQueue(label: "com.magicelklabs.lantern.transport.listener")
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -67,6 +75,8 @@ public final class IDEServer: Sendable {
     private struct Member: Sendable {
         let connection: IDEConnection
         var stage: Stage
+        /// Broadcasts waiting for the client to catch up; nil while it keeps up.
+        var held: HeldBroadcasts?
     }
 
     private enum Stage: Sendable {
@@ -76,10 +86,12 @@ public final class IDEServer: Sendable {
         case open
     }
 
-    /// - Parameter maxBacklogBytes: slow-consumer cutoff per connection (see `IDEConnection`).
+    /// - Parameters:
+    ///   - maxBacklogBytes: slow-consumer cutoff per connection (see `IDEConnection`).
+    ///   - behindBytes: backlog past which broadcasts wait for the client to catch up.
     public init(
         socketPath: String, token: String, daemonVersion: String, startedAt: Date, handler: any IDERequestHandler,
-        maxBacklogBytes: Int = IDEServer.defaultMaxBacklogBytes
+        maxBacklogBytes: Int = IDEServer.defaultMaxBacklogBytes, behindBytes: Int = IDEServer.defaultBehindBytes
     ) {
         self.socketPath = socketPath
         self.token = Array(token.utf8)
@@ -87,6 +99,7 @@ public final class IDEServer: Sendable {
         self.startedAt = startedAt
         self.handler = handler
         self.maxBacklogBytes = maxBacklogBytes
+        self.behindBytes = behindBytes
     }
 
     /// Binds the socket and starts accepting clients. A leftover socket file nobody listens on is replaced; a live
@@ -158,7 +171,8 @@ public final class IDEServer: Sendable {
     }
 
     /// Sends `frame` to every client that completed the handshake (e.g. `.sessions` after a manifest change). Encoded
-    /// once. A client whose welcome is still being built receives it right after its welcome.
+    /// once. A client whose welcome is still being built receives it right after its welcome; one that is behind, once it
+    /// has caught up (unless a newer state of the same kind replaced it meanwhile).
     public func broadcast(_ frame: ServerFrame) {
         let bytes: Data
         do {
@@ -167,14 +181,48 @@ public final class IDEServer: Sendable {
             transportLog.error("broadcast frame not encodable: \(String(describing: error), privacy: .public)")
             return
         }
-        state.withLock { s in
+        let key = Self.stateKey(frame)
+        let fellBehind: [IDEConnection] = state.withLock { s in
+            var fellBehind: [IDEConnection] = []
             for (id, member) in s.members {
                 switch member.stage {
-                case .open: member.connection.channel.send(bytes)
+                case .open:
+                    if member.held != nil {
+                        s.members[id]?.held?.add(bytes, key: key)
+                    } else if member.connection.channel.backlogBytes > behindBytes {
+                        s.members[id]?.held = HeldBroadcasts(bytes, key: key)
+                        fellBehind.append(member.connection)
+                    } else {
+                        member.connection.channel.send(bytes)
+                    }
                 case .welcoming(let held): s.members[id]?.stage = .welcoming(held: held + [bytes])
                 case .handshaking: break
                 }
             }
+            return fellBehind
+        }
+        for connection in fellBehind {
+            Task { [weak self] in await self?.releaseHeld(to: connection) }
+        }
+    }
+
+    /// Sends the broadcasts held for `connection` once it has caught up; they go with the connection if it ends first.
+    private func releaseHeld(to connection: IDEConnection) async {
+        await connection.channel.waitForBacklog(atMost: behindBytes)
+        state.withLock { s in
+            guard let held = s.members[connection.id]?.held else { return }
+            s.members[connection.id]?.held = nil
+            for frame in held.frames { connection.channel.send(frame) }
+        }
+    }
+
+    /// What a broadcast carries a whole state of, if anything: a newer broadcast of the same key makes it obsolete.
+    private static func stateKey(_ frame: ServerFrame) -> String? {
+        switch frame {
+        case .sessions: "sessions"
+        case .ptys: "ptys"
+        case .runtime(let runtime): "runtime " + runtime.sessionKey
+        case .welcome, .response, .ptyOutput, .ptyBehind, .notice: nil
         }
     }
 
@@ -349,6 +397,28 @@ public final class IDEServer: Sendable {
             return s.stopWaiters
         }
         for waiter in waiters { waiter.resume() }
+    }
+}
+
+/// Broadcasts held for a client that is behind, in the order they were made. One that carries a whole state replaces
+/// the held one of the same key, and goes last: the newest of each state, in the order they changed.
+private struct HeldBroadcasts: Sendable {
+    private struct Entry: Sendable {
+        var key: String?
+        var frame: Data
+    }
+
+    private var entries: [Entry] = []
+
+    init(_ frame: Data, key: String?) {
+        add(frame, key: key)
+    }
+
+    var frames: [Data] { entries.map(\.frame) }
+
+    mutating func add(_ frame: Data, key: String?) {
+        if let key { entries.removeAll { $0.key == key } }
+        entries.append(Entry(key: key, frame: frame))
     }
 }
 

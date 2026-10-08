@@ -41,13 +41,18 @@ public actor Daemon {
         /// How long an upgrade waits for sessions that are starting, stopping or being continued before it gives up on
         /// handing over in place.
         public var handoverSettle: Duration
+        /// How far a client may fall behind (bytes queued for it that it has not read) before ompd stops queuing for it:
+        /// broadcasts wait until it has caught up, and a PTY stream ends with `pty_behind` once it is this much past what
+        /// was queued when it attached. Nothing ompd runs ever waits for a client.
+        public var clientBehindBytes: Int
 
         public init(
             paths: AppSupportPaths, ompExecutable: String? = nil, ompArguments: [String] = [], sessionDirectory: String? = nil,
             bridgeExtension: String? = nil, baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
             timings: SupervisorTimings = SupervisorTimings(), wakeHealthCheckDelay: Duration = .seconds(10),
             detachedPauseGrace: Duration = .seconds(3), services: any ServiceControl = OmpServiceControl(),
-            lowSpaceThreshold: Int64? = nil, process: (any DaemonProcess)? = nil, handoverSettle: Duration = .seconds(10)
+            lowSpaceThreshold: Int64? = nil, process: (any DaemonProcess)? = nil, handoverSettle: Duration = .seconds(10),
+            clientBehindBytes: Int = IDEServer.defaultBehindBytes
         ) {
             self.paths = paths
             self.ompExecutable = ompExecutable
@@ -62,6 +67,7 @@ public actor Daemon {
             self.lowSpaceThreshold = lowSpaceThreshold
             self.process = process
             self.handoverSettle = handoverSettle
+            self.clientBehindBytes = clientBehindBytes
         }
     }
 
@@ -185,7 +191,7 @@ public actor Daemon {
     private func serve() async throws {
         let server = IDEServer(
             socketPath: configuration.paths.socket.path(percentEncoded: false), token: token, daemonVersion: ompdVersion,
-            startedAt: startedAt, handler: self)
+            startedAt: startedAt, handler: self, behindBytes: configuration.clientBehindBytes)
         try await server.start()
         self.server = server
         broadcaster.attach(server)
@@ -821,10 +827,23 @@ public actor Daemon {
             try await Self.alive(self).ptys.open(params)
         }
         router.on(PTYAttach.self) { [weak self] params, connection in
+            let daemon = try Self.alive(self)
             let ptyId = params.ptyId
-            return try await Self.alive(self).ptys.attach(ptyId, subscriber: connection.id) { data in
+            // Live output queues for the client until it is `clientBehindBytes` past what was queued when it attached, the
+            // screen this answer carries included; then the stream ends with `pty_behind`, and the client attaches again
+            // for the screen as it is by then. The PTY reads on regardless.
+            let limit = OSAllocatedUnfairLock(initialState: Int.max)
+            let result = try await daemon.ptys.attach(ptyId, subscriber: connection.id) { data in
+                guard connection.backlogBytes <= limit.withLock({ $0 }) else {
+                    connection.send(.ptyBehind(PTYBehind(ptyId: ptyId)))
+                    return false
+                }
                 connection.send(.ptyOutput(PTYOutput(ptyId: ptyId, data: data)))
+                return true
             }
+            let screenBytes = (result.screen.count + 2) / 3 * 4 // base64 on the wire
+            limit.withLock { $0 = connection.backlogBytes + screenBytes + daemon.configuration.clientBehindBytes }
+            return result
         }
         router.on(PTYDetach.self) { [weak self] params, connection in
             try await Self.alive(self).ptys.detach(params.ptyId, subscriber: connection.id)

@@ -61,13 +61,13 @@ final class TestHandler: IDERequestHandler {
 
 /// Starts a server on a fresh socket path, runs `body`, and always stops the server.
 func withServer<T>(
-    _ handler: TestHandler, maxBacklogBytes: Int = IDEServer.defaultMaxBacklogBytes,
+    _ handler: TestHandler, maxBacklogBytes: Int = IDEServer.defaultMaxBacklogBytes, behindBytes: Int = IDEServer.defaultBehindBytes,
     _ body: (IDEServer, String) async throws -> T
 ) async throws -> T {
     let path = tempSocketPath()
     let server = IDEServer(
         socketPath: path, token: testToken, daemonVersion: "ompd-test", startedAt: testStartedAt, handler: handler,
-        maxBacklogBytes: maxBacklogBytes)
+        maxBacklogBytes: maxBacklogBytes, behindBytes: behindBytes)
     try await server.start()
     do {
         let result = try await body(server, path)

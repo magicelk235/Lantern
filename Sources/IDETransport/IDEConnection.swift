@@ -4,8 +4,10 @@ import Foundation
 ///
 /// `send` never blocks the daemon: it encodes the frame on the caller's thread and appends it to the connection's
 /// outbound FIFO. Frames reach the client in the order `send` calls were made (for concurrent callers, in the order
-/// their calls took the queue). A client that falls more than the server's `maxBacklogBytes` behind is disconnected
-/// and its queued frames are dropped; it recovers by reconnecting and re-attaching (`pty.attach` repaints the screen).
+/// their calls took the queue). Whatever produces a lot keeps a client that stopped reading from piling it up — the
+/// daemon ends its PTY streams to it with `pty_behind`, `IDEServer` holds broadcasts for it — so the backlog stays
+/// bounded. A client that still falls more than the server's `maxBacklogBytes` behind is disconnected and its queued
+/// frames are dropped; it recovers by reconnecting and re-attaching (`pty.attach` repaints the screen).
 public final class IDEConnection: Sendable, Hashable, Identifiable {
     public let id = UUID()
     let channel: FrameChannel

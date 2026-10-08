@@ -4,9 +4,9 @@ import os
 
 /// App-side connection to ompd. One instance is one connection: after `close()` or a disconnect, make a new client.
 public actor IDEClient {
-    /// Every non-response frame (ptyOutput, sessions, ptys, notice) in arrival order; finishes when the connection
-    /// ends. Single consumer. Buffered without bound so the socket keeps draining; the daemon's slow-consumer cutoff
-    /// only trips when this process stops reading altogether.
+    /// Every non-response frame (ptyOutput, ptyBehind, sessions, ptys, notice, runtime) in arrival order; finishes when
+    /// the connection ends. Single consumer. Buffered without bound so the socket keeps draining: only a process that
+    /// stops reading altogether falls behind (its PTY streams end with `ptyBehind`, broadcasts wait for it).
     public nonisolated let pushes: AsyncStream<ServerFrame>
 
     private let socketPath: String
@@ -202,7 +202,7 @@ final class ClientInbox: Sendable {
             case .call(let continuation):
                 continuation?.resume(returning: response) // nil: the call was cancelled
             }
-        case .ptyOutput, .sessions, .ptys, .notice, .runtime:
+        case .ptyOutput, .ptyBehind, .sessions, .ptys, .notice, .runtime:
             pushes.yield(frame)
         }
     }

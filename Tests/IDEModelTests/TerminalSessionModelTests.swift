@@ -111,6 +111,35 @@ struct TerminalSessionModelTests {
         await server.stop()
     }
 
+    @Test func attachesAgainFromTheCurrentScreenWhenOmpdEndsAStreamTheAppFellBehindOn() async throws {
+        let home = try TempHome()
+        defer { home.remove() }
+        let daemon = FakeDaemon()
+        daemon.addPTY("p1", output: "$ yes\r\n")
+        let server = try await home.startServer(daemon)
+        let connection = try await connect(home)
+        let display = RecordingDisplay()
+        let model = connection.terminals.model(for: "p1")
+        model.attach(to: display)
+        daemon.print("y\r\n", on: "p1")
+        try await eventually("live") { model.isAttached && display.shown == daemon.output(of: "p1") }
+
+        // The app stopped reading for too long: ompd ended the stream, and what the PTY prints next is in no frame.
+        daemon.dropSubscribersBehind("p1")
+        daemon.print("printed while the app was behind\r\n", on: "p1")
+        try await eventually("attached again") { display.resets.count == 2 && model.isAttached }
+        try await eventually("the display starts over from the screen as it is now") { display.shown == daemon.output(of: "p1") }
+        #expect(daemon.lifecycle == ["attach p1", "behind p1", "attach p1"])
+
+        daemon.print("live again\r\n", on: "p1")
+        try await eventually("live again") { display.text.hasSuffix("behind\r\nlive again\r\n") }
+        #expect(display.shown == daemon.output(of: "p1"))
+        #expect(display.violations.isEmpty)
+
+        await connection.stop()
+        await server.stop()
+    }
+
     @Test func attachAndDetachReachOmpdInCallOrder() async throws {
         let home = try TempHome()
         defer { home.remove() }

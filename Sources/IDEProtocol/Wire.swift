@@ -1,8 +1,8 @@
 import Foundation
 
-/// Daemon <-> UI protocol version. Bump on any incompatible change to this module (5: `ServerFrame.runtime`, which a
-/// v4 client cannot decode; agent supervision methods).
-public let ideProtocolVersion = 5
+/// Daemon <-> UI protocol version. Bump on any incompatible change to this module (6: `ServerFrame.ptyBehind`, which a
+/// v5 client cannot decode).
+public let ideProtocolVersion = 6
 
 /// Wire framing: each frame is a 4-byte big-endian length followed by that many bytes of
 /// UTF-8 JSON encoding exactly one `ClientFrame` or `ServerFrame`. Max frame 64 MiB.
@@ -101,6 +101,10 @@ public enum ServerFrame: Sendable, Equatable, Codable {
     case response(Response)
     /// Raw PTY output for an attached terminal.
     case ptyOutput(PTYOutput)
+    /// The daemon stopped streaming a PTY to this connection: the client fell too far behind on its output (it stopped
+    /// reading its socket). Nothing more of that PTY's output follows; attaching again repaints the current screen and
+    /// streams from there.
+    case ptyBehind(PTYBehind)
     /// Manifest changed (session created/closed/status change). Full list, cheap.
     case sessions(SessionList)
     /// Daemon notice (e.g. read-only mode, a session that could not be resumed). Broadcast to every connected
@@ -113,7 +117,9 @@ public enum ServerFrame: Sendable, Equatable, Codable {
     case runtime(SessionRuntime)
 
     private enum CodingKeys: String, CodingKey { case type }
-    private enum Kind: String, Codable { case welcome, response, ptyOutput = "pty_output", sessions, notice, ptys, runtime }
+    private enum Kind: String, Codable {
+        case welcome, response, ptyOutput = "pty_output", ptyBehind = "pty_behind", sessions, notice, ptys, runtime
+    }
 
     public init(from decoder: any Decoder) throws {
         let kind = try decoder.container(keyedBy: CodingKeys.self).decode(Kind.self, forKey: .type)
@@ -121,6 +127,7 @@ public enum ServerFrame: Sendable, Equatable, Codable {
         case .welcome: self = .welcome(try Welcome(from: decoder))
         case .response: self = .response(try Response(from: decoder))
         case .ptyOutput: self = .ptyOutput(try PTYOutput(from: decoder))
+        case .ptyBehind: self = .ptyBehind(try PTYBehind(from: decoder))
         case .sessions: self = .sessions(try SessionList(from: decoder))
         case .notice: self = .notice(try DaemonNotice(from: decoder))
         case .ptys: self = .ptys(try PTYList.Result(from: decoder))
@@ -134,6 +141,7 @@ public enum ServerFrame: Sendable, Equatable, Codable {
         case .welcome(let v): try c.encode(Kind.welcome, forKey: .type); try v.encode(to: encoder)
         case .response(let v): try c.encode(Kind.response, forKey: .type); try v.encode(to: encoder)
         case .ptyOutput(let v): try c.encode(Kind.ptyOutput, forKey: .type); try v.encode(to: encoder)
+        case .ptyBehind(let v): try c.encode(Kind.ptyBehind, forKey: .type); try v.encode(to: encoder)
         case .sessions(let v): try c.encode(Kind.sessions, forKey: .type); try v.encode(to: encoder)
         case .notice(let v): try c.encode(Kind.notice, forKey: .type); try v.encode(to: encoder)
         case .ptys(let v): try c.encode(Kind.ptys, forKey: .type); try v.encode(to: encoder)
@@ -182,6 +190,12 @@ public struct PTYOutput: Sendable, Equatable, Codable {
     public var ptyId: PTYID
     public var data: Data // base64 on the wire (JSONEncoder default)
     public init(ptyId: PTYID, data: Data) { self.ptyId = ptyId; self.data = data }
+}
+
+/// `ServerFrame.ptyBehind`: the PTY whose output stopped streaming to this connection.
+public struct PTYBehind: Sendable, Equatable, Codable {
+    public var ptyId: PTYID
+    public init(ptyId: PTYID) { self.ptyId = ptyId }
 }
 
 public struct SessionList: Sendable, Equatable, Codable {

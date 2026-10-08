@@ -68,7 +68,7 @@ struct UpgradeTests {
         let old = PTYPool(snapshotDirectory: temp.url.appending(path: "pty"), snapshotInterval: .seconds(3600))
         let script = "i=0; while :; do echo tick-$i; i=$((i+1)); sleep 0.1; done"
         let info = try await old.open(PTYOpen.Params(cwd: temp.path, command: ["/bin/sh", "-c", script], cols: 80, rows: 24))
-        try await eventually("ticks") { screenLines(try await old.attach(info.ptyId, subscriber: UUID()) { _ in }).contains("tick-3") }
+        try await eventually("ticks") { screenLines(try await old.attach(info.ptyId, subscriber: UUID()) { _ in true }).contains("tick-3") }
         let frozen = await old.freezeForHandover()
         let handed = try #require(frozen.ptys.first)
         let master = try #require(handed.masterFD)
@@ -80,10 +80,10 @@ struct UpgradeTests {
         let exit = Box<PTYExit?>(nil)
         await new.adopt(copy, onExit: [info.ptyId: { ended in exit.mutate { if $0 == nil { $0 = ended } } }])
         #expect(await new.info(info.ptyId)?.pid == info.pid)
-        let before = screenLines(try await new.attach(info.ptyId, subscriber: UUID()) { _ in })
+        let before = screenLines(try await new.attach(info.ptyId, subscriber: UUID()) { _ in true })
         #expect(before.contains("tick-3"), "the screen comes along")
         try await eventually("ticks after the handover") {
-            screenLines(try await new.attach(info.ptyId, subscriber: UUID()) { _ in }).contains("tick-\(before.count + 10)")
+            screenLines(try await new.attach(info.ptyId, subscriber: UUID()) { _ in true }).contains("tick-\(before.count + 10)")
         }
         try await new.signal(info.ptyId, SIGKILL)
         try await eventually("the exit, reaped by the new pool") { exit.value == PTYExit(code: nil, signal: SIGKILL) }

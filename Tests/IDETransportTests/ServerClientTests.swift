@@ -367,6 +367,50 @@ struct ServerClientTests {
         }
     }
 
+    @Test func broadcastsWaitForAClientThatIsBehindAndOnlyTheNewestOfEachStateGoesOut() async throws {
+        let handler = TestHandler()
+        let floods = floodRoute(handler)
+        let frames = 16, bytesPerFrame = 64 * 1024
+        try await withServer(handler, behindBytes: 128 * 1024) { server, path in
+            let raw = try RawClient(path: path)
+            _ = try await raw.handshake()
+            // The client stops reading while a flood is queued for it: past `behindBytes`, it is behind.
+            try raw.send(.request(Request(id: "1", method: Flood.name, params: [
+                "frames": .number(Double(frames)), "bytesPerFrame": .number(Double(bytesPerFrame)),
+            ])))
+            _ = try await within("the flood loop") {
+                for await duration in floods { return duration }
+                throw TimedOut(what: "the flood loop (stream ended)")
+            }
+            let older = SessionRuntime(sessionKey: "s1")
+            let newer = SessionRuntime(sessionKey: "s1", attention: [AttentionItem(id: "call-1", kind: .ask, toolName: "ask", since: testStartedAt)])
+            let notice = DaemonNotice(level: "info", message: "kept, in order", at: testStartedAt)
+            for push: ServerFrame in [
+                .sessions(SessionList(sessions: [manifestEntry("old")])), .runtime(older), .ptys(PTYList.Result(ptys: [])),
+                .notice(notice), .runtime(newer), .sessions(SessionList(sessions: [manifestEntry("new")])),
+            ] {
+                server.broadcast(push)
+            }
+
+            // Reading again: everything queued before, then the newest of each state in the order they changed, and every
+            // notice.
+            var outputs = 0
+            var broadcasts: [ServerFrame] = []
+            while broadcasts.count < 4, let frame = try await raw.next() {
+                switch frame {
+                case .ptyOutput: outputs += 1
+                case .response(let response): #expect(response.ok)
+                default: broadcasts.append(frame)
+                }
+            }
+            #expect(outputs == frames)
+            #expect(broadcasts == [
+                .ptys(PTYList.Result(ptys: [])), .notice(notice), .runtime(newer), .sessions(SessionList(sessions: [manifestEntry("new")])),
+            ])
+            #expect(await handler.closed.values.isEmpty, "a client that is behind is not cut off")
+        }
+    }
+
     // MARK: - Shutdown
 
     @Test func stoppingTheServerEndsPushesAndPendingCalls() async throws {
