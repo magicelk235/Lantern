@@ -184,8 +184,9 @@ import Testing
 
     @Test func aSubscriberThatFallsBehindIsDroppedAndTheTerminalAnswersQueriesForIt() async throws {
         try await withFixture { fixture in
-            // Prints and asks for the cursor position in one write, then blocks until the terminal replies.
-            let script = #"stty -icanon -echo; sleep 1; printf 'before\nab\033[6n'; IFS= read -r -d R reply; printf '\ngot:%s\n' "${reply#?}"; sleep 5"#
+            // Prints and asks for the cursor position in one write, then blocks until the terminal replies, and writes
+            // the reply to a file: a watcher attached to read the screen would be the one asked to answer instead.
+            let script = #"stty -icanon -echo; sleep 1; printf 'before\nab\033[6n'; IFS= read -r -d R reply; printf '%s' "${reply#?}" > got.txt; sleep 5"#
             let info = try await fixture.pool.open(PTYOpen.Params(cwd: fixture.directory, command: ["/bin/sh", "-c", script], cols: 80, rows: 24))
             // Behind from its first chunk on (a client that stopped reading).
             let offered = OSAllocatedUnfairLock(initialState: 0)
@@ -194,12 +195,8 @@ import Testing
                 return false
             }
             // Nothing waits for it: the query in the chunk it refused is answered by the headless terminal.
-            #expect(try await eventually {
-                let watcher = UUID()
-                let screen = try await fixture.pool.attach(info.ptyId, subscriber: watcher) { _ in true }
-                await fixture.pool.detach(info.ptyId, subscriber: watcher)
-                return Client.fromScreen(screen).lines().contains("got:[2;3")
-            })
+            let reply = fixture.directory + "/got.txt"
+            #expect(try await eventually { FileManager.default.contents(atPath: reply) == Data("[2;3".utf8) })
             #expect(offered.withLock { $0 } == 1, "a dropped subscriber is offered nothing more")
         }
     }
