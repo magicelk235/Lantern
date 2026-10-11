@@ -72,6 +72,10 @@ final class GitRepository {
         let id = UUID()
         let change: Change
         let hunks: [LineDiff.Hunk]
+        /// HEAD has a version of the file: false for one that is new.
+        let isInHead: Bool
+        /// The work tree has the file: false for one that was deleted.
+        let isInWorkTree: Bool
     }
 
     private(set) var workspace: String
@@ -597,26 +601,30 @@ final class GitRepository {
     // MARK: - Comparing
 
     /// Diffs HEAD's version of the file (`git show HEAD:<path>`, the empty text for a file HEAD lacks) against the
-    /// work tree, off the main thread, then shows it in a sheet.
+    /// work tree (the empty text for a file deleted there), off the main thread, then shows it in a sheet.
     func compare(_ change: Change) {
         Task { [workspace] in
-            let outcome = await Task.detached(priority: .userInitiated) { () -> Result<[LineDiff.Hunk], Error> in
+            let outcome = await Task.detached(priority: .userInitiated) { () -> Result<([LineDiff.Hunk], Bool), Error> in
                 do {
                     let base = change.isNewToHead
                         ? "" : String(decoding: try await Git.output(["show", "HEAD:\(change.originalPath ?? change.relativePath)"], in: workspace), as: UTF8.self)
                     let current: String
+                    var isInWorkTree = true
                     switch TextFile.read(change.path) {
                     case .text(let snapshot): current = snapshot.text
-                    case .missing: current = ""
+                    case .missing:
+                        current = ""
+                        isInWorkTree = false
                     case .unsupported(let reason): throw UnsupportedFile(reason: reason)
                     }
-                    return .success(LineDiff.hunks(from: base, to: current))
+                    return .success((LineDiff.hunks(from: base, to: current), isInWorkTree))
                 } catch {
                     return .failure(error)
                 }
             }.value
             switch outcome {
-            case .success(let hunks): comparison = Comparison(change: change, hunks: hunks)
+            case .success(let (hunks, isInWorkTree)):
+                comparison = Comparison(change: change, hunks: hunks, isInHead: !change.isNewToHead, isInWorkTree: isInWorkTree)
             case .failure(let error): lastError = Failure(title: "Could not compare “\(change.name)”", error: error)
             }
         }

@@ -328,8 +328,8 @@ struct SourceControlPanel: View {
         return (shown as NSString).deletingLastPathComponent
     }
 
-    /// Open, Reveal in Finder, Compare with HEAD…; Take Mine and Take Theirs for conflicts; Stage, Unstage, and Discard
-    /// Changes… for the selected rows that have work tree changes, conflicts aside.
+    /// Open, Reveal in Finder, Compare with HEAD… (not for a file HEAD lacks); Take Mine and Take Theirs for conflicts;
+    /// Stage, Unstage, and Discard Changes… for the selected rows that have work tree changes, conflicts aside.
     @ViewBuilder
     private func contextMenu(for items: Set<ChangeSelection>) -> some View {
         let changes = changes(for: items)
@@ -344,7 +344,7 @@ struct SourceControlPanel: View {
             Button("Reveal in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting(changes.map { URL(filePath: $0.path) })
             }
-            if changes.count == 1, let change = changes.first {
+            if changes.count == 1, let change = changes.first, !change.isNewToHead {
                 Button("Compare with HEAD…") { repository.compare(change) }
             }
             Divider()
@@ -540,7 +540,8 @@ private final class ClickThroughView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// HEAD's version of a changed file against the work tree, as a unified line diff.
+/// HEAD's version of a changed file against the work tree, as a unified line diff; a file one side lacks is said to
+/// be new or deleted, with the one legend its lines can have.
 private struct ChangeDiffSheet: View {
     let app: AppState
     let repository: GitRepository
@@ -549,8 +550,10 @@ private struct ChangeDiffSheet: View {
 
     var body: some View {
         DiffSheet(
-            title: "“\(comparison.change.name)” in HEAD and in the working tree", removedLegend: "− only in HEAD",
-            insertedLegend: "+ only in the working tree", hunks: comparison.hunks
+            title: title,
+            removedLegend: comparison.isInHead ? (comparison.isInWorkTree ? "− only in HEAD" : "− in HEAD") : nil,
+            insertedLegend: comparison.isInWorkTree ? (comparison.isInHead ? "+ only in the working tree" : "+ in the working tree") : nil,
+            hunks: comparison.hunks
         ) {
             Button("Open in Editor") {
                 app.openEditor(comparison.change.path, in: repository.workspace)
@@ -560,6 +563,16 @@ private struct ChangeDiffSheet: View {
             Spacer()
             Button("Close") { dismiss() }
                 .keyboardShortcut(.defaultAction)
+        }
+    }
+
+    private var title: String {
+        let name = comparison.change.name
+        switch (comparison.isInHead, comparison.isInWorkTree) {
+        case (true, true): return "“\(name)” in HEAD and in the working tree"
+        case (false, true): return "“\(name)” is new in the working tree"
+        case (true, false): return "“\(name)” was deleted from the working tree"
+        case (false, false): return "“\(name)” is in neither HEAD nor the working tree"
         }
     }
 }

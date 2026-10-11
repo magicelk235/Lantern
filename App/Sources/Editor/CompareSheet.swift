@@ -28,13 +28,14 @@ struct CompareSheet: View {
     }
 }
 
-/// A sheet that shows one unified line diff: a title, two legends, the hunks (or "No differences"), and the actions
+/// A sheet that shows one unified line diff: a title, its legends, the hunks (or "No differences"), and the actions
 /// under a hairline, Close last. `CompareSheet` and `ChangeDiffSheet` are made of it. Every row is as wide as the
 /// view, or as the widest line shown so far, so the red and green washes span it.
 struct DiffSheet<Actions: View>: View {
     let title: String
-    let removedLegend: String
-    let insertedLegend: String
+    /// nil when the diff can have no lines of that kind (a file one side lacks).
+    let removedLegend: String?
+    let insertedLegend: String?
     let hunks: [LineDiff.Hunk]
     @ViewBuilder let actions: Actions
     @State private var visibleWidth = 0.0
@@ -49,8 +50,8 @@ struct DiffSheet<Actions: View>: View {
                 Text(title)
                     .font(.headline)
                 HStack(spacing: 14) {
-                    Legend(color: .red, text: removedLegend)
-                    Legend(color: .green, text: insertedLegend)
+                    if let removedLegend { Legend(color: .red, text: removedLegend) }
+                    if let insertedLegend { Legend(color: .green, text: insertedLegend) }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
