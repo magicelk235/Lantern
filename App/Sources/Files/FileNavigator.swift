@@ -40,9 +40,9 @@ enum SidebarPane: String, CaseIterable {
     }
 }
 
-/// The sidebar pane the activity bar picked: the project in focus (its title is the menu that switches projects and
-/// adds one) with its files, its git changes or what omp runs in it, or the list of projects. The window of no
-/// project shows nothing here but the list of projects: its detail area offers Add Project.
+/// The sidebar pane the activity bar picked: the project in focus with its files, its git changes or what omp runs in
+/// it, or the list of projects. The window's title names the project. The window of no project shows nothing here but
+/// the list of projects: its detail area offers Add Project.
 struct SidebarPaneView: View {
     @Bindable var app: AppState
     /// The window's project; empty for the window of no project.
@@ -53,23 +53,17 @@ struct SidebarPaneView: View {
             switch app.pane {
             case .files:
                 if !project.isEmpty {
-                    ProjectHeader(app: app, project: project)
-                    Divider()
                     FilesOutline(app: app, project: project)
                         .id(project)
                 }
             case .changes:
                 if !project.isEmpty {
-                    ProjectHeader(app: app, project: project)
-                    Divider()
                     SourceControlPanel(app: app, repository: app.editors.repositories.repository(for: project))
                         .id(project)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             case .agents:
                 if !project.isEmpty {
-                    ProjectHeader(app: app, project: project)
-                    Divider()
                     AgentsPane(app: app, project: project)
                         .id(project)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -80,59 +74,6 @@ struct SidebarPaneView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Chrome.surface)
-    }
-}
-
-/// The project's name as the switcher (the projects, Add Project, then what this project offers), and + with what
-/// can be added to the project: a file or folder at its top level, a session or a terminal.
-struct ProjectHeader: View {
-    let app: AppState
-    let project: String
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Menu {
-                ForEach(app.projects, id: \.self) { candidate in
-                    Toggle(AppState.projectName(candidate), isOn: Binding(
-                        get: { candidate == project }, set: { if $0 { app.showProject(candidate) } }))
-                }
-                Divider()
-                Button("Add Project…") { app.addProject() }
-                Divider()
-                ProjectMenu(app: app, project: project)
-            } label: {
-                HStack(spacing: 4) {
-                    Text(AppState.projectName(project))
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    MenuChevron()
-                }
-            }
-            .paneHeaderMenu()
-            .help(project)
-            Spacer(minLength: 4)
-            Menu {
-                Button("New File…") { app.newFile(in: project, project: project) }
-                Button("New Folder") { app.filesOutlines.newFolder(in: project, of: project, app: app) }
-                Divider()
-                Button("New Session") { app.newSession(in: project) }
-                    .disabled(!app.connection.isConnected)
-                Button("New Terminal") { app.newTerminal(in: project) }
-                    .disabled(!app.connection.isConnected)
-            } label: {
-                Image(systemName: "plus")
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .foregroundStyle(.secondary)
-            .help("New File, Folder, Session or Terminal in \(AppState.projectName(project))")
-            .accessibilityLabel("New File, Folder, Session or Terminal")
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 6)
     }
 }
 
@@ -148,7 +89,7 @@ struct MenuChevron: View {
 }
 
 extension View {
-    /// A pane header's title menu (the project switcher, the branch menu): its label is drawn as given, so a long title
+    /// A pane header's title menu (the branch menu): its label is drawn as given, so a long title
     /// truncates in the middle (a borderless pop-up button cuts its own title at the end), and it is never wider than
     /// its title nor than the room the header leaves it.
     func paneHeaderMenu() -> some View {

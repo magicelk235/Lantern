@@ -19,8 +19,8 @@ struct LanternApp: App {
             app.launchProject ?? ""
         }
         .defaultSize(width: 1100, height: 760)
-        // The strip and the pane name what is on screen and hold the actions; the titlebar holds the window tabs.
-        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
+        // The titlebar names the project and holds the window tabs; the strip and the pane hold the actions.
+        .windowToolbarStyle(.unifiedCompact)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Session") { if let project = app.currentProject { app.newSession(in: project) } else { app.newSession() } }

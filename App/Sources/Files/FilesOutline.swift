@@ -50,12 +50,6 @@ final class FilesOutlines {
     var cut: Cut?
     private var outlines: [String: FilesOutlineController] = [:]
 
-    /// New Folder from the pane header's + menu: Files shows, and the folder's name edits in place once its row does.
-    func newFolder(in folder: String, of project: String, app: AppState) {
-        app.showPane(.files)
-        (outlines[project] ?? outline(of: project, app: app)).newFolder(in: folder)
-    }
-
     /// `project`'s outline. One a window of the project still shows (a second window SwiftUI opens for the project, on
     /// its way to close) is left there, and this window gets an outline of its own.
     func outline(of project: String, app: AppState) -> FilesOutlineController {
