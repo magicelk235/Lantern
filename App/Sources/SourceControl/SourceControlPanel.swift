@@ -577,9 +577,10 @@ private struct ChangeDiffSheet: View {
     }
 }
 
-/// New Branch…: a name, made from HEAD and checked out. What git would refuse in the name (`GitBranchName`) shows under
-/// the field in Finder's words as it is typed, and Create stays off until the name is fine; a name git refuses anyway
-/// keeps the sheet up with the reason.
+/// New Branch…: a name, made from HEAD and checked out. What git would refuse in the name (`GitBranchName`) takes the
+/// caption's place in Finder's words as it is typed, and Create stays off until the name is fine; a name git refuses
+/// anyway keeps the sheet up with the reason. The caption keeps two lines whatever it says, so the sheet never has to
+/// grow to show a reason.
 private struct NewBranchSheet: View {
     let repository: GitRepository
     @State private var name = ""
@@ -598,13 +599,15 @@ private struct NewBranchSheet: View {
                     Text(reason)
                         .font(.caption)
                         .foregroundStyle(.red)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(2, reservesSpace: true)
+                        .help(reason)
+                } else {
+                    Text("Made from \(repository.branch ?? "the current commit") and checked out.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2, reservesSpace: true)
                 }
             }
-            Text("Made from \(repository.branch ?? "the current commit") and checked out.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
