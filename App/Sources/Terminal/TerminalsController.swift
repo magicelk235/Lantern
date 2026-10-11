@@ -15,12 +15,12 @@ enum TerminalSettings {
     static let terminalOptionAsMetaKey = "terminalOptionAsMeta"
 
     static var fontSize: Double {
-        let size = UserDefaults.standard.double(forKey: fontSizeKey)
+        let size = UserDefaults.lantern.double(forKey: fontSizeKey)
         return size == 0 ? defaultFontSize : min(max(size, fontSizes.lowerBound), fontSizes.upperBound)
     }
 
-    static var sessionOptionAsMeta: Bool { UserDefaults.standard.object(forKey: sessionOptionAsMetaKey) as? Bool ?? true }
-    static var terminalOptionAsMeta: Bool { UserDefaults.standard.object(forKey: terminalOptionAsMetaKey) as? Bool ?? true }
+    static var sessionOptionAsMeta: Bool { UserDefaults.lantern.object(forKey: sessionOptionAsMetaKey) as? Bool ?? true }
+    static var terminalOptionAsMeta: Bool { UserDefaults.lantern.object(forKey: terminalOptionAsMetaKey) as? Bool ?? true }
 
     static func font(size: Double) -> NSFont {
         .monospacedSystemFont(ofSize: size, weight: .regular)

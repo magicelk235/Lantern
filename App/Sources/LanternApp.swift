@@ -237,6 +237,18 @@ final class FocusKeeper {
     }
 }
 
+extension UserDefaults {
+    /// Lantern's settings. A copy started beside the installed app (`OMPD_HOME` set: tests, a second daemon) keeps
+    /// its own, so trying one out never changes the installed app's settings. `UserDefaults` is thread-safe; the SDK
+    /// just doesn't mark it `Sendable`.
+    nonisolated(unsafe) static let lantern: UserDefaults = {
+        guard let home = ProcessInfo.processInfo.environment[AppSupportPaths.homeEnvironmentKey], !home.isEmpty else {
+            return .standard
+        }
+        return UserDefaults(suiteName: "com.magicelklabs.lantern.side-by-side") ?? .standard
+    }()
+}
+
 enum AppSettings {
     /// `ApprovalMode.rawValue`; empty or absent = use the omp configuration.
     static let defaultApprovalModeKey = "defaultApprovalMode"
@@ -244,7 +256,7 @@ enum AppSettings {
     static let notifyWhenAgentFinishesKey = "notifyWhenAgentFinishes"
 
     static var notifiesWhenAgentFinishes: Bool {
-        UserDefaults.standard.object(forKey: notifyWhenAgentFinishesKey) as? Bool ?? true
+        UserDefaults.lantern.object(forKey: notifyWhenAgentFinishesKey) as? Bool ?? true
     }
 }
 

@@ -9,7 +9,7 @@ enum EditorSettings {
     static let fontSizes = 9.0 ... 24.0
 
     static var fontSize: Double {
-        let size = UserDefaults.standard.double(forKey: fontSizeKey)
+        let size = UserDefaults.lantern.double(forKey: fontSizeKey)
         return size == 0 ? defaultFontSize : min(max(size, fontSizes.lowerBound), fontSizes.upperBound)
     }
 }

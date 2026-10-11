@@ -87,7 +87,7 @@ final class FinishedTurns {
     private static let defaultsKey = "unseenFinishedSessions"
 
     init() {
-        unseen = Set(UserDefaults.standard.stringArray(forKey: Self.defaultsKey) ?? [])
+        unseen = Set(UserDefaults.lantern.stringArray(forKey: Self.defaultsKey) ?? [])
     }
 
     /// Follows the sessions' states while ompd is in reach: a session that worked and is idle now finished its turn,
@@ -132,7 +132,7 @@ final class FinishedTurns {
     private func update(_ unseen: Set<SessionKey>) {
         guard unseen != self.unseen else { return }
         self.unseen = unseen
-        UserDefaults.standard.set(unseen.sorted(), forKey: Self.defaultsKey)
+        UserDefaults.lantern.set(unseen.sorted(), forKey: Self.defaultsKey)
     }
 }
 

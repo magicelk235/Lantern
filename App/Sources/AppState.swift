@@ -53,7 +53,7 @@ final class AppState {
     static let maximumSidebarWidth = 520.0
     /// The pane the activity bar shows: Files, Changes or Projects. Kept in the defaults.
     var pane: SidebarPane {
-        didSet { if pane != oldValue { UserDefaults.standard.set(pane.rawValue, forKey: SidebarPane.defaultsKey) } }
+        didSet { if pane != oldValue { UserDefaults.lantern.set(pane.rawValue, forKey: SidebarPane.defaultsKey) } }
     }
     /// The project of the key window.
     private var keyProject: String?
@@ -177,7 +177,7 @@ final class AppState {
         outdatedDaemon = OutdatedDaemon(connection: connection, agent: agent)
         sidebarVisible = restored?.sidebarVisible ?? true
         storedSidebarWidth = restored?.sidebarWidth ?? 270
-        pane = UserDefaults.standard.string(forKey: SidebarPane.defaultsKey).flatMap(SidebarPane.init(rawValue:)) ?? .files
+        pane = UserDefaults.lantern.string(forKey: SidebarPane.defaultsKey).flatMap(SidebarPane.init(rawValue:)) ?? .files
         var restoredProjects = Set<String>()
         addedProjects = (restored?.projects ?? []).map(Self.normalized).filter { restoredProjects.insert($0).inserted }
         // Regime A: each restored session tab attaches to omp's TUI once connected; nothing is sent to omp.
@@ -433,7 +433,7 @@ final class AppState {
     func newSession(in workspace: String) {
         let workspace = Self.normalized(workspace)
         addProject(workspace)
-        let mode = UserDefaults.standard.string(forKey: AppSettings.defaultApprovalModeKey).flatMap(ApprovalMode.init(rawValue:))
+        let mode = UserDefaults.lantern.string(forKey: AppSettings.defaultApprovalModeKey).flatMap(ApprovalMode.init(rawValue:))
         let size = newTabSize()
         Task {
             do {
@@ -1009,7 +1009,7 @@ final class AppState {
     /// The first time a project's window closes while omp runs in its sessions or a terminal of it runs, the other
     /// windows say they keep running (ompd pauses the agents once no window is left; terminals go on).
     private func noteClosedProject(_ project: String) {
-        guard !project.isEmpty, !UserDefaults.standard.bool(forKey: Self.closedProjectNoticeSeenKey) else { return }
+        guard !project.isEmpty, !UserDefaults.lantern.bool(forKey: Self.closedProjectNoticeSeenKey) else { return }
         let sessions = connection.sessions.filter { $0.workspace == project && $0.runsOmp && !$0.adopted }.count
         let terminals = (strip(of: project)?.tabs.compactMap(\.ptyId) ?? []).filter { connection.terminals.info($0)?.running == true }.count
         guard sessions + terminals > 0 else { return }
@@ -1019,7 +1019,7 @@ final class AppState {
     /// `closedProjectNotice` goes away; once the user acted on it (`seen`), it never shows again.
     func dismissClosedProjectNotice(seen: Bool) {
         closedProjectNotice = nil
-        if seen { UserDefaults.standard.set(true, forKey: Self.closedProjectNoticeSeenKey) }
+        if seen { UserDefaults.lantern.set(true, forKey: Self.closedProjectNoticeSeenKey) }
     }
 
     private static let closedProjectNoticeSeenKey = "closedProjectNoticeSeen"

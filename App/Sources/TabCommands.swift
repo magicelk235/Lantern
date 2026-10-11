@@ -89,9 +89,9 @@ struct TextSize {
     /// One point per step, as Terminal does; Actual Size goes back to the default.
     func apply(_ zoom: Zoom) {
         switch zoom {
-        case .bigger: UserDefaults.standard.set(min(size + 1, range.upperBound), forKey: key)
-        case .smaller: UserDefaults.standard.set(max(size - 1, range.lowerBound), forKey: key)
-        case .actualSize: UserDefaults.standard.removeObject(forKey: key)
+        case .bigger: UserDefaults.lantern.set(min(size + 1, range.upperBound), forKey: key)
+        case .smaller: UserDefaults.lantern.set(max(size - 1, range.lowerBound), forKey: key)
+        case .actualSize: UserDefaults.lantern.removeObject(forKey: key)
         }
     }
 }
@@ -200,8 +200,8 @@ extension AppState {
 /// first where a terminal or editor would).
 struct TabCommands: Commands {
     let app: AppState
-    @AppStorage(TerminalSettings.fontSizeKey) private var terminalFontSize = TerminalSettings.defaultFontSize
-    @AppStorage(EditorSettings.fontSizeKey) private var editorFontSize = EditorSettings.defaultFontSize
+    @AppStorage(TerminalSettings.fontSizeKey, store: .lantern) private var terminalFontSize = TerminalSettings.defaultFontSize
+    @AppStorage(EditorSettings.fontSizeKey, store: .lantern) private var editorFontSize = EditorSettings.defaultFontSize
 
     /// The tabs of the key window, when it is a project window.
     private var tabs: [TabKind] {

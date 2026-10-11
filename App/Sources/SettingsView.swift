@@ -10,13 +10,13 @@ enum SettingsTab: String {
 
     /// The pane Settings shows next (and now, if open).
     func select() {
-        UserDefaults.standard.set(rawValue, forKey: Self.defaultsKey)
+        UserDefaults.lantern.set(rawValue, forKey: Self.defaultsKey)
     }
 }
 
 struct SettingsView: View {
     let app: AppState
-    @AppStorage(SettingsTab.defaultsKey) private var tab = SettingsTab.general
+    @AppStorage(SettingsTab.defaultsKey, store: .lantern) private var tab = SettingsTab.general
 
     /// The window takes the height of the pane showing, as macOS settings windows do (`settingsPane()`).
     var body: some View {
@@ -48,8 +48,8 @@ extension View {
 
 private struct GeneralSettings: View {
     let connection: DaemonConnection
-    @AppStorage(AppSettings.defaultApprovalModeKey) private var approvalMode = ""
-    @AppStorage(AppSettings.notifyWhenAgentFinishesKey) private var notifyWhenAgentFinishes = true
+    @AppStorage(AppSettings.defaultApprovalModeKey, store: .lantern) private var approvalMode = ""
+    @AppStorage(AppSettings.notifyWhenAgentFinishesKey, store: .lantern) private var notifyWhenAgentFinishes = true
 
     var body: some View {
         Form {
@@ -170,9 +170,9 @@ private extension ContinuePolicy {
 }
 
 private struct TerminalSettingsPane: View {
-    @AppStorage(TerminalSettings.fontSizeKey) private var fontSize = TerminalSettings.defaultFontSize
-    @AppStorage(TerminalSettings.sessionOptionAsMetaKey) private var sessionOptionAsMeta = true
-    @AppStorage(TerminalSettings.terminalOptionAsMetaKey) private var terminalOptionAsMeta = true
+    @AppStorage(TerminalSettings.fontSizeKey, store: .lantern) private var fontSize = TerminalSettings.defaultFontSize
+    @AppStorage(TerminalSettings.sessionOptionAsMetaKey, store: .lantern) private var sessionOptionAsMeta = true
+    @AppStorage(TerminalSettings.terminalOptionAsMetaKey, store: .lantern) private var terminalOptionAsMeta = true
 
     var body: some View {
         Form {

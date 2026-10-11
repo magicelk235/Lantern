@@ -46,7 +46,7 @@ final class CrashNotices {
     /// The newest report seen: the notice goes until a newer one comes.
     func dismiss() {
         guard let newest = unseen.first else { return }
-        UserDefaults.standard.set(newest.date, forKey: lastSeenKey)
+        UserDefaults.lantern.set(newest.date, forKey: lastSeenKey)
         unseen = []
     }
 
@@ -58,8 +58,8 @@ final class CrashNotices {
     }
 
     private func look() {
-        guard let lastSeen = UserDefaults.standard.object(forKey: lastSeenKey) as? Date else {
-            UserDefaults.standard.set(Date(), forKey: lastSeenKey)
+        guard let lastSeen = UserDefaults.lantern.object(forKey: lastSeenKey) as? Date else {
+            UserDefaults.lantern.set(Date(), forKey: lastSeenKey)
             return
         }
         let found = CrashReport.newer(than: lastSeen, in: directory, of: owner)
