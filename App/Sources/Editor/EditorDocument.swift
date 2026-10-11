@@ -110,6 +110,8 @@ final class EditorDocument {
     @ObservationIgnored private var resizeObserver: (any NSObjectProtocol)?
     /// Until then, the caret is kept in sight when the visible area changes size: the find bar just opened or grew.
     @ObservationIgnored private var caretInSightUntil: ContinuousClock.Instant?
+    /// From macOS 26, how far the find bar floating over the text reaches down: the text starts below it.
+    @ObservationIgnored private var findBarInset: CGFloat = 0
     /// Marks the gutter with what differs from HEAD; made with the controller and dropped with it.
     @ObservationIgnored private var gitGutter: GitGutterView?
     /// Where the view scrolls when it first appears (restored from the previous run).
@@ -487,7 +489,33 @@ final class EditorDocument {
     private func configuration(for appearance: NSAppearance) -> SourceEditorConfiguration {
         var configuration = EditorStyle.configuration(indent: indent, appearance: appearance)
         configuration.peripherals.codeSuggestionTriggerCharacters = languageDocument?.completionTriggers ?? []
+        configuration.layout.contentInsets?.top = findBarInset
         return configuration
+    }
+
+    /// The find bar floating over the text opened, closed or changed height (macOS 26): the text starts `inset` down, so
+    /// it shows below the bar and scrolls under it, and what is found is brought into sight below it. Text at its top
+    /// stays at its top, and a caret in sight stays in sight.
+    func setFindBarInset(_ inset: CGFloat) {
+        guard inset != findBarInset else { return }
+        let caretRange = controller?.textView.selectionManager.textSelections.first?.range
+        let caretInSight = caretRange.flatMap(sight(of:)).map {
+            $0.target.minY >= $0.visible.minY && $0.target.maxY <= $0.visible.maxY
+        } ?? false
+        findBarInset = inset
+        guard let controller else { return }
+        guard controller.isViewLoaded, let scrollView = controller.scrollView else {
+            configurationIsStale = true
+            return
+        }
+        let clipView = scrollView.contentView
+        let wasAtTop = clipView.bounds.minY <= -scrollView.contentInsets.top + 0.5
+        controller.configuration.layout.contentInsets?.top = inset
+        if wasAtTop {
+            clipView.scroll(to: NSPoint(x: clipView.bounds.minX, y: -scrollView.contentInsets.top))
+            scrollView.reflectScrolledClipView(clipView)
+        }
+        if caretInSight, let caretRange { scrollIntoView(caretRange, centered: false) }
     }
 
     /// Selects `target` (a definition jumped to) and scrolls it into the middle of the view if it is out of sight; when
@@ -769,10 +797,12 @@ final class EditorDocument {
         previous.embed(controller.view)
     }
 
-    /// Remembers the selection and scroll position (debounced by the store).
+    /// Remembers the selection and scroll position (debounced by the store). The position is the text's top below a
+    /// floating find bar, as the view opens without it.
     private func saveUI() {
         guard let controller, controller.isViewLoaded else { return }
-        let origin = pendingScroll ?? controller.scrollView.contentView.bounds.origin
+        var origin = pendingScroll ?? controller.scrollView.contentView.bounds.origin
+        if pendingScroll == nil { origin.y += findBarInset }
         let selections = controller.textView.selectionManager.textSelections.map {
             EditorUIState.Selection(location: $0.range.location, length: $0.range.length)
         }

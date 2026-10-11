@@ -5,9 +5,12 @@ import SwiftUI
 /// and which one is selected, the options, previous and next, Done; in Replace, a second row with the replacement,
 /// Replace and Replace All. Return finds the next match, ⇧Return the previous one, Esc closes the bar. As the bar
 /// narrows only the fields give way, down to `minimumFieldWidth`: Done stays at the trailing edge, and in Replace the
-/// rows line up, field under field and the buttons where the match count starts.
+/// rows line up, field under field and the buttons where the match count starts. From macOS 26 it floats over the
+/// text on glass (`floats`); before, it is a bar on the window's surface.
 struct FindBar: View {
     @Bindable var find: EditorFind
+    /// On the glass panel that floats over the text: no surface or rule of its own.
+    var floats = false
 
     /// Narrow enough for the bar to fit in the narrowest editor (`ProjectWindow.minimumContentWidth`).
     private static let minimumFieldWidth = 40.0
@@ -48,10 +51,12 @@ struct FindBar: View {
         }
         .controlSize(.small)
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.vertical, floats ? 8 : 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Chrome.surface)
-        .overlay(alignment: .bottom) { Divider() }
+        .background(floats ? .clear : Chrome.surface)
+        .overlay(alignment: .bottom) {
+            if !floats { Divider() }
+        }
         .onExitCommand { find.hide() }
     }
 

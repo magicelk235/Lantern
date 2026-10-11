@@ -18,12 +18,25 @@ struct EditorView: View {
             switch document.content {
             case .text:
                 if let controller = document.controller {
-                    VStack(spacing: 0) {
-                        if document.find.isShown {
-                            FindBar(find: document.find)
-                        }
+                    if #available(macOS 26, *) {
                         SourceEditorHost(document: document, controller: controller)
                             .id(ObjectIdentifier(controller))
+                            .overlay(alignment: .topTrailing) {
+                                if document.find.isShown {
+                                    FloatingFindBar(document: document)
+                                }
+                            }
+                            .onChange(of: document.find.isShown) { _, shown in
+                                if !shown { document.setFindBarInset(0) }
+                            }
+                    } else {
+                        VStack(spacing: 0) {
+                            if document.find.isShown {
+                                FindBar(find: document.find)
+                            }
+                            SourceEditorHost(document: document, controller: controller)
+                                .id(ObjectIdentifier(controller))
+                        }
                     }
                 }
             case .missing:
@@ -47,6 +60,28 @@ struct EditorView: View {
         .sheet(item: $document.comparison) { comparison in
             CompareSheet(document: document, comparison: comparison)
         }
+    }
+}
+
+/// From macOS 26 the find bar is a panel of Liquid Glass floating over the text's top trailing corner, the text
+/// scrolling under it; the text starts below it (`EditorDocument.setFindBarInset`).
+@available(macOS 26, *)
+private struct FloatingFindBar: View {
+    let document: EditorDocument
+
+    /// Room around the panel, from the editor's edges and from the text below it.
+    private static let margin: CGFloat = 8
+    /// Wide enough for the field to take a long query; narrower editors give it their width less the margins.
+    private static let maximumWidth: CGFloat = 560
+
+    var body: some View {
+        FindBar(find: document.find, floats: true)
+            .glassEffect(.regular, in: .rect(cornerRadius: 12))
+            .frame(maxWidth: Self.maximumWidth)
+            .padding(Self.margin)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                document.setFindBarInset(height)
+            }
     }
 }
 

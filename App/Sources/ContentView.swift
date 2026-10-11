@@ -283,12 +283,10 @@ private struct ActivityButton: View {
                 Text(pane.title)
                     .font(.system(size: 10, weight: .medium))
                     .lineLimit(1)
+                    .foregroundStyle(titleStyle)
             }
             .frame(width: 54, height: 46)
-            // The current pane is told by its accent alone: a fill under its name would take its contrast below 4.5:1.
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(hovering && !isCurrent ? Color.primary.opacity(0.06) : .clear))
+            .modifier(ActivitySurface(isCurrent: isCurrent, hovering: hovering))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -300,6 +298,13 @@ private struct ActivityButton: View {
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }
 
+    /// On the glass tile (macOS 26) the current pane's name is in the primary color: the tile tells it apart, and the
+    /// accent there falls below 4.5:1. Its symbol stays in the accent.
+    private var titleStyle: AnyShapeStyle {
+        if #available(macOS 26, *), isCurrent { return AnyShapeStyle(Color.primary) }
+        return isCurrent ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.chromeSecondary)
+    }
+
     /// The badge in words, VoiceOver's value for the item: "Changes, 3 changed files", "Agents, 2 waiting for you".
     private var badgeWords: String {
         guard badge > 0 else { return "" }
@@ -308,6 +313,24 @@ private struct ActivityButton: View {
         case .agents: return "\(badge) waiting for you"
         case .projects: return "\(badge) waiting for you in other projects"
         case .files: return ""
+        }
+    }
+}
+
+/// From macOS 26 the current pane sits on a tile of Liquid Glass, as the selected tab does. Before that it is told by
+/// its accent alone: a fill under its name would take its contrast below 4.5:1. A hovered pane gets a faint tile.
+private struct ActivitySurface: ViewModifier {
+    let isCurrent: Bool
+    let hovering: Bool
+
+    private static let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+
+    func body(content: Content) -> some View {
+        let hover = content.background(Self.shape.fill(hovering && !isCurrent ? Color.primary.opacity(0.06) : .clear))
+        if #available(macOS 26, *) {
+            hover.glassEffect(isCurrent ? .regular : .identity, in: Self.shape)
+        } else {
+            hover
         }
     }
 }

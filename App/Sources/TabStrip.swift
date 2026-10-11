@@ -3,18 +3,23 @@ import IDEModel
 import IDEState
 import SwiftUI
 
-/// The tabs of the workspace on screen, above the detail area: flat, hairline-separated, the selected one attached
-/// to the content by sharing its canvas. A press shows a tab at once and a drag moves it along the strip, the others
-/// making room (held at a faded edge, the row scrolls); a middle click closes it as its × does. Closing one ends its omp
-/// session or terminal, and closing an editor with unsaved edits asks first. The strip's empty end moves the window,
-/// and a double click there opens a terminal. Files dropped on the strip (from Files, from Finder) open in tabs.
+/// The tabs of the workspace on screen, above the detail area. From macOS 26 the selected tab is a capsule of Liquid
+/// Glass on the strip and short hairlines part the others; before that the strip is flat, hairline-separated, the
+/// selected tab attached to the content by sharing its canvas. A press shows a tab at once and a drag moves it along
+/// the strip, the others making room (held at a faded edge, the row scrolls); a middle click closes it as its × does.
+/// Closing one ends its omp session or terminal, and closing an editor with unsaved edits asks first. The strip's
+/// empty end moves the window, and a double click there opens a terminal. Files dropped on the strip (from Files, from
+/// Finder) open in tabs.
 struct TabStrip: View {
     let app: AppState
     let strip: TabLayout.Strip
     /// The pointer over the tabs and the tab being dragged, shared with the scrolling row.
     @State private var interaction = TabInteraction()
 
-    private static let newTabButtonWidth: CGFloat = 28
+    /// The + button's slot; from macOS 26 it is a glass circle with room around it.
+    fileprivate static var newTabButtonWidth: CGFloat {
+        if #available(macOS 26, *) { 32 } else { 28 }
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -29,7 +34,9 @@ struct TabStrip: View {
                         select: { app.selectTab($0) }, describe: { [strip] tab in TabRow.accessibilityLabel(of: tab, in: strip, app: app) },
                         openFiles: openDropped
                     ) {
+                        // Its tabs from the row's start; while it scrolls, the room after the last one stays empty.
                         TabRow(app: app, strip: strip, titles: app.tabTitles(in: strip), width: metrics.width, interaction: interaction)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(width: metrics.viewport)
                     newTabMenu
@@ -52,22 +59,30 @@ struct TabStrip: View {
         return !files.isEmpty
     }
 
+    /// From macOS 26 a circle of Liquid Glass as tall as the selected tab's capsule, as the window's tab bar has; before
+    /// that a plain symbol in the strip's secondary color. The glass goes around the menu: its label draws flat.
+    @ViewBuilder
     private var newTabMenu: some View {
-        Menu {
+        let menu = Menu {
             Button("New Session") { app.newSession(in: strip.workspace) }
             Button("New Terminal") { app.newTerminal(in: strip.workspace) }
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 11, weight: .medium))
-                .frame(width: Self.newTabButtonWidth, height: Chrome.tabStripHeight)
-                .contentShape(Rectangle())
+                .modifier(NewTabButtonLabel())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .foregroundStyle(.secondary)
         .disabled(!app.connection.isConnected)
         .help("New session or terminal in \(AppState.projectName(strip.workspace))")
+        if #available(macOS 26, *) {
+            menu
+                .foregroundStyle(.primary)
+                .glassEffect(.regular.interactive(), in: Circle())
+                .frame(width: Self.newTabButtonWidth, height: Chrome.tabStripHeight)
+        } else {
+            menu.foregroundStyle(.secondary)
+        }
     }
 
     /// A double click on the strip's empty end: a terminal in the project, as in Terminal's tab bar.
@@ -77,18 +92,46 @@ struct TabStrip: View {
     }
 }
 
+/// The + button's symbol and the area a click on it takes: from macOS 26 the glass circle, as tall as the selected
+/// tab's capsule (3 points in from the strip's edges); before that the whole slot.
+private struct NewTabButtonLabel: ViewModifier {
+    private static let diameter: CGFloat = Chrome.tabStripHeight - 6
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26, *) {
+            content
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: Self.diameter, height: Self.diameter)
+                .contentShape(Circle())
+        } else {
+            content
+                .font(.system(size: 11, weight: .medium))
+                .frame(width: TabStrip.newTabButtonWidth, height: Chrome.tabStripHeight)
+                .contentShape(Rectangle())
+        }
+    }
+}
+
 /// How wide the tabs are and how much of their row shows. They share the strip up to their maximum width; once they
 /// would go below their minimum, as many whole tabs as fit show at once and the row scrolls, coming to rest on a tab's
-/// edge, so no tab at rest is cut in two (Safari's tab bar).
+/// edge, so no tab at rest is cut in two (Safari's tab bar). Past the last whole tab the start of the next one peeks
+/// in under the faded edge, its mark and the beginning of its title, so that more tabs are seen to go on whichever
+/// tab is at the edge.
 struct TabMetrics: Equatable {
     /// Widest a tab gets; with many tabs they shrink evenly to `minimumWidth`, then the strip scrolls sideways.
     static let maximumWidth: CGFloat = 220
     /// Narrowest a tab gets: its icon, close button and a readable part of its title.
     static let minimumWidth: CGFloat = 120
+    /// How much of the next tab shows past the last whole one at most: its leading padding, its mark and the start of
+    /// its title.
+    static let peekWidth: CGFloat = 44
 
     let width: CGFloat
     /// The width of the row's visible part.
     let viewport: CGFloat
+    /// How much of the next tab shows past the last whole one while the row scrolls; the row has as much room after
+    /// its last tab, so that at its end too the first tab in view rests on its edge. Zero while all tabs show.
+    let peek: CGFloat
     let scrolls: Bool
 
     init(available: CGFloat, count: Int) {
@@ -97,10 +140,14 @@ struct TabMetrics: Equatable {
         if shared >= Self.minimumWidth {
             width = min(Self.maximumWidth, shared)
             viewport = width * count
+            peek = 0
         } else {
-            let shown = max(1, (available / Self.minimumWidth).rounded(.down))
-            width = max(1, (available / shown).rounded(.down))
-            viewport = width * shown
+            // A narrow strip keeps most of its width for the whole tab.
+            let peek = min(Self.peekWidth, (available / 4).rounded(.down))
+            let shown = max(1, ((available - peek) / Self.minimumWidth).rounded(.down))
+            width = max(1, ((available - peek) / shown).rounded(.down))
+            viewport = width * shown + peek
+            self.peek = peek
         }
         scrolls = width * count > viewport + 0.5
     }
@@ -244,11 +291,13 @@ private struct TabRow: View {
                 let hosted = tab.ptyId.flatMap(app.adoptedSession(on:))
                 let indicator = Self.indicator(of: tab, app: app)
                 let title = titles[tab] ?? TabNumbers.Number(title: "", number: 1)
+                let next = strip.tabs.indices.contains(index + 1) ? strip.tabs[index + 1] : nil
                 TabItem(
                     tab: tab, title: title, help: help(for: tab, title: title.numberedTitle, indicator: indicator), indicator: indicator,
                     terminal: hosted == nil ? tab.ptyId.map { terminalMark($0) } : nil,
                     document: tab.editorPath.flatMap(app.editors.document(for:)),
-                    isSelected: strip.preferredTab == tab, isHovered: interaction.hovered == tab, width: width,
+                    isSelected: strip.preferredTab == tab, isHovered: interaction.hovered == tab,
+                    nextIsHighlighted: next.map { $0 == strip.preferredTab || $0 == interaction.hovered } ?? false, width: width,
                     select: { app.selectTab(tab) }, close: { app.closeTab(tab) },
                     press: press(tab)
                 )
@@ -347,7 +396,7 @@ private struct TabRow: View {
 
 /// The row of tabs, `metrics.viewport` wide: scrolls sideways once the tabs reach their minimum width (vertical wheel
 /// and trackpad scrolling too, as Xcode's tab bar does), and brings the selected tab into view whenever it changes, a
-/// tab opens or closes, or the row resizes.
+/// tab opens or closes, or the row resizes. While it scrolls, its row ends in room as wide as the next tab's peek.
 private struct TabScroller<Content: View>: NSViewRepresentable {
     let metrics: TabMetrics
     let tabs: [TabKind]
@@ -415,7 +464,8 @@ private struct TabScroller<Content: View>: NSViewRepresentable {
         scrollView.update(
             tabs: tabs, selected: selected, width: metrics.width, interaction: interaction, close: close, select: select,
             describe: describe)
-        hosting.setFrameSize(CGSize(width: metrics.width * CGFloat(tabs.count), height: Chrome.tabStripHeight))
+        hosting.setFrameSize(
+            CGSize(width: metrics.width * CGFloat(tabs.count) + metrics.peek, height: Chrome.tabStripHeight))
         scrollView.isDragging = isDragging
         scrollView.openFiles = openFiles
         let reveal = Reveal(selected: selected, tabCount: tabs.count, metrics: metrics)
@@ -437,11 +487,18 @@ private final class TabRowHostingView<Content: View>: NSHostingView<Content> {
 }
 
 /// A scroll view that only scrolls sideways: vertical wheel and trackpad motion scrolls it sideways too, a mouse wheel
-/// a whole tab per notch, and a scroll comes to rest on a tab's edge. An edge with more tabs beyond it fades out. It
-/// also knows which tab the pointer is over (`TabInteraction.hovered`), closes a tab on a middle click, and scrolls
-/// while a dragged tab is held at an edge.
+/// a whole tab per notch, and a scroll comes to rest on a tab's edge, the start of the next tab peeking in at the
+/// trailing edge (`TabMetrics.peek`). An edge with more tabs beyond it fades out. It also knows which tab the pointer
+/// is over (`TabInteraction.hovered`), closes a tab on a middle click, and scrolls while a dragged tab is held at an
+/// edge.
 private final class SidewaysScrollView: NSScrollView {
-    private static let fadeWidth: CGFloat = 24
+    /// How far a faded edge reaches in at most: over the leading tab's padding and mark into its title, and over the
+    /// next tab's peek at the trailing edge, short of the last whole tab's close button. A narrow row fades less.
+    private static let fadeWidth: CGFloat = 48
+    /// The opacity across a faded edge at even steps, from the edge in: a smooth ramp rather than a hard band.
+    private static let fadeRamp: [CGFloat] = [0, 0.16, 0.5, 0.84, 1]
+    /// How far in from an edge a dragged tab held there scrolls the row.
+    private static let autoscrollEdge: CGFloat = 24
     /// The most a held drag scrolls per frame.
     private static let autoscrollStep: CGFloat = 14
     private let fade = CAGradientLayer()
@@ -538,7 +595,7 @@ private final class SidewaysScrollView: NSScrollView {
     }
 
     /// Brings the tab at `index` into view, with a tab of room on the side more tabs are on when the row shows three or
-    /// more, so the selected tab is never the one under a faded edge.
+    /// more, so the selected tab is never the one under a faded edge. The peeking tab is not counted as in view.
     func reveal(_ index: Int, animated: Bool) {
         guard tabWidth > 0 else { return }
         let shown = max(1, Int((contentView.bounds.width / tabWidth).rounded(.down)))
@@ -596,8 +653,8 @@ private final class SidewaysScrollView: NSScrollView {
         super.scrollWheel(with: NSEvent(cgEvent: sideways) ?? event)
     }
 
-    /// While a dragged tab is held within a faded edge (or past it), the row scrolls that way, faster the further out
-    /// the pointer is, and the tab goes along.
+    /// While a dragged tab is held near an edge (or past it), the row scrolls that way, faster the further out the
+    /// pointer is, and the tab goes along.
     private func startAutoscroll() {
         let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.autoscrollFrame() }
@@ -609,7 +666,7 @@ private final class SidewaysScrollView: NSScrollView {
     private func autoscrollFrame() {
         guard let window, let interaction else { return }
         let x = convert(window.mouseLocationOutsideOfEventStream, from: nil).x
-        let edge = Self.fadeWidth
+        let edge = Self.autoscrollEdge
         let depth = x < edge ? x - edge : x > bounds.width - edge ? x - (bounds.width - edge) : 0
         guard depth != 0 else { return }
         let before = contentView.bounds.minX
@@ -640,19 +697,31 @@ private final class SidewaysScrollView: NSScrollView {
         guard let layer, let document = documentView else { return }
         let visible = contentView.bounds
         let before = visible.minX > 0.5
-        let after = visible.maxX < document.frame.width - 0.5
+        // The tabs' end, short of the room after the last one.
+        let after = visible.maxX < min(document.frame.width, CGFloat(tabs.count) * tabWidth) - 0.5
         guard before || after, bounds.width > 0 else {
             layer.mask = nil
             return
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let edge = min(Self.fadeWidth / bounds.width, 0.5)
-        let opaque = CGColor(gray: 0, alpha: 1)
-        let clear = CGColor(gray: 0, alpha: 0)
-        fade.frame = layer.bounds
-        fade.colors = [before ? clear : opaque, opaque, opaque, after ? clear : opaque]
-        fade.locations = [0, NSNumber(value: Double(edge)), NSNumber(value: Double(1 - edge)), 1]
+        // Of the view's own size: AppKit may bring the layer's up to date only later in the pass.
+        let edge = min(Self.fadeWidth, bounds.width / 6) / bounds.width
+        let last = CGFloat(Self.fadeRamp.count - 1)
+        let ramp = Self.fadeRamp.enumerated().map { (step: CGFloat($0.offset) / last * edge, alpha: $0.element) }
+        var colors: [CGColor] = []
+        var locations: [NSNumber] = []
+        for point in ramp {
+            colors.append(CGColor(gray: 0, alpha: before ? point.alpha : 1))
+            locations.append(NSNumber(value: Double(point.step)))
+        }
+        for point in ramp.reversed() {
+            colors.append(CGColor(gray: 0, alpha: after ? point.alpha : 1))
+            locations.append(NSNumber(value: Double(1 - point.step)))
+        }
+        fade.frame = CGRect(origin: layer.bounds.origin, size: bounds.size)
+        fade.colors = colors
+        fade.locations = locations
         layer.mask = fade
         CATransaction.commit()
     }
@@ -675,6 +744,7 @@ private final class SidewaysScrollView: NSScrollView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        updateFade()
         updateHover()
     }
 
@@ -966,14 +1036,14 @@ private struct TabItem<Press: Gesture>: View {
     let document: EditorDocument?
     let isSelected: Bool
     let isHovered: Bool
+    /// The tab after it is selected or hovered: the hairline between them gives way.
+    let nextIsHighlighted: Bool
     /// The tab's width, shared out by the strip.
     let width: CGFloat
     let select: () -> Void
     let close: () -> Void
     /// What a press on the tab does, besides `select` for the keyboard.
     let press: Press
-    /// The selected tab's top edge is the accent in the key window, quieter in the others.
-    @Environment(\.controlActiveState) private var activeState
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1018,15 +1088,7 @@ private struct TabItem<Press: Gesture>: View {
         .padding(.trailing, 6)
         .frame(width: width)
         .frame(maxHeight: .infinity)
-        // The selected tab is the canvas, open to the content below it (it covers the strip's bottom hairline), with
-        // its top edge drawn: on the light surface the canvas alone is a step too faint to find it by.
-        .background(isSelected ? Chrome.canvas : isHovered ? Color.primary.opacity(0.04) : .clear)
-        .overlay(alignment: .top) {
-            if isSelected {
-                (activeState == .inactive ? Color.primary.opacity(0.25) : Color.accentColor).frame(height: 2)
-            }
-        }
-        .overlay(alignment: .trailing) { Chrome.hairline.frame(width: 1) }
+        .modifier(TabSurface(isSelected: isSelected, isHovered: isHovered, nextIsHighlighted: nextIsHighlighted))
     }
 
     /// The tab's kind or state: a terminal's symbol, an editor's (a dot while it has unsaved edits), a session's mark.
@@ -1048,6 +1110,47 @@ private struct TabItem<Press: Gesture>: View {
             SessionMark(indicator: indicator)
         } else {
             StatusDot(color: .secondary, hollow: true)
+        }
+    }
+}
+
+/// A tab's surface and the hairline after it. From macOS 26 the selected tab is a capsule of Liquid Glass and a hovered
+/// one a faint capsule; the short hairlines between the others give way beside either, as in Safari's tab bar. Before
+/// that, the selected tab is the canvas, open to the content below it (it covers the strip's bottom hairline), with
+/// its top edge drawn: on the light surface the canvas alone is a step too faint to find it by.
+private struct TabSurface: ViewModifier {
+    let isSelected: Bool
+    let isHovered: Bool
+    let nextIsHighlighted: Bool
+    /// The selected tab's top edge is the accent in the key window, quieter in the others.
+    @Environment(\.controlActiveState) private var activeState
+
+    /// How far the capsule sits in from the tab's edges.
+    private static let inset: CGFloat = 3
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26, *) {
+            content
+                .background {
+                    if isHovered && !isSelected {
+                        Capsule().inset(by: Self.inset).fill(Color.primary.opacity(0.05))
+                    }
+                }
+                .glassEffect(isSelected ? .regular : .identity, in: Capsule().inset(by: Self.inset))
+                .overlay(alignment: .trailing) {
+                    if !isSelected && !isHovered && !nextIsHighlighted {
+                        Chrome.hairline.frame(width: 1).padding(.vertical, 8)
+                    }
+                }
+        } else {
+            content
+                .background(isSelected ? Chrome.canvas : isHovered ? Color.primary.opacity(0.04) : .clear)
+                .overlay(alignment: .top) {
+                    if isSelected {
+                        (activeState == .inactive ? Color.primary.opacity(0.25) : Color.accentColor).frame(height: 2)
+                    }
+                }
+                .overlay(alignment: .trailing) { Chrome.hairline.frame(width: 1) }
         }
     }
 }
