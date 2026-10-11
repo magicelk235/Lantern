@@ -414,6 +414,7 @@ private struct ChangeRow: View {
     let folder: String
     let action: () -> Void
     @State private var hovering = false
+    @State private var menuAnchor = ContextMenuAnchor()
 
     var body: some View {
         HStack(spacing: 4) {
@@ -453,12 +454,15 @@ private struct ChangeRow: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .help(change.path)
-        // One element for VoiceOver: the name and its folder (two changes can share a name), what git says, and Stage or
-        // Unstage as an action, which the pointer finds on hover.
+        .background(ContextMenuAnchorView(anchor: menuAnchor))
+        // One element for VoiceOver, read as text: the name, what git says, and the folder (two changes can share a
+        // name); Stage or Unstage as an action, which the pointer finds on hover, and Show Menu (VO-⇧-M) for the list's
+        // menu, which the right-click finds.
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(folder.isEmpty ? change.name : "\(change.name), \(folder)")
-        .accessibilityValue(statusWord)
+        .accessibilityAddTraits(.isStaticText)
+        .accessibilityLabel([change.name, statusWord, folder].filter { !$0.isEmpty }.joined(separator: ", "))
         .accessibilityAction(named: staged ? "Unstage" : "Stage", action)
+        .accessibilityAction(.showMenu) { menuAnchor.showMenu() }
     }
 
     private var statusWord: String {
@@ -474,6 +478,66 @@ private struct ChangeRow: View {
         default: String(letter)
         }
     }
+}
+
+/// Opens the Changes list's context menu for the row it sits behind, as a right-click there does. The menu belongs to
+/// the list (`contextMenu(forSelectionType:)`), which offers no Show Menu on its rows.
+@MainActor
+private final class ContextMenuAnchor {
+    fileprivate weak var view: NSView?
+
+    func showMenu() {
+        // A sheet over the window keeps the list from the mouse, and from this too.
+        guard let view, let window = view.window, window.attachedSheet == nil, let table = view.enclosingTableView else { return }
+        let row = table.row(for: view)
+        guard row >= 0 else { return }
+        let rect = table.rect(ofRow: row)
+        let location = table.convert(NSPoint(x: rect.minX + 24, y: rect.midY), to: nil)
+        let windowNumber = window.windowNumber
+        // Once VoiceOver has its answer: the menu tracks until it closes, and an action still running when it opens
+        // reads as failed. The list takes it as the right-click on that row it would get from the mouse.
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak table] in
+            MainActor.assumeIsolated {
+                guard let table, let click = NSEvent.mouseEvent(
+                    with: .rightMouseDown, location: location, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: windowNumber, context: nil,
+                    eventNumber: 0, clickCount: 1, pressure: 1
+                ) else { return }
+                table.rightMouseDown(with: click)
+            }
+        }
+    }
+}
+
+private extension NSView {
+    /// The table (a SwiftUI List's) this view sits in.
+    var enclosingTableView: NSTableView? {
+        var view = superview
+        while let current = view {
+            if let table = current as? NSTableView { return table }
+            view = current.superview
+        }
+        return nil
+    }
+}
+
+private struct ContextMenuAnchorView: NSViewRepresentable {
+    let anchor: ContextMenuAnchor
+
+    func makeNSView(context: Context) -> NSView {
+        let view = ClickThroughView()
+        anchor.view = view
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        anchor.view = view
+    }
+}
+
+/// Never the target of a click: the row and the list under it take them.
+private final class ClickThroughView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// HEAD's version of a changed file against the work tree, as a unified line diff.

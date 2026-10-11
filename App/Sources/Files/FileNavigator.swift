@@ -197,14 +197,17 @@ private struct ProjectsPane: View {
                     Spacer(minLength: 4)
                     ProjectBadge(activity: activity)
                 }
-                // One element for VoiceOver: the name, what its sessions do, and which they are.
+                // One element for VoiceOver: the name, what its sessions do, and which they are. Pressing it focuses
+                // the project as a click does; its menu is the row's context menu (Show Menu).
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(AppState.projectName(candidate))
                 .accessibilityValue(activity.words ?? "")
                 .accessibilityHint(activity.help ?? candidate)
+                .accessibilityAddTraits(candidate == project ? [.isButton, .isSelected] : .isButton)
+                .accessibilityAction(.default) { focus(candidate) }
+                .contextMenu { ProjectMenu(app: app, project: candidate) }
                 .tag(candidate)
                 .listRowSeparator(.hidden)
-                .contextMenu { ProjectMenu(app: app, project: candidate) }
             }
         }
         .listStyle(.inset)

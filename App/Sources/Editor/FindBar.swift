@@ -75,11 +75,13 @@ struct FindBar: View {
                 .frame(minWidth: 72, alignment: .trailing)
             options
             ControlGroup {
-                Button { find.previous() } label: { Image(systemName: "chevron.left") }
-                    .help("Find Previous (⇧⌘G)")
-                Button { find.next() } label: { Image(systemName: "chevron.right") }
-                    .help("Find Next (⌘G)")
+                Button { find.previous() } label: { Label("Previous Match", systemImage: "chevron.left") }
+                    .help("Previous Match (⇧⌘G)")
+                Button { find.next() } label: { Label("Next Match", systemImage: "chevron.right") }
+                    .help("Next Match (⌘G)")
             }
+            // The symbols show; VoiceOver reads the titles.
+            .labelStyle(.iconOnly)
             .fixedSize()
             .disabled(find.matches.isEmpty)
             Button("Done") { find.hide() }
@@ -125,7 +127,8 @@ struct FindBar: View {
             Divider()
             Toggle("Wrap Around", isOn: $find.wrapsAround)
         } label: {
-            Image(systemName: "magnifyingglass")
+            Label("Find Options", systemImage: "magnifyingglass")
+                .labelStyle(.iconOnly)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
@@ -150,6 +153,8 @@ private struct FindField: NSViewRepresentable {
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
         field.placeholderString = placeholder
+        // VoiceOver names the field after its placeholder: Find, Replace.
+        field.setAccessibilityLabel(placeholder)
         field.bezelStyle = .roundedBezel
         field.controlSize = .small
         field.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))

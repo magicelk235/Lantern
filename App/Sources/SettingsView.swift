@@ -61,11 +61,14 @@ private struct GeneralSettings: View {
                         Text(mode.title).tag(mode.rawValue)
                     }
                 }
+                // The grouped form draws the title beside the popup, which VoiceOver then finds untitled.
+                .accessibilityLabel("Approval mode for new sessions")
             } footer: {
                 Text(explanation)
             }
             Section {
                 Toggle("Notify when an agent finishes", isOn: $notifyWhenAgentFinishes)
+                    .accessibilityLabel("Notify when an agent finishes")
             } footer: {
                 Text("While Lantern is in the background, a notification says when a session's agent finishes its turn. A project's window tab marks it either way until you look at that project.")
             }
@@ -94,7 +97,9 @@ private struct RestorePolicySection: View {
     var body: some View {
         Section {
             Picker("Main agent", selection: binding(\.main)) { options }
+                .accessibilityLabel("Main agent")
             Picker("Subagents", selection: binding(\.subagents)) { options }
+                .accessibilityLabel("Subagents")
         } header: {
             Text("Interrupted Agents")
         } footer: {
@@ -176,11 +181,15 @@ private struct TerminalSettingsPane: View {
                     Stepper(value: $fontSize, in: TerminalSettings.fontSizes, step: 1) {
                         Text("\(Int(fontSize)) pt").monospacedDigit()
                     }
+                    .accessibilityLabel("Font size")
+                    .accessibilityValue("\(Int(fontSize)) pt")
                 }
             }
             Section {
                 Toggle("Option sends Meta in omp sessions", isOn: $sessionOptionAsMeta)
+                    .accessibilityLabel("Option sends Meta in omp sessions")
                 Toggle("Option sends Meta in terminals", isOn: $terminalOptionAsMeta)
+                    .accessibilityLabel("Option sends Meta in terminals")
             } footer: {
                 Text("On, Option+key reaches the program as Alt+key (omp's Alt+P, Alt+M, …). Off, Option types the characters of your keyboard layout.")
             }

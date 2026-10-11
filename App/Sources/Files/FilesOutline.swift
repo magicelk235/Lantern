@@ -1044,6 +1044,49 @@ final class FilesOutlineView: NSOutlineView {
         }
     }
 
+    // VoiceOver's Show Menu (VO-⇧-M) brings up the context menu a right-click would.
+
+    /// On the outline: the selection's menu, as a right-click on a selected row shows it; with nothing selected, the
+    /// project folder's, as a right-click below the rows shows it. None while a sheet is up (a rename's alert), which
+    /// keeps the mouse off the outline too.
+    override func accessibilityPerformShowMenu() -> Bool {
+        guard window?.attachedSheet == nil else { return false }
+        let visible = rows(in: visibleRect)
+        if let row = selectedRowIndexes.first(where: { NSLocationInRange($0, visible) }) ?? selectedRowIndexes.first {
+            return showContextMenu(forRow: row)
+        }
+        let below = max(numberOfRows > 0 ? rect(ofRow: numberOfRows - 1).maxY : 0, visibleRect.minY)
+        // The rows fill the view: there is no empty area to click.
+        guard below < visibleRect.maxY - 1 else { return super.accessibilityPerformShowMenu() }
+        return rightClick(at: NSPoint(x: visibleRect.minX + 24, y: min(below + rowHeight / 2, visibleRect.maxY - 1)))
+    }
+
+    /// On a row (`FileCell`): its menu, the row ringed as for a right-click, scrolled into view first.
+    func showContextMenu(forRow row: Int) -> Bool {
+        guard row >= 0, row < numberOfRows else { return false }
+        scrollRowToVisible(row)
+        let cell = frameOfCell(atColumn: 0, row: row)
+        return rightClick(at: NSPoint(x: cell.minX + 8, y: cell.midY))
+    }
+
+    /// A right-click at `point`, once VoiceOver has its answer: the menu tracks the mouse until it closes, and an action
+    /// still running when it opens reads as failed. A main-queue turn is too soon for the answer to have gone out.
+    private func rightClick(at point: NSPoint) -> Bool {
+        guard let window else { return false }
+        let location = convert(point, to: nil)
+        let windowNumber = window.windowNumber
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let event = NSEvent.mouseEvent(
+                    with: .rightMouseDown, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+                else { return }
+                self?.rightMouseDown(with: event)
+            }
+        }
+        return true
+    }
+
     /// Folders a drag sprang open stay open once it dropped into them, where the dropped items are selected; a drag
     /// that leaves or is cancelled closes them again.
     override func shouldCollapseAutoExpandedItems(forDeposited deposited: Bool) -> Bool {
@@ -1104,7 +1147,12 @@ final class FileCell: NSTableCellView {
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
         icon.imageScaling = .scaleProportionallyDown
         alias.image = NSImage(systemSymbolName: "arrow.up.right.square.fill", accessibilityDescription: nil)
-        icon.setAccessibilityElement(false)
+        // VoiceOver reads the row by its label (see `show`): the icon, the arrow, the name and git's letter are drawn,
+        // not read. A control's cell is the element VoiceOver sees, and the folder symbol describes itself as "move".
+        for control in [icon, alias, name, letter] as [NSControl] {
+            control.setAccessibilityElement(false)
+            control.cell?.setAccessibilityElement(false)
+        }
         name.font = .systemFont(ofSize: 13)
         name.lineBreakMode = .byTruncatingMiddle
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -1114,7 +1162,6 @@ final class FileCell: NSTableCellView {
         letter.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         letter.setContentCompressionResistancePriority(.required, for: .horizontal)
         letter.setContentHuggingPriority(.required, for: .horizontal)
-        letter.setAccessibilityElement(false)
         imageView = icon
         textField = name
 
@@ -1168,14 +1215,26 @@ final class FileCell: NSTableCellView {
         letter.toolTip = letterShown?.explanation
         alphaValue = isIgnored ? 0.5 : 1
         toolTip = node.path
-        // One element for VoiceOver: the name, then what git says and whether it has unsaved edits.
+        // VoiceOver reads the row's cell (AppKit's, around this view) by this label: the name, "alias" for a symlink,
+        // then what git says and whether it has unsaved edits.
         let git = mark.map { node.isDirectory ? "changes inside" : $0.word }
-        setAccessibilityElement(true)
-        setAccessibilityRole(.cell)
-        setAccessibilityLabel(node.name)
-        setAccessibilityValue([git, isDirty ? "edited" : nil].compactMap(\.self).joined(separator: ", "))
-        name.setAccessibilityElement(false)
+        setAccessibilityLabel(
+            [node.name, node.isSymlink ? "alias" : nil, git, isDirty ? "edited" : nil].compactMap(\.self).joined(separator: ", "))
         applyColors()
+    }
+
+    /// VoiceOver's Show Menu (VO-⇧-M) on the row: its context menu, as a right-click on it brings it up; none while a
+    /// sheet is up, as for the mouse.
+    override func accessibilityPerformShowMenu() -> Bool {
+        guard window?.attachedSheet == nil, let outline = superview?.superview as? FilesOutlineView else { return false }
+        return outline.showContextMenu(forRow: outline.row(for: self))
+    }
+
+    /// None, said outright. The row's cell (AppKit's, around this view) asks this view for its custom actions on every
+    /// action VoiceOver performs on it, and a view that has none to report leaves an "unsupported attribute" error
+    /// behind, which VoiceOver gets as the action's result (Show Menu failing though its menu opened).
+    override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
+        []
     }
 
     override var backgroundStyle: NSView.BackgroundStyle {
@@ -1220,6 +1279,8 @@ final class FileCell: NSTableCellView {
         name.lineBreakMode = .byClipping
         name.cell?.isScrollable = true
         name.delegate = delegate
+        // The field is VoiceOver's while it edits.
+        name.cell?.setAccessibilityElement(true)
         editingWidth?.isActive = true
         applyColors()
         window?.makeFirstResponder(name)
@@ -1232,6 +1293,7 @@ final class FileCell: NSTableCellView {
     func endEditing(showing text: String) {
         isEditing = false
         name.delegate = nil
+        name.cell?.setAccessibilityElement(false)
         name.isEditable = false
         name.isSelectable = false
         name.drawsBackground = false
