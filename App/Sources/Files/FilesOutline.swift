@@ -89,6 +89,10 @@ final class FileNode: NSObject {
     let path: String
     let name: String
     let isDirectory: Bool
+    /// A symlink (Finder's alias): its icon carries the alias arrow.
+    let isSymlink: Bool
+    /// A link back to a folder above: it lists as a folder that doesn't open, or expanding everything would never end.
+    let isLinkLoop: Bool
     /// Why the folder above could not be listed, shown as its only row.
     let failure: String?
 
@@ -96,6 +100,8 @@ final class FileNode: NSObject {
         path = entry.path
         name = entry.name
         isDirectory = entry.isDirectory
+        isSymlink = entry.isSymlink
+        isLinkLoop = entry.isLinkLoop
         failure = nil
     }
 
@@ -103,11 +109,18 @@ final class FileNode: NSObject {
         path = folder
         name = ""
         isDirectory = false
+        isSymlink = false
+        isLinkLoop = false
         self.failure = failure
     }
 
-    /// Tells a file from a folder of the same path, and a failure from both.
-    var key: String { failure != nil ? path + "/\u{0}" : isDirectory ? path + "/" : path }
+    /// Tells a file from a folder of the same path, a link from either, and a failure from all of them.
+    var key: String {
+        failure != nil ? path + "/\u{0}" : (isDirectory ? path + "/" : path) + (isSymlink ? "\u{0}@" : "")
+    }
+
+    /// A folder whose contents the outline shows.
+    var isExpandable: Bool { isDirectory && !isLinkLoop }
 }
 
 /// Data source and delegate of one Files outline. The listings, the expanded folders and what git ignores come from the
@@ -213,7 +226,8 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
     private func listing(of folder: String) -> [FileNode] {
         if let failure = tree.failures[folder] { return [FileNode(failure: failure, in: folder)] }
         return (tree.children[folder] ?? []).map { entry in
-            if let node = nodes[entry.path], node.isDirectory == entry.isDirectory, node.name == entry.name, node.failure == nil {
+            if let node = nodes[entry.path], node.isDirectory == entry.isDirectory, node.isSymlink == entry.isSymlink,
+               node.isLinkLoop == entry.isLinkLoop, node.name == entry.name, node.failure == nil {
                 return node
             }
             let node = FileNode(entry: entry)
@@ -304,7 +318,7 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
         defer { syncing = false }
         let expanded = tree.expanded
         for folder in expanded.sorted(by: { $0.count < $1.count }) where folder != tree.root {
-            guard let node = nodes[folder], node.isDirectory, !outline.isItemExpanded(node) else { continue }
+            guard let node = nodes[folder], node.isExpandable, !outline.isItemExpanded(node) else { continue }
             let parent = (folder as NSString).deletingLastPathComponent
             guard parent == tree.root || nodes[parent].map(outline.isItemExpanded) == true else { continue }
             ensureListed(folder)
@@ -326,7 +340,7 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-        (item as? FileNode)?.isDirectory == true
+        (item as? FileNode)?.isExpandable == true
     }
 
     // MARK: - Delegate
@@ -352,7 +366,7 @@ final class FilesOutlineController: NSObject, NSOutlineViewDataSource, NSOutline
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldExpandItem item: Any) -> Bool {
-        guard let node = item as? FileNode, node.isDirectory else { return false }
+        guard let node = item as? FileNode, node.isExpandable else { return false }
         ensureListed(node.path)
         return true
     }
@@ -1066,13 +1080,16 @@ final class FilesOutlineView: NSOutlineView {
     }
 }
 
-/// A Files row: the icon, the name (in git's color while git has something to say about the file, or about something
-/// in the folder), a dot while it has unsaved edits and git's letter trailing; dimmed while git ignores it. On the
-/// accent of a selected row in a focused outline the text and icon are white. The name edits in place for a rename.
+/// A Files row: the icon (with Finder's alias arrow for a symlink), the name (in git's color while git has something to
+/// say about the file, or about something in the folder), a dot while it has unsaved edits and git's letter trailing;
+/// dimmed while git ignores it. On the accent of a selected row in a focused outline the text and icon are white. The
+/// name edits in place for a rename.
 final class FileCell: NSTableCellView {
     static let identifier = NSUserInterfaceItemIdentifier("file")
 
     private let icon = NSImageView()
+    /// Finder's alias arrow, on the icon's bottom-left corner.
+    private let alias = NSImageView()
     private let name = NameField(labelWithString: "")
     private let unsaved = UnsavedDot()
     private let letter = NSTextField(labelWithString: "")
@@ -1086,6 +1103,7 @@ final class FileCell: NSTableCellView {
         identifier = Self.identifier
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
         icon.imageScaling = .scaleProportionallyDown
+        alias.image = NSImage(systemSymbolName: "arrow.up.right.square.fill", accessibilityDescription: nil)
         icon.setAccessibilityElement(false)
         name.font = .systemFont(ofSize: 13)
         name.lineBreakMode = .byTruncatingMiddle
@@ -1106,7 +1124,7 @@ final class FileCell: NSTableCellView {
         leading.alignment = .centerY
         leading.detachesHiddenViews = true
         leading.setHuggingPriority(.defaultLow, for: .horizontal)
-        for view in [leading, letter] {
+        for view in [leading, letter, alias] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -1119,6 +1137,8 @@ final class FileCell: NSTableCellView {
             letter.leadingAnchor.constraint(greaterThanOrEqualTo: leading.trailingAnchor, constant: 4),
             letter.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
             letter.firstBaselineAnchor.constraint(equalTo: name.firstBaselineAnchor),
+            alias.leadingAnchor.constraint(equalTo: icon.leadingAnchor, constant: -1),
+            alias.bottomAnchor.constraint(equalTo: icon.bottomAnchor, constant: 1),
         ])
         editingWidth = leading.trailingAnchor.constraint(equalTo: letter.leadingAnchor, constant: -4)
     }
@@ -1139,6 +1159,7 @@ final class FileCell: NSTableCellView {
     func show(_ node: FileNode, mark: GitMarks.Mark?, isIgnored: Bool, isDirty: Bool) {
         self.mark = mark
         icon.image = Self.symbol(FileSymbol.name(for: node.name, isDirectory: node.isDirectory))
+        alias.isHidden = !node.isSymlink
         if !isEditing { name.stringValue = node.name }
         unsaved.isHidden = !isDirty
         let letterShown = !node.isDirectory ? mark : nil
@@ -1161,10 +1182,17 @@ final class FileCell: NSTableCellView {
         didSet { applyColors() }
     }
 
+    /// The alias arrow, cut out of its square in the color of the row.
+    private static let aliasColors = NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)
+        .applying(NSImage.SymbolConfiguration(paletteColors: [.textBackgroundColor, .secondaryLabelColor]))
+    private static let selectedAliasColors = NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)
+        .applying(NSImage.SymbolConfiguration(paletteColors: [.selectedContentBackgroundColor, .alternateSelectedControlTextColor]))
+
     private func applyColors() {
         let selected = backgroundStyle == .emphasized
         let white = NSColor.alternateSelectedControlTextColor
         icon.contentTintColor = selected ? white : .secondaryLabelColor
+        alias.symbolConfiguration = selected ? Self.selectedAliasColors : Self.aliasColors
         name.textColor = isEditing ? .textColor : selected ? white : mark?.color ?? .labelColor
         letter.textColor = selected ? white : mark?.color
         unsaved.color = selected ? white : .labelColor

@@ -15,7 +15,43 @@ import Testing
         let entries = try DirectoryListing.entries(of: folder.path)
         #expect(entries.map(\.name) == ["docs", "linked", "Sources", ".gitignore", "a9.txt", "a10.txt", "b.swift"])
         #expect(entries.map(\.isDirectory) == [true, true, true, false, false, false, false])
+        #expect(entries.map(\.isSymlink) == [false, true, false, false, false, false, false])
         #expect(entries[0].path == folder.file("docs"))
+    }
+
+    @Test func linksToFilesAndDanglingLinksListAsFilesMarkedAsLinks() throws {
+        let folder = try TempFolder()
+        try folder.write("a.txt", "")
+        try FileManager.default.createSymbolicLink(atPath: folder.file("toA"), withDestinationPath: "a.txt")
+        try FileManager.default.createSymbolicLink(atPath: folder.file("gone"), withDestinationPath: "missing.txt")
+
+        let entries = try DirectoryListing.entries(of: folder.path)
+        #expect(entries.map(\.name) == ["a.txt", "gone", "toA"])
+        #expect(entries.map(\.isDirectory) == [false, false, false])
+        #expect(entries.map(\.isSymlink) == [false, true, true])
+        #expect(entries.map(\.isLinkLoop) == [false, false, false])
+    }
+
+    @Test func linksBackToAFolderAboveAreLoopsAndOtherLinksAreNot() throws {
+        let folder = try TempFolder()
+        for name in ["a/inner", "b", "elsewhere"] {
+            try FileManager.default.createDirectory(atPath: folder.file(name), withIntermediateDirectories: true)
+        }
+        try FileManager.default.createSymbolicLink(atPath: folder.file("a/up"), withDestinationPath: "..")
+        try FileManager.default.createSymbolicLink(atPath: folder.file("a/self"), withDestinationPath: ".")
+        try FileManager.default.createSymbolicLink(atPath: folder.file("a/inner/top"), withDestinationPath: "../..")
+        try FileManager.default.createSymbolicLink(atPath: folder.file("a/side"), withDestinationPath: "../elsewhere")
+        // a/toB and b/toA lead to each other: a/toB/toA is a again.
+        try FileManager.default.createSymbolicLink(atPath: folder.file("a/toB"), withDestinationPath: "../b")
+        try FileManager.default.createSymbolicLink(atPath: folder.file("b/toA"), withDestinationPath: "../a")
+
+        let loops = { (directory: String) in
+            Dictionary(uniqueKeysWithValues: try DirectoryListing.entries(of: directory).map { ($0.name, $0.isLinkLoop) })
+        }
+        #expect(try loops(folder.file("a")) == ["inner": false, "up": true, "self": true, "side": false, "toB": false])
+        #expect(try loops(folder.file("a/inner")) == ["top": true])
+        #expect(try loops(folder.file("a/toB")) == ["toA": true])
+        #expect(try loops(folder.file("b")) == ["toA": false])
     }
 
     @Test func ignoredFolderCoversEverythingInIt() {
