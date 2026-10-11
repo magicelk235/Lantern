@@ -10,7 +10,15 @@ public enum JSONValue: Sendable, Hashable, Codable {
     case array([JSONValue])
     case object([String: JSONValue])
 
+    /// The deepest nesting decoded. Each level is a recursive decode, and JSONDecoder's own limit (512) is past what a
+    /// concurrency thread's 512 KiB stack holds; real payloads stay far shallower.
+    public static let maximumDepth = 128
+
     public init(from decoder: any Decoder) throws {
+        guard decoder.codingPath.count <= Self.maximumDepth else {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "Nested more than \(Self.maximumDepth) levels deep."))
+        }
         let c = try decoder.singleValueContainer()
         if c.decodeNil() { self = .null; return }
         if let b = try? c.decode(Bool.self) { self = .bool(b); return }

@@ -182,3 +182,20 @@ private let terminal = PTYInfo(ptyId: "t1", cwd: "/Users/me", command: ["/bin/zs
         #expect(throws: DecodingError.self) { try decode([Date].self, #"["yesterday"]"#) }
     }
 }
+
+@Suite struct JSONValueDepthTests {
+    private func nested(_ depth: Int) -> Data {
+        Data((String(repeating: "[", count: depth) + "1" + String(repeating: "]", count: depth)).utf8)
+    }
+
+    /// A line nested deeper than any real payload is refused rather than decoded recursively: JSONDecoder takes 512
+    /// levels, and that many recursive decodes overflow the 512 KiB stack of a concurrency thread.
+    @Test func nestingPastTheLimitIsRefusedNotDecoded() throws {
+        let deepest = try JSONDecoder().decode(JSONValue.self, from: nested(JSONValue.maximumDepth))
+        var level = deepest
+        for _ in 0..<JSONValue.maximumDepth { level = try #require(level.arrayValue?.first) }
+        #expect(level == 1)
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(JSONValue.self, from: nested(JSONValue.maximumDepth + 1)) }
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(JSONValue.self, from: nested(500)) }
+    }
+}
