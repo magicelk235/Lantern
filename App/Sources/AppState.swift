@@ -35,13 +35,20 @@ final class AppState {
     var sidebarVisible: Bool {
         didSet { if sidebarVisible != oldValue { saveWindow() } }
     }
-    /// Width of the sidebar pane, dragged at its trailing edge.
+    /// Width of the sidebar pane, dragged at its trailing edge. Setting it clamps to the allowed range.
+    ///
+    /// The clamp lives in a setter over separate storage: `@Observable` moves a `didSet` onto the macro's backing
+    /// storage, so a `didSet` that assigned the property again would re-enter itself until the stack overflowed.
     var sidebarWidth: Double {
-        didSet {
-            sidebarWidth = min(max(sidebarWidth, Self.minimumSidebarWidth), Self.maximumSidebarWidth)
-            if sidebarWidth != oldValue { saveWindow() }
+        get { storedSidebarWidth }
+        set {
+            let width = min(max(newValue, Self.minimumSidebarWidth), Self.maximumSidebarWidth)
+            guard width != storedSidebarWidth else { return }
+            storedSidebarWidth = width
+            saveWindow()
         }
     }
+    private var storedSidebarWidth: Double
     static let minimumSidebarWidth = 200.0
     static let maximumSidebarWidth = 520.0
     /// The pane the activity bar shows: Files, Changes or Projects. Kept in the defaults.
@@ -169,7 +176,7 @@ final class AppState {
         terminals = TerminalsController(registry: connection.terminals)
         outdatedDaemon = OutdatedDaemon(connection: connection, agent: agent)
         sidebarVisible = restored?.sidebarVisible ?? true
-        sidebarWidth = restored?.sidebarWidth ?? 270
+        storedSidebarWidth = restored?.sidebarWidth ?? 270
         pane = UserDefaults.standard.string(forKey: SidebarPane.defaultsKey).flatMap(SidebarPane.init(rawValue:)) ?? .files
         var restoredProjects = Set<String>()
         addedProjects = (restored?.projects ?? []).map(Self.normalized).filter { restoredProjects.insert($0).inserted }
