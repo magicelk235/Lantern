@@ -2,8 +2,7 @@
 /.build
 /.swiftpm/
 /Package.resolved.bak
-*.xcodeproj/xcuserdata/
-*.xcworkspace/xcuserdata/
+xcuserdata/
 DerivedData/
 /App/*.xcodeproj
 __pycache__/
