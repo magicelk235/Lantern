@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="App/AppIcon.png" width="128" height="128" alt="Lantern icon">
-</p>
-
 <h1 align="center">Lantern</h1>
 
 <p align="center">A native macOS IDE for <a href="https://github.com/can1357/oh-my-pi">omp</a> where agent sessions survive quits, crashes and reboots.</p>
