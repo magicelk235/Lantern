@@ -1,5 +1,6 @@
 import AppKit
 import CodeEditSourceEditor
+import IDEExtensions
 
 /// Point size of editor text (SF Mono), changed by View › Bigger, Smaller and Actual Size; every editor follows it
 /// (`Editors`).
@@ -14,11 +15,12 @@ enum EditorSettings {
     }
 }
 
-/// How editors look and indent: the system monospaced font and a theme after Xcode's default colors, on Lantern's canvas.
+/// How editors look and indent: the system monospaced font and a theme after Xcode's default colors, on Lantern's canvas,
+/// or the VS Code theme picked for the appearance in Settings › Extensions.
 ///
 /// CodeEditSourceEditor reads components of the theme's colors (brightness, `CGColor`), which dynamic colors do not
 /// have, so every theme is made of concrete sRGB colors for one appearance; editors get a new one when the system
-/// appearance changes (`Editors`).
+/// appearance changes or another theme is picked (`Editors`).
 @MainActor
 enum EditorStyle {
     static func configuration(indent: IndentOption, appearance: NSAppearance) -> SourceEditorConfiguration {
@@ -55,6 +57,9 @@ enum EditorStyle {
                 concrete(.textColor), concrete(.tertiaryLabelColor), concrete(Chrome.canvasColor),
                 concrete(.selectedTextBackgroundColor), concrete(.controlAccentColor))
         }
+        if let picked = EditorExtensions.shared.colorTheme(dark: dark) {
+            return theme(from: picked, selection: system.selection)
+        }
         return EditorTheme(
             text: .init(color: system.text),
             insertionPoint: system.accent,
@@ -72,6 +77,40 @@ enum EditorStyle {
             strings: .init(color: pick(0xC41A16, 0xFF8170)),
             characters: .init(color: pick(0x1C00CF, 0xD9C97C)),
             comments: .init(color: pick(0x5D6C79, 0x7F8C98)))
+    }
+
+    /// An editor theme of `picked`'s colors. What it leaves out is VS Code's default for a theme of its kind (light or
+    /// dark), and a syntax category it has no color for takes its text color.
+    private static func theme(from picked: ColorTheme, selection systemSelection: NSColor) -> EditorTheme {
+        let dark = picked.isDark
+        let text = picked.foreground.map(color) ?? rgb(dark ? 0xD4D4D4 : 0x000000)
+        let background = (picked.background.map(color) ?? rgb(dark ? 0x1E1E1E : 0xFFFFFF)).withAlphaComponent(1)
+        func attribute(_ category: SyntaxCategory) -> EditorTheme.Attribute {
+            let style = picked.style(for: category)
+            return .init(color: style?.color.map(color) ?? text, bold: style?.bold ?? false, italic: style?.italic ?? false)
+        }
+        return EditorTheme(
+            text: .init(color: text),
+            insertionPoint: picked.cursor.map(color) ?? text,
+            invisibles: .init(color: picked.whitespace.map(color) ?? text.withAlphaComponent(0.3)),
+            background: background,
+            lineHighlight: picked.lineHighlight.map(color)
+                ?? (dark ? NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.06) : NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.04)),
+            selection: picked.selection.map(color) ?? systemSelection,
+            keywords: attribute(.keyword),
+            commands: attribute(.command),
+            types: attribute(.type),
+            attributes: attribute(.attribute),
+            variables: attribute(.variable),
+            values: attribute(.value),
+            numbers: attribute(.number),
+            strings: attribute(.string),
+            characters: attribute(.character),
+            comments: attribute(.comment))
+    }
+
+    private static func color(_ rgba: RGBA) -> NSColor {
+        NSColor(srgbRed: rgba.red, green: rgba.green, blue: rgba.blue, alpha: rgba.alpha)
     }
 
     /// `color` resolved for the current drawing appearance.

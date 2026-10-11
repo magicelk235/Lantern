@@ -4,7 +4,7 @@ import SwiftUI
 /// A pane of Settings. The one showing is kept in the defaults, so `select()` from elsewhere (Free Up Space…) switches
 /// an open Settings window too.
 enum SettingsTab: String {
-    case general, terminal, storage
+    case general, terminal, languages, extensions, storage
 
     static let defaultsKey = "settingsTab"
 
@@ -29,6 +29,14 @@ struct SettingsView: View {
                 .settingsPane()
                 .tabItem { Label("Terminal", systemImage: "terminal") }
                 .tag(SettingsTab.terminal)
+            LanguageServerSettingsPane()
+                .settingsPane()
+                .tabItem { Label("Languages", systemImage: "chevron.left.forwardslash.chevron.right") }
+                .tag(SettingsTab.languages)
+            ExtensionsSettingsPane()
+                .settingsPane()
+                .tabItem { Label("Extensions", systemImage: "puzzlepiece.extension") }
+                .tag(SettingsTab.extensions)
             StorageSettingsPane(app: app)
                 .settingsPane()
                 .tabItem { Label("Storage", systemImage: "internaldrive") }

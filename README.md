@@ -13,7 +13,8 @@ Every session in Lantern is omp's own TUI, running in a tab. The sessions don't 
 - omp sessions and terminals keep their screens and scrollback across app restarts. If omp or ompd itself dies, the session is resumed from its file, and Lantern can continue the work that was cut off, ask you first, or leave it alone (Settings › General).
 - The Agents pane (⌃⌘A) shows each session's agent tree with live activity, its background jobs and the project's named services. You can message, revive, park or kill agents, and restart or stop services.
 - Tool approvals and `ask` prompts badge the Dock and post a notification while Lantern is in the background.
-- The editor has syntax highlighting, git change marks in the gutter, find and replace, and language servers (sourcekit-lsp, typescript-language-server, pyright or pylsp, rust-analyzer, gopls, clangd) when they're installed. Unsaved edits survive quitting.
+- The editor has syntax highlighting, git change marks in the gutter, find and replace, and language servers (sourcekit-lsp, typescript-language-server, pyright or pylsp, rust-analyzer, gopls, clangd) when they're installed. You can add any other language server in Settings › Languages, and it replaces the built-in one for the file extensions you give it. Unsaved edits survive quitting.
+- Settings › Extensions installs VS Code extensions from `.vsix` files (from [Open VSX](https://open-vsx.org) or the publisher). Lantern uses their color themes, one for the light and one for the dark appearance, and their snippets, which show up in completions and go Tab by Tab through their placeholders. It also uses the languages they add: files the editor has no grammar for get the language's name, ⌘/ with its comment tokens, and its extra closing pairs. Extension code doesn't run, so commands, views and language features that need it aren't available.
 - Terminal tabs are owned by ompd too. Running `omp` in one turns it into a regular Lantern session.
 - Quick Look works in the Files pane, Finder's Services menu gets "Open in Lantern" and "New omp Session", and Open Session… (⇧⌘O) lists a project's saved sessions.
 
@@ -93,6 +94,7 @@ With `OMPD_HOME` set, Lantern doesn't register the production LaunchAgent, and o
 | `Sources/IDEState` | Window and editor state in `state.sqlite` |
 | `Sources/IDEEditorModel` | Editor logic without AppKit: files, dirty tracking, diffs, git |
 | `Sources/IDELanguageModel` | Language server discovery and the LSP client |
+| `Sources/IDEExtensions` | VS Code extensions without AppKit: installing a `.vsix`, color themes, snippets, language configurations, comment toggling |
 | `Sources/IDEShellEnvironment` | The login shell's environment that omp sessions and language servers start from |
 | `bridge/ide-bridge.ts` | The omp extension ompd loads into every session it runs |
 | `scripts/` | Release, development LaunchAgent, app icon and acceptance scripts |

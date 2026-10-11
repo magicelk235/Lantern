@@ -98,6 +98,10 @@ final class EditorDocument {
     @ObservationIgnored private let persistence: StatePersistence
     @ObservationIgnored private var repository: GitRepository
     @ObservationIgnored private let languageServers: LanguageServers
+    /// Shows the language server's completions and the language's snippets; made with the controller.
+    @ObservationIgnored private var completion: EditorCompletion?
+    /// The snippet being filled in, if any.
+    @ObservationIgnored var snippetSession: SnippetSession?
     /// The file as last read or written, to skip re-reading it when nothing touched it.
     @ObservationIgnored private var stamp: FileStamp?
     /// Receives the text view's changes; the controller only holds it weakly.
@@ -274,17 +278,30 @@ final class EditorDocument {
             language = detected
             controller.language = detected
         }
-        // The new one first: with the same server, closing the old one last keeps the server running.
-        let previous = languageDocument
-        languageDocument = LanguageDocument(path: path, workspace: workspace, controller: controller, servers: languageServers)
-        previous?.close()
-        controller.configuration.peripherals.codeSuggestionTriggerCharacters = languageDocument?.completionTriggers ?? []
+        rebindLanguageServer()
         gitGutter?.detach()
         let gitGutter = GitGutterView(path: path, textView: controller.textView, repository: repository)
         gitGutter.refresh()
         gitGutter.attach(to: controller)
         self.gitGutter = gitGutter
         saveUI()
+    }
+
+    /// Joins the language server the file takes where it is now, as Settings › Languages has it: after `relocate`, and
+    /// when the user's servers change (`Editors`).
+    func rebindLanguageServer() {
+        guard let controller else { return }
+        let key = DocumentLanguage(path: path, custom: LanguageServerSettings.customServers)
+            .map { LanguageServers.Key(root: workspace, server: $0.server) }
+        // Nothing to do when the text has that server for this path already: a new document there would open the file
+        // before the old one closed it, and the server would take it as closed.
+        let changed = languageDocument.map { $0.path != path || $0.key != key } ?? (key != nil)
+        guard changed else { return }
+        // The new one first: with the same server, closing the old one last keeps the server running.
+        let previous = languageDocument
+        languageDocument = LanguageDocument(path: path, workspace: workspace, controller: controller, servers: languageServers)
+        previous?.close()
+        controller.configuration.peripherals.codeSuggestionTriggerCharacters = languageDocument?.completionTriggers ?? []
     }
 
     /// The project's folder is being renamed: nothing is written to the file and the disk is not looked at until
@@ -428,6 +445,9 @@ final class EditorDocument {
         controller.textView.setText(text)
         self.coordinator = coordinator
         self.controller = controller
+        let completion = EditorCompletion(editor: self)
+        controller.completionDelegate = completion
+        self.completion = completion
         let storageObserver = StorageObserver { [weak self] _, _ in self?.scheduleTextDidChange() }
         controller.textView.addStorageDelegate(storageObserver)
         self.storageObserver = storageObserver
@@ -460,6 +480,8 @@ final class EditorDocument {
         gitGutter = nil
         languageDocument?.close()
         languageDocument = nil
+        snippetSession?.end()
+        completion = nil
         find.reset()
         isJumpingToLine = false
         pendingReveal = nil
@@ -470,7 +492,8 @@ final class EditorDocument {
         caret = nil
     }
 
-    /// The system appearance or the font size changed: the theme's colors are concrete, so the editor needs new ones.
+    /// The system appearance, the font size or the theme picked for it changed: the theme's colors are concrete, so the
+    /// editor needs new ones.
     /// CodeEditSourceEditor applies a new configuration to the views its controller makes in `loadView` (gutter,
     /// minimap), so a controller whose tab has not shown yet waits: `loadView` applies the configuration it has, and
     /// the new one follows when the view appears.

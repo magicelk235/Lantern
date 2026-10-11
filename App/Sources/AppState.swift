@@ -190,6 +190,7 @@ final class AppState {
         connection.terminals.onGone = { [weak self] ptyId in self?.terminalGone(ptyId) }
         observeSystemPower()
         installEditorNavigation()
+        installEditorExtensionKeys()
     }
 
     /// launchd starts a registered ompd within a moment. A daemon still out of reach this long after launch has a

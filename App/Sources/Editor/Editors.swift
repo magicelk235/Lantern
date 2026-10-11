@@ -23,7 +23,11 @@ final class Editors {
     @ObservationIgnored private var heldFolders: Set<String> = []
     @ObservationIgnored private var appearanceObservation: NSKeyValueObservation?
     @ObservationIgnored private var fontSize = EditorSettings.fontSize
+    /// The user's language servers as the defaults had them last (Settings › Languages).
+    @ObservationIgnored private var customServers =
+        UserDefaults.lantern.data(forKey: LanguageServerSettings.customServersKey)
     @ObservationIgnored private var defaultsObserver: (any NSObjectProtocol)?
+    @ObservationIgnored private var extensionsObserver: (any NSObjectProtocol)?
 
     init(persistence: StatePersistence) {
         self.persistence = persistence
@@ -35,13 +39,29 @@ final class Editors {
                 for document in self.documents.values { document.appearanceDidChange(application.effectiveAppearance) }
             }
         }
-        // View › Bigger, Smaller and Actual Size: every editor gets a configuration in the new size.
+        // A change to the user's language servers: every editor joins the server its file takes now. View › Bigger,
+        // Smaller and Actual Size: every editor gets a configuration in the new size.
         defaultsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, EditorSettings.fontSize != self.fontSize else { return }
+                guard let self else { return }
+                let customServers = UserDefaults.lantern.data(forKey: LanguageServerSettings.customServersKey)
+                if customServers != self.customServers {
+                    self.customServers = customServers
+                    for document in self.documents.values { document.rebindLanguageServer() }
+                }
+                guard EditorSettings.fontSize != self.fontSize else { return }
                 self.fontSize = EditorSettings.fontSize
+                for document in self.documents.values { document.appearanceDidChange(NSApplication.shared.effectiveAppearance) }
+            }
+        }
+        // An extension installed or removed, or another theme picked: every editor gets the theme it now has.
+        extensionsObserver = NotificationCenter.default.addObserver(
+            forName: EditorExtensions.didChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
                 for document in self.documents.values { document.appearanceDidChange(NSApplication.shared.effectiveAppearance) }
             }
         }

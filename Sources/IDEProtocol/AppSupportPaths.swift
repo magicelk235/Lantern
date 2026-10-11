@@ -29,6 +29,9 @@ public struct AppSupportPaths: Sendable, Equatable {
     /// `project-rename-app.json`: the app's journal of the same rename, until its window layouts, editor state and
     /// unsaved buffers follow the folder.
     public let projectRenameApp: URL
+    /// `extensions/`: VS Code extensions installed from `.vsix` files, one folder per extension id, for their themes,
+    /// snippets and language settings.
+    public let extensions: URL
 
     public init(root: URL) {
         self.root = root
@@ -43,6 +46,7 @@ public struct AppSupportPaths: Sendable, Equatable {
         stateDB = root.appending(path: "state.sqlite", directoryHint: .notDirectory)
         projectRename = root.appending(path: "project-rename.json", directoryHint: .notDirectory)
         projectRenameApp = root.appending(path: "project-rename-app.json", directoryHint: .notDirectory)
+        extensions = root.appending(path: "extensions", directoryHint: .isDirectory)
     }
 
     /// Environment variable that relocates `standard` (tests, side-by-side daemons).

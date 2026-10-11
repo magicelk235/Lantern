@@ -6,8 +6,9 @@ import IDELanguageModel
 /// An editor's side of its language server, for as long as the editor has a text view: it tells the
 /// server about the text (`didOpen` once the server is up, every edit as `didChange`, `didSave`, `didClose`), underlines
 /// the errors (red) and warnings (yellow) it publishes and counts them for the status bar, and asks it for hover text,
-/// definitions and completions. Edits are read off the text storage, so every change counts, including those the
-/// editor's typing filters make (auto-indent, closing brackets), which bypass the text view's delegate.
+/// definitions and completions (which the editor's `EditorCompletion` shows). Edits are read off the text storage, so
+/// every change counts, including those the editor's typing filters make (auto-indent, closing brackets), which bypass
+/// the text view's delegate.
 @MainActor @Observable
 final class LanguageDocument {
     let path: String
@@ -25,7 +26,6 @@ final class LanguageDocument {
     @ObservationIgnored private var server: LanguageServer?
     @ObservationIgnored private let servers: LanguageServers
     @ObservationIgnored private var storageObserver: StorageObserver?
-    @ObservationIgnored private var completion: LanguageCompletion?
     @ObservationIgnored private var hover: LanguageHover?
     @ObservationIgnored private var renderPending = false
     @ObservationIgnored private var isClosed = false
@@ -36,19 +36,17 @@ final class LanguageDocument {
     /// The language side of the editor of `path` in `workspace`, with `controller`'s text; nil for a file no language
     /// server takes. It joins (or starts) the project's server for the file's language.
     init?(path: String, workspace: String, controller: TextViewController, servers: LanguageServers) {
-        guard let language = DocumentLanguage(path: path) else { return nil }
+        let custom = LanguageServerSettings.customServers
+        guard let language = DocumentLanguage(path: path, custom: custom) else { return nil }
         self.path = path
         self.language = language
-        key = LanguageServers.Key(root: workspace, kind: language.kind)
+        key = LanguageServers.Key(root: workspace, server: language.server)
         self.controller = controller
         self.servers = servers
         sync = DocumentSync(path: path, languageId: language.languageId, text: controller.textView.textStorage.mutableString)
         let observer = StorageObserver { [weak self] range, newLength in self?.textDidReplace(range, newLength: newLength) }
         controller.textView.addStorageDelegate(observer)
         storageObserver = observer
-        let completion = LanguageCompletion(document: self)
-        controller.completionDelegate = completion
-        self.completion = completion
         hover = LanguageHover(document: self, textView: controller.textView)
         servers.attach(self)
     }
@@ -110,8 +108,6 @@ final class LanguageDocument {
         underlineLayers = []
         if let frameObserver { NotificationCenter.default.removeObserver(frameObserver) }
         frameObserver = nil
-        if controller?.completionDelegate === completion { controller?.completionDelegate = nil }
-        completion = nil
         servers.detach(self)
     }
 
@@ -240,7 +236,7 @@ final class LanguageDocument {
     /// server is known to fail on the request (`LanguageServerKind.skipsCompletion`).
     func completions(at offset: Int, trigger: String?) async -> [CompletionCandidate] {
         guard let server, features?.completionTriggers != nil, let textView,
-              !key.kind.skipsCompletion(at: offset, in: textView.textStorage.mutableString) else { return [] }
+              !key.server.skipsCompletion(at: offset, in: textView.textStorage.mutableString) else { return [] }
         let position = sync.lines.position(at: offset)
         return (try? await server.completions(sync.uri, at: position, trigger: trigger)) ?? []
     }

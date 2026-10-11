@@ -80,6 +80,9 @@ targets:
       # The login shell's environment the language servers run in.
       - package: Lantern
         product: IDEShellEnvironment
+      # Themes, snippets and language settings of installed VS Code extensions.
+      - package: Lantern
+        product: IDEExtensions
       - package: CodeEditSourceEditor
       - package: CodeEditTextView
       - package: CodeEditLanguages

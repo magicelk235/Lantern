@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "IDEEditorModel", targets: ["IDEEditorModel"]),
         .library(name: "IDEShellEnvironment", targets: ["IDEShellEnvironment"]),
         .library(name: "IDELanguageModel", targets: ["IDELanguageModel"]),
+        .library(name: "IDEExtensions", targets: ["IDEExtensions"]),
         .executable(name: "ompd", targets: ["ompd"]),
     ],
     dependencies: [
@@ -64,6 +65,10 @@ let package = Package(
                 .product(name: "JSONRPC", package: "JSONRPC"),
             ]
         ),
+        // VS Code extensions without AppKit/SwiftUI: installing a .vsix into the extensions folder and reading its
+        // package.json, color themes (JSON and .tmTheme) resolved to the editor's syntax categories, snippets and their
+        // expansion with tab stops, language configurations, and comment toggling.
+        .target(name: "IDEExtensions"),
 
         .testTarget(name: "IDEShellEnvironmentTests", dependencies: ["IDEShellEnvironment"]),
         .testTarget(name: "IDEProtocolTests", dependencies: ["IDEProtocol"]),
@@ -76,6 +81,7 @@ let package = Package(
             name: "IDELanguageModelTests",
             dependencies: ["IDELanguageModel", .product(name: "LanguageServerProtocol", package: "LanguageServerProtocol")]
         ),
+        .testTarget(name: "IDEExtensionsTests", dependencies: ["IDEExtensions"]),
     ],
     swiftLanguageModes: [.v6]
 )

@@ -3,23 +3,25 @@ import IDELanguageModel
 import IDEShellEnvironment
 import os
 
-/// The editor's language servers, independent of omp: one process per project folder and server kind,
-/// started for the first editor of a file it takes and shut down (`shutdown`, then `exit`) when the last of those
-/// editors closes and when the app quits. Servers run in the login shell's environment, captured once, and are found on
-/// its `PATH`; a kind whose program is not installed has no server, which the status bar says quietly. A server that
-/// fails to start or ends by itself stays that way until the user restarts it from the status bar, or its editors close.
+/// The editor's language servers, independent of omp: one process per project folder and server (a built-in one, or
+/// one the user added in Settings › Languages), started for the first editor of a file it takes and shut down
+/// (`shutdown`, then `exit`) when the last of those editors closes and when the app quits. Servers run in the login
+/// shell's environment, captured once, and are found on its `PATH` (or at the path a user's server names); a server
+/// whose program is not installed does not run, which the status bar says quietly. A server that fails to start or ends
+/// by itself stays that way until the user restarts it from the status bar, or its editors close. A user's server that
+/// changes in Settings is another server.
 @MainActor @Observable
 final class LanguageServers {
     struct Key: Hashable {
         /// The project folder: the server's workspace root and working directory.
         let root: String
-        let kind: LanguageServerKind
+        let server: LanguageServerChoice
     }
 
     enum Status: Equatable {
         case starting
         case running(name: String)
-        /// No program for the kind was found (its names, for the note).
+        /// No program for the server was found (its names, for the note).
         case unavailable(programs: [String])
         /// It could not start, or ended by itself: why.
         case failed(String)
@@ -40,7 +42,7 @@ final class LanguageServers {
     /// Servers shutting down, which quitting waits for.
     @ObservationIgnored private var stopping: [ObjectIdentifier: Task<Void, Never>] = [:]
 
-    /// An editor of a file its kind takes opened: it gets the server, which starts when it is the first.
+    /// An editor of a file the server takes opened: it gets the server, which starts when it is the first.
     func attach(_ document: LanguageDocument) {
         if let entry = entries[document.key] {
             entry.documents.append(document)
@@ -98,11 +100,11 @@ final class LanguageServers {
     private func start(_ key: Key, _ entry: Entry) async {
         let environment = await loginEnvironment()
         let command = await Task.detached(priority: .userInitiated) {
-            LanguageServerLocator(environment: environment).command(for: key.kind)
+            LanguageServerLocator(environment: environment).command(for: key.server)
         }.value
         guard entries[key] === entry else { return }
         guard let command else {
-            statuses[key] = .unavailable(programs: key.kind.programNames)
+            statuses[key] = .unavailable(programs: key.server.programNames)
             return
         }
         let server = LanguageServer(command: command, environment: environment, root: key.root)
@@ -155,5 +157,17 @@ final class LanguageServers {
         let capture = Task.detached(priority: .userInitiated) { await LoginShellEnvironment.capture() }
         environment = capture
         return await capture.value
+    }
+}
+
+/// The user's language servers (Settings › Languages), kept in the defaults as JSON (`CustomLanguageServer.encode`). An
+/// editor reads them when it joins a server; `Editors` moves the open editors when they change.
+enum LanguageServerSettings {
+    static let customServersKey = "languageServers"
+
+    /// The user's servers, in their order: the first one that takes an extension gets its files.
+    static var customServers: [CustomLanguageServer] {
+        get { CustomLanguageServer.load(from: UserDefaults.lantern.data(forKey: customServersKey)) }
+        set { UserDefaults.lantern.set(CustomLanguageServer.encode(newValue), forKey: customServersKey) }
     }
 }

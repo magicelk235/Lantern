@@ -131,7 +131,7 @@ private struct EditorState: View {
             }
             // A file not shown as text (binary, too large, gone) has no language to speak of.
             if document.content == .text {
-                Text(LanguageName.display(id: document.language.id.rawValue))
+                Text(document.languageName)
                     .modifier(JumpToLineAnchor(document: document, isAnchor: document.caret == nil))
             }
         }
@@ -198,7 +198,7 @@ private struct LanguageServerState: View {
             }
         case .unavailable(let programs):
             Text("No Language Server")
-                .help("Lantern looks for \(programs.joined(separator: " or ")) on your login shell’s PATH.")
+                .help(Self.missing(programs, of: language.key.server))
         case .failed(let reason):
             HStack(spacing: 5) {
                 WarningMark()
@@ -212,6 +212,21 @@ private struct LanguageServerState: View {
         case .starting, nil:
             EmptyView()
         }
+    }
+
+    /// Where Lantern looked for the server's program: on the login shell's `PATH`, or for a user's server whose command
+    /// names a path, at that path.
+    private static func missing(_ programs: [String], of server: LanguageServerChoice) -> String {
+        guard case .custom = server else {
+            return "Lantern looks for \(programs.joined(separator: " or ")) on your login shell’s PATH."
+        }
+        guard let program = programs.first, !program.isEmpty else {
+            return "The server’s command in Settings › Languages is empty or has an unclosed quote."
+        }
+        guard !program.contains("/") else {
+            return "No program at \(program). Settings › Languages takes a full path or a name on the PATH."
+        }
+        return "Lantern looks for \(program) on your login shell’s PATH (Settings › Languages)."
     }
 
     private static func describe(_ counts: DiagnosticCounts) -> String {

@@ -1,9 +1,10 @@
 import Foundation
 import IDEShellEnvironment
 
-/// The language servers the editor starts, one per program: Swift, TypeScript/JavaScript, Python,
+/// The language servers built into the editor, one per program: Swift, TypeScript/JavaScript, Python,
 /// Rust, Go and the C family. Each project gets its own process of each, started for the first editor of a file it
-/// takes and stopped with the last.
+/// takes and stopped with the last. A server the user added for an extension (`CustomLanguageServer`) takes the
+/// extension's files instead.
 public enum LanguageServerKind: String, Sendable, Hashable, CaseIterable {
     case swift
     case typescript
@@ -11,6 +12,23 @@ public enum LanguageServerKind: String, Sendable, Hashable, CaseIterable {
     case rust
     case go
     case clang
+
+    /// The languages it serves, for Settings.
+    public var name: String {
+        switch self {
+        case .swift: "Swift"
+        case .typescript: "TypeScript and JavaScript"
+        case .python: "Python"
+        case .rust: "Rust"
+        case .go: "Go"
+        case .clang: "C, C++ and Objective-C"
+        }
+    }
+
+    /// The extensions of the files it takes, lowercase and without the dot, in alphabetical order (for Settings).
+    public var fileExtensions: [String] {
+        DocumentLanguage.byExtension.filter { $0.value.kind == self }.keys.sorted()
+    }
 
     /// The programs looked for, in order of preference: one found on the login shell's `PATH` (or through `xcrun`)
     /// is the server.
@@ -39,15 +57,13 @@ public enum LanguageServerKind: String, Sendable, Hashable, CaseIterable {
     public func resolve(
         searchPath: String, isExecutable: (String) -> Bool, xcrunFind: (String) -> String?
     ) -> LanguageServerCommand? {
-        let folders = searchPath.split(separator: ":").filter { $0.hasPrefix("/") }
         for candidate in candidates {
             switch candidate {
             case .path(let name, let arguments):
-                for folder in folders {
-                    let executable = (folder.hasSuffix("/") ? String(folder) : String(folder) + "/") + name
-                    guard !Self.trampolines.contains(executable), isExecutable(executable) else { continue }
-                    return LanguageServerCommand(executable: executable, arguments: arguments)
+                let executable = LanguageServerLocator.find(name, in: searchPath) {
+                    !Self.trampolines.contains($0) && isExecutable($0)
                 }
+                if let executable { return LanguageServerCommand(executable: executable, arguments: arguments) }
             case .xcrun(let name, let arguments):
                 if let executable = xcrunFind(name) {
                     return LanguageServerCommand(executable: executable, arguments: arguments)
@@ -98,20 +114,63 @@ public struct LanguageServerCommand: Sendable, Hashable {
     public var name: String { (executable as NSString).lastPathComponent }
 }
 
-/// A file's language as its server knows it: the server kind and the `languageId` of `textDocument/didOpen`.
-public struct DocumentLanguage: Sendable, Hashable {
-    public let kind: LanguageServerKind
-    public let languageId: String
+/// The server that takes a file: one built into the editor, or one the user added.
+public enum LanguageServerChoice: Sendable, Hashable {
+    case builtIn(LanguageServerKind)
+    case custom(CustomLanguageServer)
 
-    /// The language of the file at `path`, by its extension (any case); nil for a file no server here takes.
-    public init?(path: String) {
-        let pathExtension = (path as NSString).pathExtension.lowercased()
-        guard let language = Self.byExtension[pathExtension] else { return nil }
-        kind = language.kind
-        languageId = language.languageId
+    /// What it is called, for display: the languages a built-in server serves, the name the user gave theirs (or its
+    /// program's, when they gave none).
+    public var name: String {
+        switch self {
+        case .builtIn(let kind):
+            return kind.name
+        case .custom(let server):
+            let name = server.name.trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty { return name }
+            let program = server.arguments?.first.map { ($0 as NSString).lastPathComponent } ?? ""
+            return program.isEmpty ? "Untitled" : program
+        }
     }
 
-    private static let byExtension: [String: (kind: LanguageServerKind, languageId: String)] = [
+    /// The names of the programs looked for, for the status bar's note when there is none: for a user's server, its
+    /// program as the command has it, and none when the command has no program (or a quote is left open).
+    public var programNames: [String] {
+        switch self {
+        case .builtIn(let kind): kind.programNames
+        case .custom(let server): server.arguments?.first.map { [$0] } ?? []
+        }
+    }
+
+    /// Whether the server must not be asked for completions at `offset` of `text` (UTF-16): the case of the built-in
+    /// sourcekit-lsp (`LanguageServerKind.skipsCompletion`); a user's server is always asked.
+    public func skipsCompletion(at offset: Int, in text: NSString) -> Bool {
+        guard case .builtIn(let kind) = self else { return false }
+        return kind.skipsCompletion(at: offset, in: text)
+    }
+}
+
+/// A file's language as its server knows it: the server and the `languageId` of `textDocument/didOpen`.
+public struct DocumentLanguage: Sendable, Hashable {
+    public let server: LanguageServerChoice
+    public let languageId: String
+
+    /// The language of the file at `path`, by its extension (any case): the first of the user's servers (`custom`, in
+    /// their order) that takes the extension, otherwise the built-in one; nil for a file no server here takes.
+    public init?(path: String, custom: [CustomLanguageServer]) {
+        let pathExtension = (path as NSString).pathExtension.lowercased()
+        if let server = custom.first(where: { $0.takes(pathExtension) }) {
+            self.server = .custom(server)
+            languageId = server.documentLanguageId
+        } else if let language = Self.byExtension[pathExtension] {
+            server = .builtIn(language.kind)
+            languageId = language.languageId
+        } else {
+            return nil
+        }
+    }
+
+    fileprivate static let byExtension: [String: (kind: LanguageServerKind, languageId: String)] = [
         "swift": (.swift, "swift"),
         "ts": (.typescript, "typescript"), "mts": (.typescript, "typescript"), "cts": (.typescript, "typescript"),
         "tsx": (.typescript, "typescriptreact"),
@@ -127,7 +186,7 @@ public struct DocumentLanguage: Sendable, Hashable {
     ]
 }
 
-/// Finds the server program of each kind in an environment (the login shell's, `LoginShellEnvironment`).
+/// Finds the program of a language server in an environment (the login shell's, `LoginShellEnvironment`).
 public struct LanguageServerLocator: Sendable {
     public let environment: [String: String]
 
@@ -135,10 +194,26 @@ public struct LanguageServerLocator: Sendable {
         self.environment = environment
     }
 
-    /// The command for `kind`, or nil when its program is nowhere. Runs `xcrun` when the kind needs Xcode's toolchain:
-    /// call it off the main thread.
-    public func command(for kind: LanguageServerKind) -> LanguageServerCommand? {
-        kind.resolve(searchPath: environment["PATH"] ?? "", isExecutable: Self.isExecutableFile, xcrunFind: xcrunFind)
+    /// The command for `server`, or nil when its program is nowhere. Runs `xcrun` when a built-in server needs Xcode's
+    /// toolchain: call it off the main thread.
+    public func command(for server: LanguageServerChoice) -> LanguageServerCommand? {
+        let searchPath = environment["PATH"] ?? ""
+        switch server {
+        case .builtIn(let kind):
+            return kind.resolve(searchPath: searchPath, isExecutable: Self.isExecutableFile, xcrunFind: xcrunFind)
+        case .custom(let custom):
+            let home = environment["HOME"] ?? NSHomeDirectory()
+            return custom.resolve(searchPath: searchPath, homeDirectory: home, isExecutable: Self.isExecutableFile)
+        }
+    }
+
+    /// The path of `name` in the first absolute folder of `searchPath` (a `PATH` value) where `accepts` takes it.
+    static func find(_ name: String, in searchPath: String, accepts: (String) -> Bool) -> String? {
+        for folder in searchPath.split(separator: ":") where folder.hasPrefix("/") {
+            let path = (folder.hasSuffix("/") ? String(folder) : String(folder) + "/") + name
+            if accepts(path) { return path }
+        }
+        return nil
     }
 
     private static func isExecutableFile(_ path: String) -> Bool {
